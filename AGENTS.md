@@ -490,6 +490,40 @@ itens envelhecem em ritmos diferentes, e o cabeçalho passava a mentir por todos
   (`lib/ai/decisao/pedidos.ts`) só é perguntado onde ela disse não, e nunca bloqueia ninguém — no
   máximo abre um aviso na Central ("Avisar a equipe").
 
+## Operação autorizada da VPS Servinder
+
+Para o DeskcommCRM da Servinder, o usuário determinou que os arquivos sejam
+enviados para `root@vps.servinder.com.br` e que o build/deploy seja feito por
+SSH na própria VPS. **Não iniciar OrbStack, Docker Desktop, daemon Docker,
+containers ou ambiente de desenvolvimento no macOS.** Não usar Docker local
+para esse deploy. Esta instrução específica do usuário prevalece sobre a
+preferência geral por build no CI.
+
+- O domínio efetivo é `vendas.servinder.com.br` e a instalação fica em
+  `/opt/deskcommcrm`; verificar ambos antes de qualquer escrita. O host
+  `crm.servinder.com.br` não é o alvo desta instalação.
+- Não fazer Git na VPS, editar manualmente arquivos da instalação, nem apontar
+  imagens para o repositório oficial. Enviar por SSH somente o arquivo de fonte
+  revisado para pasta temporária privada fora de `/opt/deskcommcrm` e construir
+  imagens locais Linux/amd64 a partir dele.
+- Antes de persistir qualquer coisa, inspecionar arquitetura, domínio, compose,
+  imagens e saúde; fazer e validar backup completo com
+  `hostgator-setup-kit/backup.sh` da instalação (banco, Storage e sessão WAHA).
+- Preservar `.env` e dados. Validar o plano de reaplicação do baseline com o
+  mecanismo seguro do kit; não executar `hostgator-setup-kit/update.sh` padrão
+  neste caso, pois ele faz fetch/checkout e seleciona imagens GHCR upstream.
+  Todo `up -d` deve usar `docker-compose.prod.yml`,
+  `docker-compose.single-server.yml` e `docker-compose.traefik.yml`.
+- Usar tags locais explícitas e `*_PULL_POLICY=never`; atualizar juntos `app`,
+  `worker` e `scheduler`. Registrar no `.env` as tags usadas, manter as imagens
+  anteriores para rollback e documentar que a próxima atualização regular deve
+  usar uma publicação do fork.
+- Pós-deploy, verificar `/api/v1/health`, `/` (200), `/app` (307), labels do
+  Traefik, versão e imagens dos três serviços. Confirmar a aba Telegram por
+  navegador autenticado; curl sem sessão só comprova o redirecionamento.
+- Não criar PR nem enviar alterações ao remoto `product`; qualquer push
+  autorizado vai exclusivamente para o fork `origin`.
+
 ## Packaging — se você tocou `Dockerfile*`, `docker-compose*.yml` ou `hostgator-setup-kit/`
 
 Lei completa em [`docs/doctrine/packaging.md`](docs/doctrine/packaging.md). O não-negociável:

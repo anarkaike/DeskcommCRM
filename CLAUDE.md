@@ -239,6 +239,36 @@ DeskcommCRM é um sistema operacional de vendas open source com agentes de IA na
 
 ## Deploy em produção (NÃO NEGOCIÁVEL)
 
+### Exceção explícita para a VPS Servinder
+
+Para a instalação da Servinder, o usuário pediu que os arquivos sejam enviados
+por SSH para `root@vps.servinder.com.br` e que o build/deploy aconteça na VPS.
+**Não iniciar OrbStack, Docker Desktop, daemon Docker, containers ou ambiente
+local no macOS para essa tarefa.** Essa ordem específica prevalece sobre a
+preferência geral por publicar pelo CI.
+
+O alvo observado é `vendas.servinder.com.br`, instalado em `/opt/deskcommcrm`;
+`crm.servinder.com.br` é outro host. Não fazer Git na VPS, não editar os arquivos
+da instalação à mão e não usar imagem do remoto oficial para incluir trabalho
+privado do fork. Enviar apenas fonte revisado para diretório temporário privado
+fora da instalação e construir imagens Linux/amd64 na VPS.
+
+Antes de persistir mudanças, reinspecionar host, arquitetura, compose, imagens e
+saúde; criar e validar backup completo com o `hostgator-setup-kit/backup.sh` da
+instalação, incluindo banco, Storage e sessão WAHA. Preservar `.env` e dados.
+Não usar o `update.sh` padrão para esse caso: ele faz fetch/checkout e escolhe
+as imagens GHCR do upstream. Reaplicar o baseline somente pelo caminho do kit
+validado para esta instalação. Deploy deve usar os três compose efetivos:
+`docker-compose.prod.yml`, `docker-compose.single-server.yml` e
+`docker-compose.traefik.yml`.
+
+Construir `app`, `worker` e `scheduler` com tags locais explícitas e políticas
+`never`; manter tags/imagens anteriores para rollback. Depois verificar health,
+versão, `/` 200, `/app` 307, labels Traefik e os três serviços. Provar a aba
+Telegram por sessão autenticada, pois curl anônimo só mostra o redirect.
+Qualquer push autorizado é apenas para o fork; nunca criar PR nem enviar para o
+remoto `product` sem nova autorização explícita.
+
 **Numa VPS que já tem proxy reverso próprio (Hostinger, Coolify, Dokploy…), todo
 `up -d` leva os DOIS arquivos de compose:**
 

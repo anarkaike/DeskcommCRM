@@ -14,6 +14,8 @@ ser fonte sem ninguém decidir isso.
 
 ## Mapas
 
+Para o fluxo de implementação de outro canal de mensagem e as portas/registries que devem ser reutilizados, consulte [`provedores-de-mensagem.md`](provedores-de-mensagem.md).
+
 | arquivo | escopo |
 |---|---|
 | `nomes-internos-das-conexoes.architecture.json` | renomeação interna dos canais — cartões de WhatsApp, parceiro e redes sociais → rota tenant-aware → `channel_sessions.display_name` → cartões e seletores, com auditoria e sem alterar o nome público no provedor |
