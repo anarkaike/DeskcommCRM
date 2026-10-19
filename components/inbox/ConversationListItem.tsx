@@ -268,7 +268,7 @@ export function ConversationListItem({
             "focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent",
             selecionado
               ? "border-accent bg-accent text-accent-foreground"
-              : "border-input bg-background hover:bg-surface-elevated",
+              : "border-muted-foreground bg-background hover:bg-surface-elevated",
           )}
         >
           {selecionado && <Check size={12} weight="bold" aria-hidden />}
@@ -281,7 +281,17 @@ export function ConversationListItem({
         className={cn(
           "group relative flex min-w-0 flex-1 items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-surface-elevated",
           "focus-visible:outline-hidden focus-visible:bg-surface-elevated",
-          isSelected && "bg-accent-50 hover:bg-accent-50",
+          // `accent-soft`, e não um degrau fixo da rampa: os degraus têm o MESMO
+          // hex nos dois temas, e o `accent-50` (quase branco) no escuro deixava o
+          // nome — `text-text`, claro no escuro — branco sobre branco.
+          // Marcada no lote, quem pinta é o wrapper: no escuro o `accent-soft` é
+          // translúcido, e pintar os dois o somava (prévia a 3,2:1). O botão fica
+          // transparente também no hover/foco, senão o cinza do hover cobria só ele
+          // e a linha ficava em dois tons; o foco vira anel, como o da caixa.
+          isSelected &&
+            (selecionado
+              ? "hover:bg-transparent focus-visible:bg-transparent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+              : "bg-accent-soft hover:bg-accent-soft"),
         )}
         aria-current={isSelected ? "true" : undefined}
       >
@@ -372,7 +382,9 @@ export function ConversationListItem({
           <p
             className={cn(
               "min-w-0 truncate text-[13px]",
-              unread > 0 ? "text-text" : "text-text-muted",
+              // Na aberta, `text-text`: `text-muted` sobre o `accent-soft` do
+              // escuro dá 4,2:1, abaixo do AA (medido em selecionada-legivel-no-escuro.test).
+              unread > 0 || isSelected ? "text-text" : "text-text-muted",
             )}
           >
             {isAi && mostrarAutomatico ? (

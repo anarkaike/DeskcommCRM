@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, startTransition } from "react";
 import { useT } from "@/hooks/i18n/useT";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth, usePermission } from "@/hooks/auth/AuthProvider";
@@ -38,6 +38,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { comandosDaFila } from "@/lib/inbox/comando-da-conversa";
+import { togglePainelDoContato } from "@/app/actions/inbox/togglePainelDoContato";
 import type { AvisoDeRascunho } from "@/lib/inbox/rascunho-sugerido";
 import { buscaValeConsulta } from "@/lib/inbox/termo-de-busca";
 import { useAutomaticoAtivo } from "@/hooks/ai/useAutomaticoAtivo";
@@ -152,13 +153,34 @@ function armazenamentoDoNavegador(): Storage | null {
   }
 }
 
+/**
+ * A LARGURA DO TRILHO DO PAINEL RECOLHIDO (issue #3004).
+ *
+ * Recolher o painel do contato não é só escondê-lo: a conversa recebe a largura
+ * que ele ocupava. O que fica é um trilho estreito com o botão de expandir — sem
+ * ele o painel sumiria sem porta de volta. É o mesmo desenho do recolher do menu
+ * da esquerda (`Sidebar`, o trilho de `w-16`), só que em 44px: aqui não há
+ * rótulo nem contador, só o controle.
+ */
+const LARGURA_DO_TRILHO_DO_PAINEL = "2.75rem";
+
 interface InboxLayoutProps {
   initialSelectedId?: string | null;
   /** Rascunho sugerido por integração (issue #1611) — `null` é o caso comum. */
   rascunho?: AvisoDeRascunho | null;
+  /**
+   * O painel do contato começa recolhido? Vem do cookie lido no SERVIDOR
+   * (`app/app/inbox/page.tsx`), como `sidebar_collapsed` no layout da casca: é o
+   * que evita o painel nascer aberto e pular para trilho depois da hidratação.
+   */
+  painelRecolhidoInicial?: boolean;
 }
 
-export function InboxLayout({ initialSelectedId = null, rascunho = null }: InboxLayoutProps = {}) {
+export function InboxLayout({
+  initialSelectedId = null,
+  rascunho = null,
+  painelRecolhidoInicial = false,
+}: InboxLayoutProps = {}) {
   const t = useT();
   const { activeOrg, user } = useAuth();
   const supportReadonly = user.support?.access_mode === "support_readonly";
@@ -215,6 +237,28 @@ export function InboxLayout({ initialSelectedId = null, rascunho = null }: Inbox
   /** A ficha do contato como painel deslizante — só existe abaixo do `xl`. */
   const [fichaAberta, setFichaAberta] = useState(false);
   /**
+   * O PAINEL DO CONTATO RECOLHIDO (issue #3004).
+   *
+   * Antes só o menu da esquerda tinha como recolher; o painel do contato ficava
+   * aberto sempre, e quem queria a conversa larga não tinha por onde. Aqui o
+   * estado é da TELA e não do painel porque quem precisa dele é a GRADE — é ela
+   * que redistribui a largura, e o painel é só quem desenha o controle.
+   *
+   * Nasce do cookie lido no servidor (`painelRecolhidoInicial`); o clique grava
+   * pelo server action `togglePainelDoContato`, o mesmo caminho do recolher da
+   * esquerda (`toggleSidebar`). O estado local dá o retorno IMEDIATO do clique —
+   * sem ele o painel só reagiria depois da volta ao servidor.
+   */
+  const [painelRecolhido, setPainelRecolhido] = useState(painelRecolhidoInicial);
+  const alternarPainelDoContato = useCallback(() => {
+    const proximo = !painelRecolhido;
+    setPainelRecolhido(proximo);
+    // O action recebe o estado ATUAL, como o `toggleSidebar` do menu da esquerda.
+    startTransition(() => {
+      void togglePainelDoContato(painelRecolhido);
+    });
+  }, [painelRecolhido]);
+  /**
    * A busca dentro da conversa (#1793) pertence à CONVERSA em que foi aberta.
    * Guardar o id junto fecha a busca em qualquer troca — clique, atalho j/k,
    * voltar do navegador — sem que cada caminho precise lembrar de limpá-la.
@@ -261,12 +305,15 @@ export function InboxLayout({ initialSelectedId = null, rascunho = null }: Inbox
    * e completa quando a resposta chega; a janela é de ~200ms e o rótulo nunca
    * discorda do filtro, porque os dois usam a mesma convenção.
    */
-  const { data: automaticoDaOrg } = useAutomaticoAtivo();
+  const { data: automaticoDaOrg, isLoading: automaticoCarregando } = useAutomaticoAtivo();
   const composerRef = useRef<ComposerHandle | null>(null);
 
   const filters: ConversationsFilters = useMemo(
     () => ({
       ...tabToFilter(filterValue.tab, automaticoDaOrg),
+      // O atendente escolhido pelo gerente. A aba Minhas já traz `assigned_to=me`,
+      // e esse valor da aba vence (o seletor nem aparece ali).
+      assigned_to: tabToFilter(filterValue.tab, automaticoDaOrg).assigned_to ?? filterValue.assigned_to,
       // A tela NÃO pede o que a rota recusa: o hook trata falha com
       // `showApiError`, então digitar a primeira letra de qualquer busca faria
       // piscar um erro na cara de quem digita. A regra é a MESMA que o schema
@@ -283,6 +330,7 @@ export function InboxLayout({ initialSelectedId = null, rascunho = null }: Inbox
     [
       filterValue.tab,
       automaticoDaOrg,
+      filterValue.assigned_to,
       filterValue.search,
       filterValue.channel_session_id,
       filterValue.tag,
@@ -293,9 +341,33 @@ export function InboxLayout({ initialSelectedId = null, rascunho = null }: Inbox
   );
 
 
+  /**
+   * A FILA ESPERA O FATO DA ORG — E CONSULTA UMA VEZ SÓ (#2365).
+   *
+   * Só a aba Fila depende do fato org-wide: `comandosDaFila` devolve
+   * `aguardando,automatico` numa org SEM automático (sem robô, essas conversas
+   * também esperam gente) e `aguardando` numa org com. Enquanto o fato não
+   * chegou, `undefined` vale "assume que há" — e era essa suposição que saía
+   * como PRIMEIRA busca da lista: com o automático desligado, a resposta trocava
+   * a chave e o react-query abria uma segunda query, DESCARTANDO a primeira
+   * (trace do #2360: `comando=aguardando` 1091ms + `comando=aguardando,automatico`
+   * 896ms, duas voltas de rede pela mesma lista).
+   *
+   * Segurar a Fila até o fato chegar é o preço de UMA requisição: a pergunta já
+   * é feita pela tela de qualquer jeito (o `ConversationList` e o cabeçalho leem
+   * o mesmo hook, deduplicado), e o esqueleto cobre a espera — nunca a caixa
+   * vazia, porque `isPending` também é verdadeiro com a consulta segurada (ver
+   * `ConversationList`). Nas outras abas o filtro não depende do fato e a lista
+   * continua consultando na hora.
+   *
+   * Falha ou permissão ausente não travam a tela: aí `isLoading` é falso, a
+   * consulta sai com a convenção de sempre e nada fica esperando para sempre.
+   */
+  const filaEsperaOFatoDaOrg = filterValue.tab === "unassigned" && automaticoCarregando;
+
   // We need the selected conversation object for header / composer / side panel.
   // Source it from the same query the list uses to avoid an extra request.
-  const listQ = useConversationsRealtime(filters, orgId);
+  const listQ = useConversationsRealtime(filters, orgId, !filaEsperaOFatoDaOrg);
   const inList = useMemo(() => {
     const all = listQ.data?.pages.flatMap((p) => p.data) ?? [];
     return all.find((c) => c.id === selectedId) ?? null;
@@ -505,9 +577,14 @@ export function InboxLayout({ initialSelectedId = null, rascunho = null }: Inbox
   const estiloDaGrade: CSSProperties | undefined =
     faixa && larguras
       ? {
-          gridTemplateColumns: faixa.temFicha
-            ? `${larguras.lista}px minmax(0,1fr) ${larguras.ficha}px`
-            : `${larguras.lista}px minmax(0,1fr)`,
+          gridTemplateColumns: painelRecolhido && faixa.temFicha
+            ? // Recolhido: a ficha sai da conta e o trilho do painel entra no
+              // lugar dela. A largura AJUSTADA da ficha não se perde — ela volta
+              // inteira quando o painel reabre.
+              `${larguras.lista}px minmax(0,1fr) ${LARGURA_DO_TRILHO_DO_PAINEL}`
+            : faixa.temFicha
+              ? `${larguras.lista}px minmax(0,1fr) ${larguras.ficha}px`
+              : `${larguras.lista}px minmax(0,1fr)`,
         }
       : undefined;
 
@@ -615,7 +692,16 @@ export function InboxLayout({ initialSelectedId = null, rascunho = null }: Inbox
     <OpenConversationProvider conversationId={selectedId}>
     <div
       ref={gradeRef}
-      className="grid relative h-[calc(100dvh-3.5rem-var(--space-6)-max(var(--space-6),var(--rodape-ocupado,0px)))] w-full grid-cols-1 md:grid-cols-[300px_1fr] xl:grid-cols-[272px_1fr_296px] 2xl:grid-cols-[300px_1fr_320px]"
+      className={cn(
+        "grid relative h-[calc(100dvh-3.5rem-var(--space-6)-max(var(--space-6),var(--rodape-ocupado,0px)))] w-full grid-cols-1 md:grid-cols-[300px_1fr]",
+        // Recolhido (issue #3004), a terceira trilha vira o trilho estreito do
+        // botão de expandir e a conversa fica com o que era da ficha. Duas
+        // listas em vez de uma classe com valor em variável: o Tailwind precisa
+        // do literal para gerar o CSS.
+        painelRecolhido
+          ? "xl:grid-cols-[272px_1fr_2.75rem] 2xl:grid-cols-[300px_1fr_2.75rem]"
+          : "xl:grid-cols-[272px_1fr_296px] 2xl:grid-cols-[300px_1fr_320px]",
+      )}
       style={estiloDaGrade}
       /*
        * O ESTADO DO TEMPO REAL, LEGÍVEL DE FORA — mesmo par que o dossiê do lead
@@ -862,7 +948,11 @@ export function InboxLayout({ initialSelectedId = null, rascunho = null }: Inbox
       </div>
 
       <div className="hidden h-full min-h-0 min-w-0 xl:block">
-        <CRMSidePanel conversation={selectedConversation} />
+        <CRMSidePanel
+          conversation={selectedConversation}
+          recolhido={painelRecolhido}
+          onAlternarRecolhido={alternarPainelDoContato}
+        />
       </div>
 
       {/*
@@ -899,7 +989,7 @@ export function InboxLayout({ initialSelectedId = null, rascunho = null }: Inbox
               className="w-px bg-border transition-colors group-hover:bg-primary group-focus-visible:bg-primary"
             />
           </span>
-          {faixa?.temFicha && (
+          {faixa?.temFicha && !painelRecolhido && (
             <span
               role="separator"
               aria-orientation="vertical"
