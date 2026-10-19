@@ -9,7 +9,13 @@ vi.mock("@/hooks/i18n/useT", () => ({ useT: () => (text: string) => text }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { TelegramConnectionsClient } from "@/components/connections/TelegramConnectionsClient";
-import { validateTelegramBotToken } from "@/lib/channels/telegram/bot-api";
+import {
+  deleteTelegramWebhook,
+  getTelegramWebhookInfo,
+  sendTelegramText,
+  setTelegramWebhook,
+  validateTelegramBotToken,
+} from "@/lib/channels/telegram/bot-api";
 
 describe("conexões Telegram", () => {
   beforeEach(() => {
@@ -59,6 +65,53 @@ describe("conexões Telegram", () => {
     await expect(
       validateTelegramBotToken("123456:abcdefghijklmnopqrstuvwxyz0123456789_-"),
     ).resolves.toBeNull();
+  });
+
+  it("configura e consulta webhook sem descartar updates pendentes", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, result: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        result: {
+          url: "https://crm.example/api/v1/webhooks/telegram/path-token",
+          pending_update_count: 3,
+          last_error_date: 1_800_000_000,
+          last_error_message: "Connection timed out",
+          allowed_updates: ["message", "edited_message", 7],
+        },
+      }), { status: 200 }));
+    const token = "123456:abcdefghijklmnopqrstuvwxyz0123456789_-";
+    await setTelegramWebhook({
+      token,
+      url: "https://crm.example/api/v1/webhooks/telegram/path-token",
+      secretToken: "a-secure-webhook-secret-token",
+    });
+    expect(JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body))).toMatchObject({
+      secret_token: "a-secure-webhook-secret-token",
+      drop_pending_updates: false,
+      allowed_updates: ["message", "edited_message"],
+    });
+    await expect(getTelegramWebhookInfo(token)).resolves.toMatchObject({
+      pendingUpdateCount: 3,
+      lastErrorMessage: "Connection timed out",
+      allowedUpdates: ["message", "edited_message"],
+    });
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain(token);
+  });
+
+  it("envia texto e remove webhook sem expor respostas cruas da API", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        result: { message_id: 82, date: 1_800_000_001, chat: { id: 998877 } },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, result: true }), { status: 200 }));
+    const token = "123456:abcdefghijklmnopqrstuvwxyz0123456789_-";
+    await expect(sendTelegramText({ token, chatId: "998877", text: " Olá " }))
+      .resolves.toEqual({ messageId: "82", chatId: "998877", date: 1_800_000_001 });
+    expect(JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body))).toEqual({ chat_id: "998877", text: "Olá" });
+    await expect(deleteTelegramWebhook(token)).resolves.toBeUndefined();
+    expect(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))).toEqual({ drop_pending_updates: false });
   });
 
   it("abre as configurações após cadastrar e pré-seleciona só o atendimento humano", async () => {
