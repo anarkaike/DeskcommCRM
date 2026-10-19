@@ -31,7 +31,7 @@ export class GrupoError extends Error {
 // Aceita o formato atual (`<digitos>@g.us`) e o legado medido no servidor real
 // (`<digitos>-<digitos>@g.us`) — a régua não é a forma nova, é a que o WhatsApp
 // de verdade envia hoje.
-const chatIdDeGrupo = z.string().regex(/^[\d-]+@g\.us$/);
+const chatIdDeGrupo = z.string().regex(/^(?:[\d-]+@g\.us|-?\d{1,20})$/);
 
 export interface GrupoDoNumero {
   chatId: string;
@@ -67,7 +67,7 @@ export interface GruposDb {
 
 export interface DepsDeGrupos {
   db: GruposDb;
-  listGroups(provider: ChannelProvider, sessionRef: string): Promise<ChannelGroup[]>;
+  listGroups(provider: ChannelProvider, sessionRef: string, scope: { organizationId: string; channelSessionId: string }): Promise<ChannelGroup[]>;
   /**
    * PODE LANÇAR (timeout/rede) mesmo declarando `Promise<boolean>` — o contrato
    * é "eu tento" e a exceção é um resultado, não um bug de tipo. Quem chama
@@ -99,7 +99,7 @@ export async function listarGruposDoNumero(
 ): Promise<GrupoDoNumero[]> {
   const s = await sessaoComGrupos(deps, e.organizationId, e.channelSessionId);
   const [doCanal, gravados] = await Promise.all([
-    deps.listGroups(s.provider, s.sessionRef),
+    deps.listGroups(s.provider, s.sessionRef, { organizationId: e.organizationId, channelSessionId: e.channelSessionId }),
     deps.db.listarLinhas(e.organizationId, e.channelSessionId),
   ]);
   const porId = new Map(gravados.map((l) => [l.group_chat_id, l]));
@@ -151,6 +151,7 @@ export async function alternarGrupo(
 ): Promise<{ enabled: boolean }> {
   chatIdDeGrupo.parse(e.groupChatId);
   const s = await sessaoComGrupos(deps, e.organizationId, e.channelSessionId);
+  if ((s.provider === "telegram") !== !e.groupChatId.endsWith("@g.us")) throw new Error("group_chat_id_provider_mismatch");
 
   if (e.ligar) return ligarGrupo(deps, s, e);
   return desligarGrupo(deps, s, e);
@@ -315,12 +316,23 @@ export function criarDepsDeGrupos(admin: SupabaseClient): DepsDeGrupos {
         return data as { id: string };
       },
     },
-    async listGroups(provider, sessionRef) {
+    async listGroups(provider, sessionRef, scope) {
+      if (provider === "telegram") {
+        const { data, error } = await admin.from("channel_session_groups")
+          .select("group_chat_id, subject")
+          .eq("organization_id", scope.organizationId)
+          .eq("channel_session_id", scope.channelSessionId);
+        if (error) throw error;
+        return (data ?? []).map((row) => ({ chatId: row.group_chat_id, subject: row.subject })) as ChannelGroup[];
+      }
       const adapter = getAdapter(provider);
       if (!adapter.listGroups) throw new GrupoError("canal_sem_grupos");
       return adapter.listGroups({ sessionRef });
     },
     async setGroupIntake(provider, sessionRef, receive) {
+      // Telegram has no provider-side group filter. The durable allowlist is
+      // enforced on every update by the inbound driver.
+      if (provider === "telegram") return true;
       const adapter = getAdapter(provider);
       return adapter.setGroupIntake ? adapter.setGroupIntake({ sessionRef, receive }) : false;
     },

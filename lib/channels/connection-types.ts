@@ -58,4 +58,4 @@ export interface ChannelConnectionRecord {
   grants: readonly ChannelConnectionGrant[];
 }
 
-export type ConnectionLifecycleAction = "activate" | "pause" | "reactivate" | "disconnect" | "delete";\n
+export type ConnectionLifecycleAction = "activate" | "pause" | "reactivate" | "disconnect" | "delete";

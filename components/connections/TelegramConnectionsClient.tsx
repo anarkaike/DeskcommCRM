@@ -19,11 +19,13 @@ import { Label } from "@/components/ui/label";
 import { useT } from "@/hooks/i18n/useT";
 import { apiClient } from "@/lib/api/client";
 import { ChatCircle, Gear, PaperPlaneTilt, Plus, Robot } from "@/lib/ui/icons";
+import { GruposSheet } from "@/components/connections/GruposSheet";
 
 type Surface = "inbox" | "team_alerts" | "human_cases" | "agent_tools" | "mini_app";
 type Binding = { surface: Surface; capabilities: string[] };
 type Bot = {
   id: string;
+  channel_session_id: string | null;
   telegram_bot_id: string;
   bot_username: string | null;
   display_name: string;
@@ -73,6 +75,11 @@ const SURFACES: SurfaceOption[] = [
         title: "Respostas automáticas de IA",
         detail: "A IA poderá enviar respostas neste canal.",
       },
+      {
+        key: "group_messages",
+        title: "Mensagens de grupos",
+        detail: "Permite descobrir grupos por updates; cada grupo continua bloqueado até habilitação explícita.",
+      },
     ],
   },
 ];
@@ -110,6 +117,7 @@ export function TelegramConnectionsClient() {
   const [selectedBot, setSelectedBot] = useState<Bot | null>(null);
   const [selection, setSelection] = useState<Selection>(padraoInicial);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [groupsBot, setGroupsBot] = useState<Bot | null>(null);
 
   const fetchBots = useCallback(
     () => apiClient.get<ApiEnvelope<{ bots: Bot[] }>>("/api/v1/channels/telegram"),
@@ -208,7 +216,7 @@ export function TelegramConnectionsClient() {
       ...current,
       [surface]: enabled
         ? Array.from(new Set([...current[surface], capability]))
-        : current[surface].filter((item) => item !== capability),
+        : current[surface].filter((item) => item !== capability && !(capability === "receive_messages" && item === "group_messages")),
     }));
   }
 
@@ -393,6 +401,11 @@ export function TelegramConnectionsClient() {
                       <Gear size={16} aria-hidden="true" />
                       {t("Configurar")}
                     </Button>
+                    {bot.status === "active" && bot.channel_session_id && bot.bindings.some((binding) => binding.capabilities.includes("group_messages")) ? (
+                      <Button type="button" variant="outline" size="sm" onClick={() => setGroupsBot(bot)}>
+                        {t("Grupos e comunidades")}
+                      </Button>
+                    ) : null}
                     {bot.status === "active" ? (
                       <Button type="button" size="sm" variant="outline" disabled={lifecycleConnectionId === bot.id} onClick={() => void runLifecycle(bot, "pause")}>
                         {t("Pausar")}
@@ -567,9 +580,7 @@ export function TelegramConnectionsClient() {
             })}
           </div>
           <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-text">
-            {t(
-            "O bot ativo recebe mensagens de texto em conversas privadas. Respostas humanas usam o acesso da equipe; respostas automáticas só são encaminhadas ao agente quando Respostas automáticas de IA está concedido, e ainda passam pelas autorizações e políticas do CRM. Grupos, envio proativo, casos, ferramentas e Mini Apps ainda não executam ações.",
-            )}
+            {t("O bot recebe mensagens privadas. Grupos são descobertos somente após o Telegram enviar um update (o modo de privacidade do BotFather limita updates); grupos precisam ser habilitados individualmente e permanecem fora da IA. Envio proativo, casos, ferramentas e Mini Apps ainda não executam ações.")}
           </p>
           <DialogFooter>
             <Button
@@ -590,6 +601,9 @@ export function TelegramConnectionsClient() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {groupsBot?.channel_session_id ? (
+        <GruposSheet channelId={groupsBot.channel_session_id} providerLabel="Telegram" onClose={() => setGroupsBot(null)} />
+      ) : null}
     </div>
   );
 }

@@ -57,4 +57,4 @@ describe("shared channel connection lifecycle", () => {
     expect(() => registry.register(driver)).toThrow("duplicate_channel_connection_driver");
     expect(() => registry.get("meta_cloud")).toThrow("unknown_channel_connection_driver");
   });
-});\n
+});

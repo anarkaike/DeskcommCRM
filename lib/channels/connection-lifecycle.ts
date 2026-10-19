@@ -55,4 +55,4 @@ export function createConnectionLifecycle<TCredential>(driver: ChannelConnection
     },
     health: (context: ChannelConnectionContext) => driver.health(context),
   };
-}\n
+}

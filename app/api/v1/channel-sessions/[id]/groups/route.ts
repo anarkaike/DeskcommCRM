@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 
 const idSchema = z.string().uuid();
 const corpoSchema = z.object({
-  group_chat_id: z.string().regex(/^[\d-]+@g\.us$/),
+  group_chat_id: z.string().regex(/^(?:[\d-]+@g\.us|-?\d{1,20})$/),
   subject: z.string().max(200).nullable().optional(),
   enabled: z.boolean(),
 });

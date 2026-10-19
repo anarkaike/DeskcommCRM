@@ -83,9 +83,11 @@ function normalizarBusca(s: string): string {
 
 export function GruposSheet({
   channelId,
+  providerLabel = "WhatsApp",
   onClose,
 }: {
   channelId: string;
+  providerLabel?: "WhatsApp" | "Telegram";
   onClose: () => void;
 }) {
   const t = useT();
@@ -112,13 +114,13 @@ export function GruposSheet({
     if (!res.ok || !j?.data) {
       setErro(
         res.status === 502
-          ? t("O WhatsApp deste número não respondeu. Confira se ele está conectado e tente de novo.")
+          ? t(providerLabel === "Telegram" ? "O Telegram não respondeu. Confira o webhook e tente de novo." : "O WhatsApp deste número não respondeu. Confira se ele está conectado e tente de novo.")
           : t("Não consegui ler os grupos deste número."),
       );
       return;
     }
     setGrupos(j.data);
-  }, [channelId, t]);
+  }, [channelId, providerLabel, t]);
 
   useEffect(() => {
     void carregar();
@@ -136,7 +138,7 @@ export function GruposSheet({
     if (!res.ok) {
       setErro(
         res.status === 502
-          ? t("O WhatsApp não confirmou a mudança. Nada foi alterado; tente de novo.")
+          ? t(providerLabel === "Telegram" ? "Não foi possível salvar a permissão deste grupo. Tente novamente." : "O WhatsApp não confirmou a mudança. Nada foi alterado; tente de novo.")
           : t("Não foi possível salvar."),
       );
       return;
@@ -228,9 +230,9 @@ export function GruposSheet({
         <SheetHeader>
           <SheetTitle>{t("Grupos")}</SheetTitle>
           <SheetDescription>
-            {t(
-              "Grupos ligados aparecem no chat para os atendentes responderem. A IA nunca responde em grupo.",
-            )}
+            {t(providerLabel === "Telegram"
+              ? "Grupos vistos pelo bot aparecem aqui. O Telegram pode ocultar mensagens enquanto o modo de privacidade estiver ativo. Só grupos habilitados entram na Inbox; a IA nunca responde em grupo."
+              : "Grupos ligados aparecem no chat para os atendentes responderem. A IA nunca responde em grupo.")}
           </SheetDescription>
         </SheetHeader>
 
@@ -292,7 +294,7 @@ export function GruposSheet({
 
           {pendente && (
             <div role="alertdialog" className="rounded-md border p-3 text-sm">
-              <p>{t(AVISO_DE_VOLUME)}</p>
+              <p>{t(providerLabel === "Telegram" ? "O grupo passará a aparecer na Inbox humana. A permissão vale apenas para este bot e organização; a IA não responderá." : AVISO_DE_VOLUME)}</p>
               <div className="mt-2 flex gap-2">
                 <Button
                   size="sm"
@@ -313,7 +315,7 @@ export function GruposSheet({
 
           {confirmarDesligarTodos && (
             <div role="alertdialog" className="rounded-md border p-3 text-sm">
-              <p>{t(AVISO_DE_DESLIGAR_TODOS)}</p>
+              <p>{t(providerLabel === "Telegram" ? "Todos os grupos deste bot deixarão de aparecer na Inbox." : AVISO_DE_DESLIGAR_TODOS)}</p>
               <div className="mt-2 flex gap-2">
                 <Button size="sm" onClick={() => void desligarTodos()}>
                   {t("Desligar todos mesmo assim")}
@@ -330,8 +332,8 @@ export function GruposSheet({
               <p>
                 {confirmarLigarTodos.alvos.length} {t("grupos vão ligar e aparecer no chat.")}
               </p>
-              <p>{t(AVISO_DE_FAMILIA_AO_LIGAR_TODOS)}</p>
-              {confirmarLigarTodos.mostrarAvisoDeVolume && <p>{t(AVISO_DE_VOLUME)}</p>}
+              <p>{t(providerLabel === "Telegram" ? "Confira os grupos selecionados antes de habilitar. A IA nunca responde em grupos." : AVISO_DE_FAMILIA_AO_LIGAR_TODOS)}</p>
+              {confirmarLigarTodos.mostrarAvisoDeVolume && <p>{t(providerLabel === "Telegram" ? "Cada grupo habilitado aparecerá na Inbox humana." : AVISO_DE_VOLUME)}</p>}
               <div className="mt-2 flex gap-2">
                 <Button size="sm" onClick={() => void ligarTodos(confirmarLigarTodos.alvos)}>
                   {t("Ligar todos mesmo assim")}

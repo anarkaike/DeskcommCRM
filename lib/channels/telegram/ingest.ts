@@ -13,7 +13,7 @@ type TelegramMessage = {
   voice?: unknown;
   document?: unknown;
   video?: unknown;
-  chat?: { id?: unknown; type?: unknown };
+  chat?: { id?: unknown; type?: unknown; title?: unknown };
   from?: { id?: unknown; is_bot?: unknown; first_name?: unknown; last_name?: unknown; username?: unknown };
 };
 
@@ -27,11 +27,12 @@ export async function ingestTelegramUpdate(
   const message = input.update.message as TelegramMessage | undefined;
   const from = message?.from;
   const chat = message?.chat;
+  const group = chat?.type === "group" || chat?.type === "supergroup";
   const media = extrairMidiaTelegram(message);
   const text = typeof message?.text === "string" ? message.text
     : typeof message?.caption === "string" ? message.caption : null;
   if (
-    !message || !from || !chat || chat.type !== "private" || from.is_bot === true ||
+    !message || !from || !chat || (chat.type !== "private" && !group) || from.is_bot === true ||
     (!text?.trim() && !media) ||
     (typeof message.message_id !== "number" && typeof message.message_id !== "string") ||
     (typeof from.id !== "number" && typeof from.id !== "string") ||
@@ -65,9 +66,42 @@ export async function ingestTelegramUpdate(
   const userId = String(from.id);
   const chatId = String(chat.id);
   const fullName = [from.first_name, from.last_name].filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ");
-  const identity = `telegram:${userId}`;
+  if (group) {
+    const { data: groupCapability, error: groupCapabilityError } = await admin
+      .from("telegram_bot_surface_capabilities")
+      .select("capability")
+      .eq("organization_id", input.organizationId)
+      .eq("connection_id", input.connectionId)
+      .eq("surface", "inbox")
+      .in("capability", ["group_messages", "receive_messages"]);
+    const granted = new Set((groupCapability ?? []).map((row: { capability: string }) => row.capability));
+    if (groupCapabilityError || !granted.has("group_messages") || !granted.has("receive_messages")) return "ignored";
+    // Discovery is always disabled; preserve any manager's allowlist choice.
+    const title = typeof chat.title === "string" ? chat.title.slice(0, 200) : null;
+    const { error: discoveryError } = await admin.from("channel_session_groups").upsert({
+      organization_id: input.organizationId,
+      channel_session_id: session.id,
+      group_chat_id: chatId,
+      subject: title,
+      enabled: false,
+    }, { onConflict: "organization_id,channel_session_id,group_chat_id", ignoreDuplicates: true });
+    if (discoveryError) throw new Error("telegram_group_discovery_failed");
+    const { data: allowlisted, error: allowlistError } = await admin.from("channel_session_groups")
+      .select("id")
+      .eq("organization_id", input.organizationId)
+      .eq("channel_session_id", session.id)
+      .eq("group_chat_id", chatId)
+      .eq("enabled", true)
+      .maybeSingle();
+    if (allowlistError || !allowlisted) return "ignored";
+  }
+  const identity = group ? `telegram:group:${chatId}` : `telegram:${userId}`;
   const { data: contactId, error: contactError } = await admin.rpc("fn_upsert_telegram_contact" as never, {
-    p_org: input.organizationId, p_identity: identity, p_display_name: fullName || (typeof from.username === "string" ? from.username : null),
+    p_org: input.organizationId,
+    p_identity: identity,
+    p_display_name: group
+      ? (typeof chat.title === "string" ? chat.title : "Grupo Telegram")
+      : fullName || (typeof from.username === "string" ? from.username : null),
   } as never);
   if (contactError || !contactId) throw new Error("telegram_contact_upsert_failed");
 
@@ -76,6 +110,8 @@ export async function ingestTelegramUpdate(
     p_contact: contactId as string,
     p_session: session.id,
     p_provider_conversation_id: chatId,
+    p_is_group: group,
+    p_group_chat_id: group ? chatId : null,
   } as never);
   if (conversationError || !conversationId) throw new Error("telegram_conversation_upsert_failed");
 
@@ -91,10 +127,13 @@ export async function ingestTelegramUpdate(
     text,
     ...(media ? { media } : {}),
     sentAt,
-    contactName: fullName || null,
+    contactName: group ? (typeof chat.title === "string" ? chat.title : "Grupo Telegram") : fullName || null,
     origin: "telegram_webhook",
-    metadata: { telegram_chat_id: chatId, telegram_user_id: userId, telegram_update_id: input.update.update_id },
-    inboxOnly: !aiRepliesEnabled,
+    metadata: {
+      telegram_chat_id: chatId, telegram_user_id: userId, telegram_update_id: input.update.update_id,
+      ...(group ? { group_sender: { name: fullName || (typeof from.username === "string" ? from.username : "Membro do grupo"), phone: null, lid: null } } : {}),
+    },
+    inboxOnly: group || !aiRepliesEnabled,
   };
   return persistirMensagemEntranteNaInbox(admin, event);
 }

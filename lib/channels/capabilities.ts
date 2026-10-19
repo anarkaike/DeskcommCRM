@@ -122,7 +122,9 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     banRisk: false,
     minIntervalMs: null,
     voiceNote: "server-convert",
-    groups: "none",
+    // A Bot API bot cannot enumerate groups. The CRM supports groups observed
+    // through updates, behind a tenant-scoped allowlist.
+    groups: "limited",
     costPerMessage: false,
     alteraMensagemEnviada: false,
     automatedOutbound: false,

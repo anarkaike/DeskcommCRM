@@ -79,4 +79,4 @@ export const telegramConnectionDriver: ChannelConnectionDriver<string> = {
       return { healthy: false, checkedAt, state: "unknown", detailCode: "health_check_failed" };
     }
   },
-};\n
+};

@@ -1,7 +1,7 @@
 # Telegram — primeira fatia funcional
 
-> Estado atualizado em 2026-10-19: cadastro, lifecycle, webhook, Inbox privada para texto/mídia e adapter de saída estão implementados na branch `codex/telegram-vps-compatible`; lifecycle e health agora usam contratos comuns de drivers de conexão, além das portas compartilhadas de mensagem. Ainda falta prova visual ponta a ponta e publicação na VPS. Base de produto: [`../specs/2026-10-17-integracao-telegram-design.md`](../specs/2026-10-17-integracao-telegram-design.md).
-> Esta página registra o recorte atualmente implementado. O núcleo de conexão agora define uma porta de driver, registro explícito e política de lifecycle com grants/health normalizados. Só Inbox privada para texto e mídia tem consumidor de ponta a ponta; grupos, proativo, avisos, casos, ferramentas, Mini Apps, pareamento externo e bot operacional continuam fora do runtime.
+> Estado atualizado em 2026-10-19: cadastro, lifecycle, webhook, Inbox privada e grupos com allowlist para texto/mídia, resposta humana e adapter de saída estão implementados na branch `codex/telegram-vps-compatible`; conexões e mensagens usam drivers, registry e contratos compartilhados. Ainda faltam gates de banco/E2E e publicação na VPS. Base: [`../specs/2026-10-17-integracao-telegram-design.md`](../specs/2026-10-17-integracao-telegram-design.md).
+> Telegram já reutiliza `ChannelAdapter`, `InboundChannelDriver`, `InboundMessageEvent`, persistência compartilhada, registro de drivers e lifecycle comum. A descoberta de grupos é limitada ao que o bot efetivamente recebe; mensagens de grupo ficam bloqueadas até um gerente habilitá-las e sempre entram só na Inbox humana. Proativo, avisos, casos, ferramentas, Mini Apps, pareamento externo e bot operacional continuam fora do runtime.
 
 ## Objetivo desta etapa
 
@@ -12,8 +12,8 @@ Permitir que um administrador do tenant valide e registre vários tokens de bots
 - Criar um domínio próprio de conexões Telegram; não representar bot como sessão WAHA nem presumir que `channel_sessions` não tenha invariantes de telefone e lifecycle.
 - Validar o token pelo `getMe` no servidor antes de persistir. Guardar por `fn_encrypt_oauth`; se a chave de instalação estiver ausente, recusar sem persistência.
 - Armazenar o token cifrado numa tabela service-role-only, isolada por `organization_id`. Rotas de tenant exigem `requireRole("admin")` e filtram a organização em toda operação.
-- Persistir bindings e capacidades de forma tipada e distinta da credencial. Operações de plataforma não pertencem ao tenant e não aparecem como checkbox deste modal.
-- Após `getMe`, criar rascunho e abrir o modal. Perfis de uso são presets editáveis; o padrão é Inbox com resposta humana. IA automática continua desligada por padrão; quando concedida, usa o pipeline existente de autorização e política. Grupos, envio proativo e ferramentas que escrevem permanecem sem consumidor.
+- Persistir bindings e capacidades de forma tipada e distinta da credencial. Operações de plataforma não pertencem ao tenant e não aparecem como checkbox deste modal. Um provider novo implementa os ports de conexão e mensagem e registra seu adapter; persistência e efeitos do CRM continuam no serviço comum.
+- Após `getMe`, criar rascunho e abrir o modal. Perfis de uso são presets editáveis; o padrão é Inbox com resposta humana. IA automática e grupos continuam desligados por padrão; mensagens de grupo requerem capability e allowlist por conversa, nunca acionam IA. Envio proativo e ferramentas que escrevem permanecem sem consumidor.
 - Exibir estados verdadeiros. “Configurado” significa token validado e usos salvos; “ativo” exige webhook registrado e runtime operacional.
 - Não implantar migration nem imagem na VPS nesta etapa sem uma autorização específica para atualizar o ambiente e o banco.
 

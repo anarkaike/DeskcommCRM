@@ -22,7 +22,7 @@ export const runtime = "nodejs";
 
 const surfaceNames = ["inbox"] as const;
 const capabilitiesBySurface = {
-  inbox: ["receive_messages", "human_replies", "ai_replies"],
+  inbox: ["receive_messages", "human_replies", "ai_replies", "group_messages"],
 } as const;
 type Surface = keyof typeof capabilitiesBySurface;
 
@@ -59,6 +59,9 @@ const settingsSchema = z
           context.addIssue({ code: "custom", message: "capability_not_allowed_for_surface" });
         }
       }
+      if (binding.capabilities.includes("group_messages") && !binding.capabilities.includes("receive_messages")) {
+        context.addIssue({ code: "custom", message: "group_messages_requires_receive_messages" });
+      }
     }
   });
 
@@ -86,6 +89,11 @@ export async function GET(): Promise<NextResponse> {
     });
 
   const ids = (rows ?? []).map((row) => row.id);
+  const { data: sessions, error: sessionsError } = ids.length
+    ? await admin.from("channel_sessions").select("telegram_bot_connection_id, id")
+        .eq("organization_id", authz.org.orgId).in("telegram_bot_connection_id", ids)
+    : { data: [], error: null };
+  if (sessionsError) return fail("internal_error", "Não foi possível carregar as sessões Telegram.", 500, { requestId });
   const { data: bindings, error: bindingsError } = ids.length
     ? await admin
         .from("telegram_bot_bindings")
@@ -118,6 +126,7 @@ export async function GET(): Promise<NextResponse> {
     token_last4: row.token_last4,
     status: row.status,
     created_at: row.created_at,
+    channel_session_id: sessions?.find((session) => session.telegram_bot_connection_id === row.id)?.id ?? null,
     bindings: (bindings ?? [])
       .filter((binding) => binding.connection_id === row.id)
       .map((binding) => ({

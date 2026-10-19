@@ -25,4 +25,4 @@ export class ChannelConnectionRegistry {
 
 /** Registro padrão: novos providers são adicionados aqui uma vez. */
 export const CHANNEL_CONNECTIONS = new ChannelConnectionRegistry()
-  .register(telegramConnectionDriver);\n
+  .register(telegramConnectionDriver);
