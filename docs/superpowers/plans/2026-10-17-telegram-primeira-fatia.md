@@ -1,6 +1,6 @@
 # Telegram — primeira fatia funcional
 
-> Plano de implementação da primeira etapa. Base de produto: [`../specs/2026-10-17-integracao-telegram-design.md`](../specs/2026-10-17-integracao-telegram-design.md).
+> Estado medido em 2026-10-19: apenas cadastro/validação de bots foi implementado na branch `codex/telegram-vps-compatible` (commit `52f2e3492`); o runtime não está ativo. Base de produto: [`../specs/2026-10-17-integracao-telegram-design.md`](../specs/2026-10-17-integracao-telegram-design.md).
 > Essa etapa conecta e configura bots; não declara o runtime de mensagens pronto.
 
 ## Objetivo desta etapa
@@ -31,6 +31,44 @@ Permitir que um administrador do tenant valide e registre vários tokens de bots
 2. Pareamento verificável `Telegram User ID → usuário DeskcommCRM` ou `contact`, separado do `chat.id`.
 3. Inbox e respostas humanas; depois avisos, agentes, casos, ferramentas e Mini Apps, cada qual consumindo bindings reais.
 4. Bot de operações da plataforma separado, pareamento de `platform_admin` e escopos de operação auditáveis.
+
+## Estado medido e decisão de arquitetura — 2026-10-19
+
+O deploy da primeira fatia **não** ativa Telegram. A UI mostra corretamente o aviso de que o
+transporte ainda não foi ativado. O runtime precisa de uma etapa arquitetural antes do webhook:
+
+- `channel_sessions.provider` não aceita Telegram; a tabela representa sessões com invariantes
+  de telefone/WAHA e ciclo de vida de canais existentes. Não inserir bots ali como sessões.
+- `conversations.channel` atualmente aceita `whatsapp`, `instagram` e `facebook`, mas toda
+  conversa exige `channel_session_id` com FK para `channel_sessions`.
+- `messages.channel_session_id` também é NOT NULL e referencia `channel_sessions`.
+- O envio central (`app/api/v1/messages/_handler.ts`) carrega sessão e telefone/identidade do
+  contato, seleciona `ChannelAdapter` e usa caminhos de mídia/template; IA, follow-up, casos,
+  roteamento e rotinas de serviço também leem `channel_session_id`.
+- `contacts.social_identity` e `conversations.provider_conversation_id` suportam identificadores
+  opacos/thread id, mas não removem as obrigações de sessão nem os efeitos dos triggers em
+  `messages`.
+- Há triggers de serviço, roteamento, eventos, revisão e demanda ligados à criação de mensagens.
+  Antes de admitir Telegram no ledger compartilhado, é preciso provar quais se aplicam e fazer
+  canais existentes permanecerem invariantes.
+
+### Recorte do primeiro runtime de mensagens
+
+O primeiro marco de tráfego será atendimento tenant em **chat privado**, com entrada autenticada,
+idempotência por bot/update, contato reconhecido por identidade opaca, conversa na Inbox e resposta
+humana de texto pelo mesmo bot. IA, grupos/tópicos, mídia, alertas, casos, ferramentas de agente,
+Mini Apps, Login/OIDC, Telegram Business, pagamentos e operação de plataforma permanecem
+desativados até terem contratos, autorização e testes próprios. “Bot cadastrado” e “Telegram ativo”
+devem ser estados distintos, com teste de ida e volta antes da ativação.
+
+### Bloqueio para publicação na VPS
+
+Em 2026-10-19, o fork remoto `main` está em `e6060a4`; a branch de cadastro está em
+`52f2e3492`, publicada no fork. A VPS `/opt/deskcommcrm` está detached em `1c4716588` (`v1.83.0`),
+com o app numa imagem local `deskcommcrm:telegram-preview-df33c72c0`, worker e scheduler em
+`1.83.0`, `SINGLE_SERVER=1`, Traefik ativo e health HTTP 200. Um backup privado prévio do banco,
+storage e WAHA foi criado em 2026-10-19; nenhum código, banco ou container foi alterado nesta
+auditoria. Atualizar agora só publicaria o formulário de cadastro, não o ciclo de mensagens.
 
 ## Aceitação desta etapa
 

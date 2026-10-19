@@ -300,6 +300,24 @@ As métricas de plataforma devem ser agregadas, com drill-down por tenant soment
 9. Mini App de valor imediato é abrir caso, acompanhar caso, agendamento ou portal de pedidos? Qual tenant/público piloto?
 10. Nível de suporte ao Telegram Business, login e pagamentos que o produto quer assumir e suportar em instalação self-host.
 
+### Decisão registrada na auditoria do fork — 2026-10-19
+
+O primeiro marco de tráfego será atendimento tenant em chat privado: webhook autenticado,
+idempotência, contato por identidade opaca, conversa na Inbox e resposta humana de texto.
+Isso não habilita IA, grupos/tópicos, mídia, avisos, casos, ferramentas de agente, Mini Apps,
+Login/OIDC, Telegram Business, pagamentos ou bot operacional de plataforma; cada capacidade
+precisa de desenho e autorização próprios.
+
+A auditoria do schema confirmou que não se deve modelar bot como `channel_sessions`: essa tabela
+tem invariantes de sessão/telefone e `channel_sessions_provider_check` não aceita Telegram.
+Embora `contacts.social_identity` e `conversations.provider_conversation_id` já existam para
+identificadores opacos e threads de provider, `conversations.channel_session_id` e
+`messages.channel_session_id` permanecem NOT NULL/FK para `channel_sessions`. O envio central,
+triggers e consumidores de IA/serviço também partem da sessão. A etapa de runtime precisa provar
+uma extensão neutra ou uma ponte própria ligada ao Inbox, em vez de fabricar sessão WAHA ou soltar
+a FK sem inventariar os efeitos. Até esse contrato e seus gates estarem prontos, cadastro validado
+permanece `draft/configured`, sem tráfego.
+
 ## Referências oficiais consultadas
 
 - [Telegram Bot API](https://core.telegram.org/bots/api) — webhook, updates, comandos, mensagens e permissões da API.
