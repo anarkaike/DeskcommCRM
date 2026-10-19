@@ -99,12 +99,14 @@ próprios. “Bot cadastrado” e “Telegram ativo” são estados distintos; a
 
 ### Bloqueio para publicação na VPS
 
-Em 2026-10-19, o fork remoto `main` está em `e6060a4`; a branch de cadastro está em
-`52f2e3492`, publicada no fork. A VPS `/opt/deskcommcrm` está detached em `1c4716588` (`v1.83.0`),
-com o app numa imagem local `deskcommcrm:telegram-preview-df33c72c0`, worker e scheduler em
-`1.83.0`, `SINGLE_SERVER=1`, Traefik ativo e health HTTP 200. Um backup privado prévio do banco,
-storage e WAHA foi criado em 2026-10-19; nenhum código, banco ou container foi alterado nesta
-auditoria. Atualizar agora só publicaria o formulário de cadastro, não o ciclo de mensagens.
+Em 2026-10-19, o fork remoto `main` foi observado em `e6060a4`; a branch
+`codex/telegram-vps-compatible` está publicada no fork `origin` até `47c9e44b0`. A VPS
+`/opt/deskcommcrm` foi observada detached em `1c4716588` (`v1.83.0`), com o app numa imagem local
+`deskcommcrm:telegram-preview-df33c72c0`, worker e scheduler em `1.83.0`, `SINGLE_SERVER=1`,
+Traefik ativo e health HTTP 200. Um backup privado prévio do banco, storage e WAHA foi criado em
+2026-10-19. Essa é a última leitura operacional registrada; esta rodada não alterou banco nem
+container. O runtime atual ainda precisa de prova visual e de ida/volta real antes da VPS ser
+atualizada.
 
 ## Aceitação atual do runtime privado
 
