@@ -1,7 +1,7 @@
 # Telegram — primeira fatia funcional
 
-> Estado atualizado em 2026-10-19: cadastro, lifecycle, webhook, Inbox privada para texto/mídia e adapter de saída estão implementados localmente na branch `codex/telegram-vps-compatible`; ainda sem prova visual ponta a ponta ou publicação na VPS. Os contratos inbound e outbound reutilizam as portas comuns de canais. Base de produto: [`../specs/2026-10-17-integracao-telegram-design.md`](../specs/2026-10-17-integracao-telegram-design.md).
-> Esta página registra o primeiro recorte de implementação; os recursos avançados listados como pendentes permanecem fora do runtime.
+> Estado atualizado em 2026-10-19: cadastro, lifecycle, webhook, Inbox privada para texto/mídia e adapter de saída estão implementados na branch `codex/telegram-vps-compatible`; lifecycle e health agora usam contratos comuns de drivers de conexão, além das portas compartilhadas de mensagem. Ainda falta prova visual ponta a ponta e publicação na VPS. Base de produto: [`../specs/2026-10-17-integracao-telegram-design.md`](../specs/2026-10-17-integracao-telegram-design.md).
+> Esta página registra o recorte atualmente implementado. O núcleo de conexão agora define uma porta de driver, registro explícito e política de lifecycle com grants/health normalizados. Só Inbox privada para texto e mídia tem consumidor de ponta a ponta; grupos, proativo, avisos, casos, ferramentas, Mini Apps, pareamento externo e bot operacional continuam fora do runtime.
 
 ## Objetivo desta etapa
 

@@ -15,17 +15,14 @@ import {
 } from "@/lib/channels/telegram/bot-api";
 import { basePublicaDaInstalacao } from "@/lib/webhooks/url-publica";
 import { atualizarEstadoDaSessaoTelegram, prepararSessaoTelegram } from "@/lib/channels/telegram/session";
+import { CHANNEL_CONNECTIONS, createConnectionLifecycle } from "@/lib/channels";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const surfaceNames = ["inbox", "team_alerts", "human_cases", "agent_tools", "mini_app"] as const;
+const surfaceNames = ["inbox"] as const;
 const capabilitiesBySurface = {
-  inbox: ["receive_messages", "human_replies", "ai_replies", "proactive_send", "group_messages"],
-  team_alerts: ["send_alerts"],
-  human_cases: ["read_cases", "reply_to_cases"],
-  agent_tools: ["tool_read", "tool_write"],
-  mini_app: ["mini_app_access"],
+  inbox: ["receive_messages", "human_replies", "ai_replies"],
 } as const;
 type Surface = keyof typeof capabilitiesBySurface;
 
@@ -292,8 +289,6 @@ async function manageLifecycle(input: {
     return fail("not_found", "Esse bot não foi encontrado nesta organização.", 404, { requestId: input.requestId });
 
   if (input.action === "activate" || input.action === "reactivate") {
-    if (connection.status === "active")
-      return fail("state_conflict", "Esse bot já está ativo no Telegram.", 409, { requestId: input.requestId });
     const token = await decryptWebhookSecret(admin, String(connection.token_encrypted));
     if (!token)
       return fail("unprocessable_entity", "Não foi possível abrir a credencial cifrada deste bot.", 422, { requestId: input.requestId });
@@ -310,9 +305,45 @@ async function manageLifecycle(input: {
     if (!capabilities.has("receive_messages") || (!capabilities.has("human_replies") && !capabilities.has("ai_replies")))
       return fail("state_conflict", "Configure o recebimento e ao menos um tipo de resposta na Inbox antes de ativar o bot.", 409, { requestId: input.requestId });
 
-    const identity = await validateTelegramBotToken(token);
-    if (!identity || identity.id !== connection.telegram_bot_id)
+    const driver = CHANNEL_CONNECTIONS.get("telegram");
+    const lifecycle = createConnectionLifecycle(driver);
+    const identity = await lifecycle.validate(token);
+    if (!identity || identity.providerAccountId !== connection.telegram_bot_id)
       return fail("invalid_credentials", "O token não é mais válido para este bot.", 422, { requestId: input.requestId });
+    const { data: allCapabilities, error: allCapabilitiesError } = await admin
+      .from("telegram_bot_surface_capabilities")
+      .select("surface, capability")
+      .eq("organization_id", input.organizationId)
+      .eq("connection_id", input.connection_id);
+    if (allCapabilitiesError)
+      return fail("internal_error", "Não foi possível validar as permissões deste bot.", 500, { requestId: input.requestId });
+    const record = {
+      provider: "telegram" as const,
+      status: connection.status as "draft" | "configured" | "active" | "paused" | "disconnected" | "error" | "deleted",
+      grants: Object.values((allCapabilities ?? []).reduce<Record<string, { surface: string; capabilities: string[] }>>((map, row) => {
+        const binding = map[row.surface] ?? { surface: row.surface, capabilities: [] as string[] };
+        (binding.capabilities as string[]).push(row.capability);
+        map[row.surface] = binding;
+        return map;
+      }, {})),
+    };
+    const context = {
+      organizationId: input.organizationId,
+      connectionId: input.connection_id,
+      actorUserId: input.actorUserId,
+      expectedAccountId: connection.telegram_bot_id,
+    };
+    const lifecycleDecision = await lifecycle.activate(context, record, [
+      { surface: "inbox", capability: "receive_messages" },
+    ]);
+    if (!lifecycleDecision.allowed) {
+      const message = lifecycleDecision.reason === "already_active"
+        ? "Esse bot já está ativo no Telegram."
+        : lifecycleDecision.reason === "missing_required_grant"
+          ? "Configure o recebimento e ao menos um tipo de resposta na Inbox antes de ativar o bot."
+          : "Este bot não pode ser ativado no estado atual.";
+      return fail("state_conflict", message, 409, { requestId: input.requestId });
+    }
     const pathToken = randomBytes(32).toString("base64url");
     const webhookSecret = randomBytes(32).toString("base64url");
     const encryptedSecret = await encryptWebhookSecret(admin, webhookSecret);
@@ -411,7 +442,31 @@ async function manageLifecycle(input: {
 
   if (token && (connection.status === "active" || connection.webhook_path_token)) {
     try {
-      await deleteTelegramWebhook(token);
+      const lifecycle = createConnectionLifecycle(CHANNEL_CONNECTIONS.get("telegram"));
+      const { data: allCapabilities } = await admin.from("telegram_bot_surface_capabilities")
+        .select("surface, capability")
+        .eq("organization_id", input.organizationId)
+        .eq("connection_id", input.connection_id);
+      const record = {
+        provider: "telegram" as const,
+        status: connection.status as "draft" | "configured" | "active" | "paused" | "disconnected" | "error" | "deleted",
+        grants: Object.values((allCapabilities ?? []).reduce<Record<string, { surface: string; capabilities: string[] }>>((map, row) => {
+          const binding = map[row.surface] ?? { surface: row.surface, capabilities: [] as string[] };
+          (binding.capabilities as string[]).push(row.capability);
+          map[row.surface] = binding;
+          return map;
+        }, {})),
+      };
+      const context = {
+        organizationId: input.organizationId,
+        connectionId: input.connection_id,
+        actorUserId: input.actorUserId,
+        expectedAccountId: connection.telegram_bot_id,
+      };
+      const deactivateDecision = await lifecycle.deactivate(context, record, input.action as "pause" | "disconnect" | "delete");
+      if (!deactivateDecision.allowed) {
+        return fail("state_conflict", "A conexão não pode ser alterada no estado atual.", 409, { requestId: input.requestId });
+      }
     } catch {
       return fail("upstream_error", "Não foi possível remover o webhook no Telegram; o estado foi mantido.", 502, { requestId: input.requestId });
     }

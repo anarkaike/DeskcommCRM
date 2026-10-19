@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useT } from "@/hooks/i18n/useT";
 import { apiClient } from "@/lib/api/client";
-import { Bell, ChatCircle, Gear, PaperPlaneTilt, Plus, Robot, UsersThree } from "@/lib/ui/icons";
+import { ChatCircle, Gear, PaperPlaneTilt, Plus, Robot } from "@/lib/ui/icons";
 
 type Surface = "inbox" | "team_alerts" | "human_cases" | "agent_tools" | "mini_app";
 type Binding = { surface: Surface; capabilities: string[] };
@@ -73,82 +73,6 @@ const SURFACES: SurfaceOption[] = [
         title: "Respostas automáticas de IA",
         detail: "A IA poderá enviar respostas neste canal.",
       },
-      {
-        key: "proactive_send",
-        title: "Envio proativo",
-        detail: "Permitir mensagens iniciadas pela equipe ou automações.",
-      },
-      {
-        key: "group_messages",
-        title: "Mensagens em grupos",
-        detail: "Incluir grupos e comunidades no atendimento.",
-      },
-    ],
-  },
-  {
-    key: "team_alerts",
-    title: "Avisos da equipe",
-    detail: "Reservar este bot para notificações internas.",
-    icon: Bell,
-    capabilities: [
-      {
-        key: "send_alerts",
-        title: "Enviar avisos",
-        detail: "A equipe poderá receber notificações por este bot.",
-        defaultOn: true,
-      },
-    ],
-  },
-  {
-    key: "human_cases",
-    title: "Casos humanos",
-    detail: "Relacionar conversas ao fluxo de casos da equipe.",
-    icon: UsersThree,
-    capabilities: [
-      {
-        key: "read_cases",
-        title: "Consultar casos",
-        detail: "Permitir leitura de casos conforme o acesso do usuário.",
-        defaultOn: true,
-      },
-      {
-        key: "reply_to_cases",
-        title: "Responder casos",
-        detail: "Permitir respostas humanas em casos vinculados.",
-      },
-    ],
-  },
-  {
-    key: "agent_tools",
-    title: "Ferramentas de agente",
-    detail: "Conceder ferramentas explicitamente a agentes de IA.",
-    icon: Robot,
-    capabilities: [
-      {
-        key: "tool_read",
-        title: "Ferramentas de leitura",
-        detail: "Agentes poderão consultar recursos Telegram autorizados.",
-        defaultOn: true,
-      },
-      {
-        key: "tool_write",
-        title: "Ferramentas de escrita",
-        detail: "Agentes poderão executar ações de escrita autorizadas.",
-      },
-    ],
-  },
-  {
-    key: "mini_app",
-    title: "Mini App ou portal do cliente",
-    detail: "Associar o bot a uma experiência web dentro do Telegram.",
-    icon: PaperPlaneTilt,
-    capabilities: [
-      {
-        key: "mini_app_access",
-        title: "Abrir Mini App",
-        detail: "Permitir acesso à aplicação web Telegram deste tenant.",
-        defaultOn: true,
-      },
     ],
   },
 ];
@@ -158,10 +82,7 @@ type Selection = Record<Surface, string[]>;
 function padraoInicial(): Selection {
   return {
     inbox: ["receive_messages", "human_replies"],
-    team_alerts: [],
-    human_cases: [],
-    agent_tools: [],
-    mini_app: [],
+    team_alerts: [], human_cases: [], agent_tools: [], mini_app: [],
   };
 }
 

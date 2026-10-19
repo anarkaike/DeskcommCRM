@@ -18,7 +18,7 @@
   "nodes": [
     { "id": "connections", "lane": "operador", "col": 1, "type": "frontend", "label": "Conexões / finalidade do bot" },
     { "id": "api", "lane": "servidor", "col": 2, "type": "route", "label": "API tenant-scoped: validar, ligar, pausar" },
-    { "id": "registry", "lane": "banco", "col": 3, "type": "database", "label": "Registry de bot / tenant / capabilities / bindings" },
+    { "id": "registry", "lane": "servidor", "col": 3, "type": "service", "label": "Registry tipado + lifecycle comum de conexões" },
     { "id": "webhook", "lane": "servidor", "col": 4, "type": "service", "label": "Webhook autenticado + deduplicação + adapter" },
     { "id": "telegramDriver", "lane": "servidor", "col": 5, "type": "service", "label": "Driver Telegram: protocolo, identidade e destino" },
     { "id": "inboundPort", "lane": "servidor", "col": 6, "type": "service", "label": "Porta inbound + mensagem normalizada + efeitos compartilhados" },
@@ -31,8 +31,8 @@
   ],
   "edges": [
     { "id": "e1", "from": "connections", "to": "api", "label": "manager configura finalidade" },
-    { "id": "e2", "from": "api", "to": "registry", "label": "persiste com escopo do tenant e segredo cifrado" },
-    { "id": "e3", "from": "registry", "to": "webhook", "label": "resolve bot e tenant por token forte" },
+    { "id": "e2", "from": "api", "to": "registry", "label": "aplica policy de estados e grants compartilhada" },
+    { "id": "e3", "from": "registry", "to": "telegramDriver", "label": "encaminha operação para driver do provider" },
     { "id": "e4", "from": "telegram", "to": "webhook", "label": "update autenticado" },
     { "id": "e5", "from": "webhook", "to": "telegramDriver", "label": "fila despachada pelo registro inbound" },
     { "id": "e12", "from": "telegramDriver", "to": "inboundPort", "label": "InboundMessageEvent com identidade, conversa e mídia resolvidas" },
@@ -40,6 +40,7 @@
     { "id": "e6", "from": "inbox", "to": "agent", "label": "binding e política do bot selecionam runtime" },
     { "id": "e7", "from": "agent", "to": "telegram", "label": "outbound pelo adapter e bot de origem" },
     { "id": "e8", "from": "api", "to": "audit", "label": "mudanças e recusas com actor/tenant/correlation id" },
+    { "id": "e14", "from": "telegramDriver", "to": "audit", "label": "health normalizada e falha sanitizada" },
     { "id": "e9", "from": "audit", "to": "admin", "label": "agregados operacionais com acesso de plataforma" },
     { "id": "e10", "from": "miniapp", "to": "api", "label": "dados assinados verificados antes de autenticar" },
     { "id": "e11", "from": "admin", "to": "api", "label": "suporte e ações globais usam guard de platform admin" }

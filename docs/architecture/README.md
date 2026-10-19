@@ -17,7 +17,7 @@ ser fonte sem ninguém decidir isso.
 | arquivo | escopo |
 |---|---|
 | `nomes-internos-das-conexoes.architecture.json` | renomeação interna dos canais — cartões de WhatsApp, parceiro e redes sociais → rota tenant-aware → `channel_sessions.display_name` → cartões e seletores, com auditoria e sem alterar o nome público no provedor |
-| `telegram-integracao.architecture.json` | Telegram em runtime parcial: driver de webhook separado, registro inbound, evento normalizado reutilizável, persistência compartilhada de texto/mídia na Inbox e envio pelo `ChannelAdapter`; outras superfícies continuam no plano |
+| `telegram-integracao.architecture.json` | Telegram na Inbox privada, com mídia, lifecycle/health por portas comuns de conexão e mensagem; outras superfícies continuam no plano |
 | `conversoes-de-anuncios.architecture.json` | venda, entrega, protocolo assíncrono, pendências e reprocessamento |
 | `prospeccao-nativa.architecture.json` | busca comercial, fila gradual, configuração conversacional persistente, sandbox e assistente de voz opcional |
 | `pre-go-live-whatsapp.architecture.json` | modo de teste por canal (issue #573): configuração administrativa, gate compartilhado, releitura no envio e validação pelo Inbox |

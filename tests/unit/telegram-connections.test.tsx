@@ -143,8 +143,11 @@ describe("conexões Telegram", () => {
     expect(screen.getByRole("checkbox", { name: /Atendimento na Inbox/ })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: /Respostas humanas/ })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: /Respostas automáticas de IA/ })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: /Mensagens em grupos/ })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: /Envio proativo/ })).not.toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: /Mensagens em grupos/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /Envio proativo/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /Avisos da equipe/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /Ferramentas de agente/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /Mini App/ })).not.toBeInTheDocument();
     expect(screen.getByText(/recebe mensagens de texto em conversas privadas/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Salvar configurações" }));

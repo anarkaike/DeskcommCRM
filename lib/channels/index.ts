@@ -44,6 +44,16 @@ export {
   transportaMensagem,
 } from "./capabilities";
 export { CHANNEL_SESSION_REF_COLUMNS, resolveSessionRef } from "./session-ref";
+export { CHANNEL_CONNECTIONS, ChannelConnectionRegistry } from "./connection-registry";
+export { createConnectionLifecycle, decideConnectionLifecycle } from "./connection-lifecycle";
+export type {
+  ChannelConnectionContext,
+  ChannelConnectionDriver,
+  ChannelConnectionHealth,
+  ChannelConnectionIdentity,
+  ChannelConnectionRecord,
+  ChannelConnectionStatus,
+} from "./connection-types";
 export type { ChannelSessionRef } from "./session-ref";
 export type {
   ChannelAdapter,

@@ -6,6 +6,7 @@ const h = vi.hoisted(() => ({
     id: "connection-1",
     status: "active",
     token_encrypted: "ciphertext",
+    telegram_bot_id: "123456",
     webhook_path_token: "path-secret-123456789012345678901234567890",
   },
   role: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 
 import { GET } from "./route";
+import { telegramConnectionDriver } from "@/lib/channels/telegram/connection-driver";
 
 describe("Telegram webhook health route", () => {
   beforeEach(() => {
@@ -44,6 +46,9 @@ describe("Telegram webhook health route", () => {
       hasCustomCertificate: false,
       maxConnections: 40,
       allowedUpdates: ["message"],
+    });
+    vi.spyOn(telegramConnectionDriver, "validateCredential").mockResolvedValue({
+      providerAccountId: "123456", username: "clinica_bot", displayName: "Atendimento",
     });
   });
 
