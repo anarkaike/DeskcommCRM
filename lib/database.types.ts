@@ -34,6 +34,42 @@ export type Database = {
   }
   public: {
     Tables: {
+      telegram_bot_connections: {
+        Row: {
+          id: string; organization_id: string; telegram_bot_id: string; bot_username: string | null;
+          display_name: string; token_encrypted: string; token_last4: string; status: string;
+          created_by: string | null; updated_by: string | null; created_at: string; updated_at: string;
+        };
+        Insert: {
+          id?: string; organization_id: string; telegram_bot_id: string; bot_username?: string | null;
+          display_name: string; token_encrypted: string; token_last4: string; status?: string;
+          created_by?: string | null; updated_by?: string | null; created_at?: string; updated_at?: string;
+        };
+        Update: {
+          id?: string; organization_id?: string; telegram_bot_id?: string; bot_username?: string | null;
+          display_name?: string; token_encrypted?: string; token_last4?: string; status?: string;
+          created_by?: string | null; updated_by?: string | null; created_at?: string; updated_at?: string;
+        };
+        Relationships: [
+          { foreignKeyName: "telegram_bot_connections_organization_id_fkey"; columns: ["organization_id"]; isOneToOne: false; referencedRelation: "organizations"; referencedColumns: ["id"] },
+        ];
+      };
+      telegram_bot_bindings: {
+        Row: { id: string; organization_id: string; connection_id: string; surface: string; created_by: string | null; updated_by: string | null; created_at: string; updated_at: string };
+        Insert: { id?: string; organization_id: string; connection_id: string; surface: string; created_by?: string | null; updated_by?: string | null; created_at?: string; updated_at?: string };
+        Update: { id?: string; organization_id?: string; connection_id?: string; surface?: string; created_by?: string | null; updated_by?: string | null; created_at?: string; updated_at?: string };
+        Relationships: [
+          { foreignKeyName: "telegram_bot_bindings_connection_org_fk"; columns: ["organization_id", "connection_id"]; isOneToOne: false; referencedRelation: "telegram_bot_connections"; referencedColumns: ["organization_id", "id"] },
+        ];
+      };
+      telegram_bot_surface_capabilities: {
+        Row: { id: string; organization_id: string; connection_id: string; surface: string; capability: string; created_by: string | null; created_at: string };
+        Insert: { id?: string; organization_id: string; connection_id: string; surface: string; capability: string; created_by?: string | null; created_at?: string };
+        Update: { id?: string; organization_id?: string; connection_id?: string; surface?: string; capability?: string; created_by?: string | null; created_at?: string };
+        Relationships: [
+          { foreignKeyName: "telegram_bot_surface_capabilities_binding_fk"; columns: ["organization_id", "connection_id", "surface"]; isOneToOne: false; referencedRelation: "telegram_bot_bindings"; referencedColumns: ["organization_id", "connection_id", "surface"] },
+        ];
+      };
       channel_integrations: {
         Row: { organization_id: string; profile_id: string; credential_encrypted: string; created_at: string; updated_at: string }
         Insert: { organization_id: string; profile_id: string; credential_encrypted: string; created_at?: string; updated_at?: string }
@@ -10299,6 +10335,10 @@ export type Database = {
       }
     }
     Functions: {
+      fn_telegram_bot_save_bindings: {
+        Args: { p_organization_id: string; p_connection_id: string; p_bindings: Json; p_actor_user_id: string }
+        Returns: boolean
+      }
       fn_authorize_ai_form_capture: {
         Args: { p_organization_id: string; p_source_id: string; p_lead_id: string; p_contact_id: string; p_request_id: string; p_ttl_ms: number }
         Returns: boolean

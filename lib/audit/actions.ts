@@ -1150,6 +1150,10 @@ export const AUDIT_ACTIONS = [
   // `removidas` no metadata) ou dentro do `template.deleted`, que são os atos
   // em que a imagem sai de fato.
   "template.media_added",
+  /** Tenant administrator registered and validated an independent Telegram bot token. */
+  "telegram.bot_connected",
+  /** Tenant administrator changed the surfaces/capabilities reserved for a Telegram bot. */
+  "telegram.bot_settings_updated",
 ] as const;
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Integração Telegram proposta",
+    "subtitle": "Bots, capabilities e placements com isolamento de tenant",
+    "output": "telegram-integracao.html",
+    "quality_profile": "standard",
+    "status": "proposed"
+  },
+  "lanes": [
+    { "id": "operador", "label": "Tenant / Plataforma" },
+    { "id": "servidor", "label": "Aplicação" },
+    { "id": "banco", "label": "Persistência" },
+    { "id": "telegram", "label": "Telegram" }
+  ],
+  "mainPath": ["connections", "api", "registry", "webhook", "inbox", "agent"],
+  "nodes": [
+    { "id": "connections", "lane": "operador", "col": 1, "type": "frontend", "label": "Conexões / finalidade do bot" },
+    { "id": "api", "lane": "servidor", "col": 2, "type": "route", "label": "API tenant-scoped: validar, ligar, pausar" },
+    { "id": "registry", "lane": "banco", "col": 3, "type": "database", "label": "Registry de bot / tenant / capabilities / bindings" },
+    { "id": "webhook", "lane": "servidor", "col": 4, "type": "service", "label": "Webhook autenticado + deduplicação + adapter" },
+    { "id": "telegram", "lane": "telegram", "col": 5, "type": "external", "label": "Bot API / updates e mensagens" },
+    { "id": "inbox", "lane": "operador", "col": 5, "type": "frontend", "label": "Inbox / conversas e casos" },
+    { "id": "agent", "lane": "servidor", "col": 6, "type": "service", "label": "Runtime / policy / ferramentas autorizadas" },
+    { "id": "audit", "lane": "banco", "col": 6, "type": "database", "label": "Audit / entrega / estado de saúde" },
+    { "id": "admin", "lane": "operador", "col": 7, "type": "frontend", "label": "Console de plataforma / tenant e incidentes" },
+    { "id": "miniapp", "lane": "telegram", "col": 7, "type": "external", "label": "Mini App / initData validado pelo servidor" }
+  ],
+  "edges": [
+    { "id": "e1", "from": "connections", "to": "api", "label": "manager configura finalidade" },
+    { "id": "e2", "from": "api", "to": "registry", "label": "persiste com escopo do tenant e segredo cifrado" },
+    { "id": "e3", "from": "registry", "to": "webhook", "label": "resolve bot e tenant por token forte" },
+    { "id": "e4", "from": "telegram", "to": "webhook", "label": "update autenticado" },
+    { "id": "e5", "from": "webhook", "to": "inbox", "label": "ingest idempotente na conversa correta" },
+    { "id": "e6", "from": "inbox", "to": "agent", "label": "binding e política do bot selecionam runtime" },
+    { "id": "e7", "from": "agent", "to": "telegram", "label": "outbound pelo adapter e bot de origem" },
+    { "id": "e8", "from": "api", "to": "audit", "label": "mudanças e recusas com actor/tenant/correlation id" },
+    { "id": "e9", "from": "audit", "to": "admin", "label": "agregados operacionais com acesso de plataforma" },
+    { "id": "e10", "from": "miniapp", "to": "api", "label": "dados assinados verificados antes de autenticar" },
+    { "id": "e11", "from": "admin", "to": "api", "label": "suporte e ações globais usam guard de platform admin" }
+  ]
+}
