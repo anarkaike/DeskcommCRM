@@ -19,6 +19,11 @@ import { lastLine, sql } from "./gov-helpers";
 // args dummy bastam. A assinatura exata é a que o revoke/regprocedure exige.
 const DEFINER_WRITE_FNS: ReadonlyArray<readonly [string, string, string]> = [
   [
+    "fn_upsert_telegram_conversation",
+    "public.fn_upsert_telegram_conversation(null::uuid, null::uuid, null::uuid, null::text)",
+    "public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text)",
+  ],
+  [
     "fn_upsert_wa_contact",
     "public.fn_upsert_wa_contact(null::uuid, null::text, null::text, null::text, null::text, null::text)",
     "public.fn_upsert_wa_contact(uuid, text, text, text, text, text)",

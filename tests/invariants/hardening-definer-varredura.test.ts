@@ -409,6 +409,7 @@ describe("varredura: SECURITY DEFINER de public não fica exposta", () => {
     // Sem este caso, revogar de TODO MUNDO passaria nos três primeiros — o
     // jeito trivial de deixar a varredura verde é quebrar a ingestão.
     const escrita = [
+      "public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text)",
       "public.fn_upsert_wa_contact(uuid, text, text, text, text, text)",
       "public.fn_upsert_wa_conversation(uuid, uuid, uuid)",
       "public.fn_mark_conversation_message(uuid, text, text, timestamptz)",

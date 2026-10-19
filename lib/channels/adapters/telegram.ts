@@ -15,7 +15,12 @@ export const telegramAdapter: ChannelAdapter = {
   isConfigured: () => true,
   codes: { notConfigured: NOT_CONFIGURED, sendFailed: "telegram_send_failed", unknownError: "telegram_unknown" },
   async send(envelope: OutboundEnvelope): Promise<{ externalId: string | null }> {
-    if (envelope.actorType !== "user") throw new Error("telegram_human_reply_only");
+    const capability = envelope.actorType === "user"
+      ? "human_replies"
+      : envelope.actorType === "agent"
+        ? "ai_replies"
+        : null;
+    if (!capability) throw new Error("telegram_sender_not_allowed");
     if (envelope.kind !== "text") throw new Error("telegram_unsupported_message_type");
     const admin = createAdminClient();
     const { data, error } = await admin
@@ -30,7 +35,7 @@ export const telegramAdapter: ChannelAdapter = {
       .eq("organization_id", envelope.organizationId)
       .eq("connection_id", envelope.sessionRef)
       .eq("surface", "inbox")
-      .eq("capability", "human_replies")
+      .eq("capability", capability)
       .maybeSingle();
     if (permissionError || !permission) throw new Error("telegram_reply_not_enabled");
     const token = await decryptWebhookSecret(admin, String(data.token_encrypted));

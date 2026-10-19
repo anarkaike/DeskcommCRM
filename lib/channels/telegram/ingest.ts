@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { aplicarEfeitosPosEntrada } from "@/lib/channels/pos-entrada";
-import { marcarConversaComMensagem } from "@/lib/channels/marcar-conversa";
+import { persistirTextoEntranteNaInbox } from "@/lib/channels/inbound/persistir-texto";
+import type { InboundTextEvent } from "@/lib/channels/inbound/types";
+import { ARCHIVED_AT, queryTolerantToMissingArchived } from "@/lib/channels/archived";
 
 type TelegramMessage = {
   message_id?: unknown;
@@ -28,13 +29,29 @@ export async function ingestTelegramUpdate(
     (typeof chat.id !== "number" && typeof chat.id !== "string")
   ) return "ignored";
 
-  const { data: session, error: sessionError } = await admin.from("channel_sessions")
+  const sessionQuery = () => admin.from("channel_sessions")
     .select("id, status")
     .eq("organization_id", input.organizationId)
-    .eq("telegram_bot_connection_id", input.connectionId)
-    .maybeSingle();
+    .eq("telegram_bot_connection_id", input.connectionId);
+  const { data: session, error: sessionError } = await queryTolerantToMissingArchived(
+    () => sessionQuery().is(ARCHIVED_AT, null).maybeSingle(),
+    () => sessionQuery().maybeSingle(),
+  );
   if (sessionError) throw new Error("telegram_session_lookup_failed");
   if (!session || session.status !== "WORKING") return "ignored";
+
+  // O binding ai_replies habilita o pipeline comum do CRM, que ainda aplica
+  // autorização do contato, gates e políticas antes de qualquer resposta.
+  // Erro de leitura falha fechado: conserva a mensagem na Inbox humana.
+  const { data: aiCapability, error: aiCapabilityError } = await admin
+    .from("telegram_bot_surface_capabilities")
+    .select("id")
+    .eq("organization_id", input.organizationId)
+    .eq("connection_id", input.connectionId)
+    .eq("surface", "inbox")
+    .eq("capability", "ai_replies")
+    .maybeSingle();
+  const aiRepliesEnabled = !aiCapabilityError && Boolean(aiCapability);
 
   const userId = String(from.id);
   const chatId = String(chat.id);
@@ -46,48 +63,28 @@ export async function ingestTelegramUpdate(
   if (contactError || !contactId) throw new Error("telegram_contact_upsert_failed");
 
   const { data: conversationId, error: conversationError } = await admin.rpc("fn_upsert_telegram_conversation" as never, {
-    p_org: input.organizationId, p_contact: contactId as string, p_session: session.id,
+    p_org: input.organizationId,
+    p_contact: contactId as string,
+    p_session: session.id,
+    p_provider_conversation_id: chatId,
   } as never);
   if (conversationError || !conversationId) throw new Error("telegram_conversation_upsert_failed");
 
   const sentAt = new Date((typeof message.date === "number" ? message.date : Math.floor(Date.now() / 1000)) * 1000).toISOString();
   const externalId = `telegram:${input.connectionId}:${chatId}:${String(message.message_id)}`;
-  const { data: inserted, error: messageError } = await admin.from("messages").insert({
-    organization_id: input.organizationId,
-    conversation_id: conversationId as string,
-    channel_session_id: session.id,
-    contact_id: contactId as string,
-    external_id: externalId,
-    type: "text",
-    direction: "inbound",
-    status: "delivered",
-    sent_via: "external_device",
-    body: message.text.trim(),
-    sent_at: sentAt,
-    metadata: { telegram_chat_id: chatId, telegram_user_id: userId, telegram_update_id: input.update.update_id },
-  }).select("id").maybeSingle();
-  if (messageError?.code === "23505") return "duplicate";
-  if (messageError || !inserted) throw new Error("telegram_message_insert_failed");
-
-  await marcarConversaComMensagem(admin, {
+  const event: InboundTextEvent = {
     organizationId: input.organizationId,
-    conversationId: conversationId as string,
-    direction: "inbound",
-    preview: message.text.trim().slice(0, 120),
-    at: sentAt,
-    canal: "telegram",
-  });
-  await aplicarEfeitosPosEntrada(admin, {
-    organizationId: input.organizationId,
+    channel: "telegram",
+    channelSessionId: session.id,
     contactId: contactId as string,
     conversationId: conversationId as string,
-    messageId: (inserted as { id: string }).id,
-    channelSessionId: session.id,
-    texto: message.text.trim(),
-    nomeDoContato: fullName || null,
-    origem: "telegram_webhook",
-    canal: "telegram",
-    apenasInbox: true,
-  });
-  return "ingested";
+    externalId,
+    text: message.text,
+    sentAt,
+    contactName: fullName || null,
+    origin: "telegram_webhook",
+    metadata: { telegram_chat_id: chatId, telegram_user_id: userId, telegram_update_id: input.update.update_id },
+    inboxOnly: !aiRepliesEnabled,
+  };
+  return persistirTextoEntranteNaInbox(admin, event);
 }

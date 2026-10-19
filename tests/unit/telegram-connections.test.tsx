@@ -145,7 +145,7 @@ describe("conexões Telegram", () => {
     expect(screen.getByRole("checkbox", { name: /Respostas automáticas de IA/ })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: /Mensagens em grupos/ })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: /Envio proativo/ })).not.toBeChecked();
-    expect(screen.getByText(/recebe mensagens de texto em conversas privadas no Inbox/i)).toBeInTheDocument();
+    expect(screen.getByText(/recebe mensagens de texto em conversas privadas/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Salvar configurações" }));
     await waitFor(() =>
@@ -157,5 +157,77 @@ describe("conexões Telegram", () => {
         }),
       ),
     );
+  });
+
+  it("expõe e aciona as transições de ativar, pausar, reativar, desconectar e excluir", async () => {
+    const user = userEvent.setup();
+    const bot = {
+      id: "connection-1",
+      telegram_bot_id: "123456",
+      bot_username: "clinica_bot",
+      display_name: "Atendimento",
+      token_last4: "6789",
+      status: "configured" as "configured" | "active" | "paused" | "disconnected" | "deleted",
+      created_at: "2026-10-17T12:00:00Z",
+      bindings: [{ surface: "inbox" as const, capabilities: ["receive_messages", "human_replies"] }],
+    };
+    const response = async () => ({ data: { bots: bot.status === "deleted" ? [] : [{ ...bot }] } });
+    api.get.mockImplementation(response);
+    api.patch.mockImplementation(async (_path: string, body: { action?: string }) => {
+      const nextStatus = ({
+        activate: "active",
+        pause: "paused",
+        reactivate: "active",
+        disconnect: "disconnected",
+        delete: "deleted",
+      } as const)[body.action as "activate"];
+      if (nextStatus) bot.status = nextStatus;
+      return { data: { status: bot.status } };
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<TelegramConnectionsClient />);
+
+    await user.click(await screen.findByRole("button", { name: "Ativar" }));
+    await waitFor(() => expect(api.patch).toHaveBeenLastCalledWith("/api/v1/channels/telegram", {
+      action: "activate", connection_id: "connection-1",
+    }));
+    await user.click(await screen.findByRole("button", { name: "Pausar" }));
+    await waitFor(() => expect(api.patch).toHaveBeenLastCalledWith("/api/v1/channels/telegram", {
+      action: "pause", connection_id: "connection-1",
+    }));
+    await user.click(await screen.findByRole("button", { name: "Reativar" }));
+    await waitFor(() => expect(api.patch).toHaveBeenLastCalledWith("/api/v1/channels/telegram", {
+      action: "reactivate", connection_id: "connection-1",
+    }));
+    await user.click(await screen.findByRole("button", { name: "Desconectar" }));
+    await waitFor(() => expect(api.patch).toHaveBeenLastCalledWith("/api/v1/channels/telegram", {
+      action: "disconnect", connection_id: "connection-1",
+    }));
+    await user.click(await screen.findByRole("button", { name: "Reativar" }));
+    await waitFor(() => expect(api.patch).toHaveBeenLastCalledWith("/api/v1/channels/telegram", {
+      action: "reactivate", connection_id: "connection-1",
+    }));
+    await user.click(await screen.findByRole("button", { name: "Excluir" }));
+    await waitFor(() => expect(api.patch).toHaveBeenLastCalledWith("/api/v1/channels/telegram", {
+      action: "delete", connection_id: "connection-1",
+    }));
+    await screen.findByText("Nenhum bot cadastrado");
+    expect(window.confirm).toHaveBeenCalledOnce();
+  });
+
+  it("consulta e mostra a saúde real do webhook do bot ativo", async () => {
+    const user = userEvent.setup();
+    api.get.mockImplementation(async (path: string) => path.endsWith("/health")
+      ? { data: { health: "healthy", pending_update_count: 3, last_error_at: null, webhook_matches: true, checked_at: "2026-10-19T12:00:00Z" } }
+      : { data: { bots: [{
+          id: "connection-1", telegram_bot_id: "123456", bot_username: "clinica_bot",
+          display_name: "Atendimento", token_last4: "6789", status: "active",
+          created_at: "2026-10-17T12:00:00Z", bindings: [{ surface: "inbox", capabilities: ["receive_messages", "human_replies"] }],
+        }] } });
+    render(<TelegramConnectionsClient />);
+
+    await user.click(await screen.findByRole("button", { name: "Verificar webhook" }));
+    expect(await screen.findByText("Webhook confirmado · 3 updates pendentes")).toBeInTheDocument();
+    expect(api.get).toHaveBeenCalledWith("/api/v1/channels/telegram/connection-1/health");
   });
 });

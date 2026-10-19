@@ -11,7 +11,6 @@ export const SOCIAL_NETWORKS = [
   { id: "pinterest", label: "Pinterest", inbox: false },
   { id: "bluesky", label: "Bluesky", inbox: false },
   { id: "googlebusiness", label: "Google Business", inbox: false },
-  { id: "telegram", label: "Telegram", inbox: false },
   { id: "snapchat", label: "Snapchat", inbox: false },
   { id: "discord", label: "Discord", inbox: false },
   { id: "slack", label: "Slack", inbox: false },

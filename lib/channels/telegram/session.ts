@@ -1,14 +1,18 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { ARCHIVED_AT, queryTolerantToMissingArchived } from "@/lib/channels/archived";
 
 export async function prepararSessaoTelegram(
   admin: SupabaseClient,
   input: { organizationId: string; connectionId: string; displayName: string; actorUserId: string; encryptedSecret: string },
 ): Promise<boolean> {
-  const { data: session, error: lookupError } = await admin.from("channel_sessions")
+  const sessionQuery = () => admin.from("channel_sessions")
     .select("id")
     .eq("organization_id", input.organizationId)
-    .eq("telegram_bot_connection_id", input.connectionId)
-    .maybeSingle();
+    .eq("telegram_bot_connection_id", input.connectionId);
+  const { data: session, error: lookupError } = await queryTolerantToMissingArchived(
+    () => sessionQuery().is(ARCHIVED_AT, null).maybeSingle(),
+    () => sessionQuery().maybeSingle(),
+  );
   if (lookupError) return false;
   if (session) {
     const { error } = await admin.from("channel_sessions")
@@ -36,10 +40,14 @@ export async function atualizarEstadoDaSessaoTelegram(
   admin: SupabaseClient,
   input: { organizationId: string; connectionId: string; status: "WORKING" | "STOPPED"; reason: string | null; encryptedSecret?: string },
 ): Promise<boolean> {
-  const { error } = await admin.from("channel_sessions").update({
+  const atualizar = () => admin.from("channel_sessions").update({
     status: input.status,
     status_reason: input.reason,
     ...(input.encryptedSecret ? { webhook_secret_encrypted: input.encryptedSecret } : {}),
   }).eq("organization_id", input.organizationId).eq("telegram_bot_connection_id", input.connectionId);
+  const { error } = await queryTolerantToMissingArchived(
+    () => atualizar().is(ARCHIVED_AT, null),
+    () => atualizar(),
+  );
   return !error;
 }

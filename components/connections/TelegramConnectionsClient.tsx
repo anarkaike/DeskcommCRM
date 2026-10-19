@@ -32,6 +32,13 @@ type Bot = {
   created_at: string;
   bindings: Binding[];
 };
+type Health = {
+  health: "healthy" | "degraded" | "not_active";
+  pending_update_count: number | null;
+  last_error_at: string | null;
+  webhook_matches: boolean;
+  checked_at: string;
+};
 type ApiEnvelope<T> = { data: T };
 type CapabilityOption = { key: string; title: string; detail: string; defaultOn?: boolean };
 type SurfaceOption = {
@@ -177,6 +184,8 @@ export function TelegramConnectionsClient() {
   const [connecting, setConnecting] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [lifecycleConnectionId, setLifecycleConnectionId] = useState<string | null>(null);
+  const [healthConnectionId, setHealthConnectionId] = useState<string | null>(null);
+  const [healthByBot, setHealthByBot] = useState<Record<string, Health>>({});
   const [selectedBot, setSelectedBot] = useState<Bot | null>(null);
   const [selection, setSelection] = useState<Selection>(padraoInicial);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -221,14 +230,12 @@ export function TelegramConnectionsClient() {
     };
   }, [fetchBots, t]);
 
-  const configuredCount = useMemo(
-    () => bots.filter((bot) => bot.status === "configured").length,
-    [bots],
-  );
+  const configuredCount = useMemo(() => bots.filter((bot) => bot.bindings.length > 0).length, [bots]);
   const selectedSurfaceCount = useMemo(
     () => bots.reduce((count, bot) => count + bot.bindings.length, 0),
     [bots],
   );
+  const activeCount = useMemo(() => bots.filter((bot) => bot.status === "active").length, [bots]);
 
   function editSettings(bot: Bot) {
     setSelectedBot(bot);
@@ -326,6 +333,18 @@ export function TelegramConnectionsClient() {
     }
   }
 
+  async function checkHealth(bot: Bot) {
+    setHealthConnectionId(bot.id);
+    try {
+      const result = await apiClient.get<ApiEnvelope<Health>>(`/api/v1/channels/telegram/${bot.id}/health`);
+      setHealthByBot((current) => ({ ...current, [bot.id]: result.data }));
+    } catch {
+      toast.error(t("Não foi possível consultar a saúde do webhook Telegram."));
+    } finally {
+      setHealthConnectionId(null);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4" data-testid="telegram-connections">
       <Card className="overflow-hidden border-accent/20 bg-gradient-to-r from-accent-soft via-surface to-surface p-5 md:p-7">
@@ -348,17 +367,18 @@ export function TelegramConnectionsClient() {
         </div>
       </Card>
 
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-4">
         <Stat
           label={t("Bots cadastrados")}
           value={String(bots.length).padStart(2, "0")}
           detail={t("Tokens validados")}
         />
         <Stat
-          label={t("Configurações salvas")}
+          label={t("Bots configurados")}
           value={String(configuredCount).padStart(2, "0")}
-          detail={t("Nenhum bot recebe mensagens ainda")}
+          detail={t("Configurações de uso salvas")}
         />
+        <Stat label={t("Bots ativos")} value={String(activeCount).padStart(2, "0")} detail={t("Webhook habilitado")} />
         <Stat
           label={t("Usos associados")}
           value={String(selectedSurfaceCount).padStart(2, "0")}
@@ -481,6 +501,25 @@ export function TelegramConnectionsClient() {
                       ? t("Webhook conectado; as atualizações são armazenadas para processamento idempotente.")
                       : t("Bot ainda não está recebendo atualizações Telegram.")}
                   </p>
+                  {bot.status === "active" ? (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Button type="button" variant="outline" size="sm" disabled={healthConnectionId === bot.id} onClick={() => void checkHealth(bot)}>
+                        {healthConnectionId === bot.id ? t("Verificando…") : t("Verificar webhook")}
+                      </Button>
+                      {(() => {
+                        const health = healthByBot[bot.id];
+                        if (!health) return null;
+                        return (
+                          <span className="text-xs text-text-muted" role="status">
+                            {health.health === "healthy"
+                              ? `${t("Webhook confirmado")} · ${health.pending_update_count ?? 0} ${t("updates pendentes")}`
+                              : t("Webhook com problema. Revise a URL e a entrega no Telegram.")}
+                            {health.last_error_at ? ` · ${t("Último erro")}: ${new Date(health.last_error_at).toLocaleString()}` : ""}
+                          </span>
+                        );
+                      })()}
+                    </div>
+                  ) : null}
                 </article>
               ))
             )}
@@ -608,7 +647,7 @@ export function TelegramConnectionsClient() {
           </div>
           <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-text">
             {t(
-              "O bot ativo recebe mensagens de texto em conversas privadas no Inbox e permite respostas humanas. IA automática, grupos, envio proativo, casos, ferramentas e Mini Apps ainda não executam ações; suas opções ficam registradas para uma etapa posterior.",
+            "O bot ativo recebe mensagens de texto em conversas privadas. Respostas humanas usam o acesso da equipe; respostas automáticas só são encaminhadas ao agente quando Respostas automáticas de IA está concedido, e ainda passam pelas autorizações e políticas do CRM. Grupos, envio proativo, casos, ferramentas e Mini Apps ainda não executam ações.",
             )}
           </p>
           <DialogFooter>

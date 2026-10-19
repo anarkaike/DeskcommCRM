@@ -177,7 +177,7 @@ de produção num repositório público (#638). O gate que impede a volta é
 - [`stories/`](stories/) — épicos e stories (`epics/MASTER.md` = plano por epic/wave)
 - [`superpowers/`](superpowers/) — `plans/` e `specs/` datados por onda, mais `handoffs/`
 - [`superpowers/specs/2026-10-17-integracao-telegram-design.md`](superpowers/specs/2026-10-17-integracao-telegram-design.md) — proposta de descoberta para vários bots, capabilities/apps Telegram, bindings por superfície, tenant e administração da plataforma
-- [`architecture/telegram-integracao.architecture.json`](architecture/telegram-integracao.architecture.json) — mapa arquitetural proposto (ainda não implementado)
+- [`architecture/telegram-integracao.architecture.json`](architecture/telegram-integracao.architecture.json) — mapa do runtime Telegram parcial e dos contratos inbound/outbound compartilhados
 - [`growth/`](growth/) — material de crescimento · [`brand/`](brand/) — marca · [`white-label.md`](white-label.md) — instalação com marca própria, também em [en](white-label.en.md) e [es](white-label.es.md) (traduções seladas pelo hash do original; ver `scripts/selar-traducao.ts`)
 - [`../plan/`](../plan/) — backlog do gov-loop (`features.json` 31/31, `phases.md`, `progress.md`)
 - [`../loop/`](../loop/) — máquina do gov-loop (`LOOP.md`, `CHECKPOINT.md`, `checkpoints/G1..G6-report.md` + `.approved`)

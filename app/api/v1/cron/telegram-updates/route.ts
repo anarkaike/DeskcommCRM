@@ -3,8 +3,9 @@ import type { NextRequest } from "next/server";
 import { autorizaCron } from "@/lib/auth/cron-auth";
 import { fail, ok } from "@/lib/api/wrappers";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { ingestTelegramUpdate } from "@/lib/channels/telegram/ingest";
+import { getInboundDriver } from "@/lib/channels/inbound/registry";
 import { logger } from "@/lib/logger";
+import { STATUS_OPERANTE, ehOperante, statusDaOrgEmbutida } from "@/lib/organizacao/operante";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -30,17 +31,31 @@ export async function GET(req: NextRequest): Promise<Response> {
     .lt("received_at", new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString());
   if (deadLetterError) return fail("internal_error", "Could not expire failed Telegram payloads.", 500, { requestId });
   const { data: updates, error } = await admin.from("telegram_webhook_updates")
-    .select("id, organization_id, connection_id, payload, attempts")
+    .select("id, organization_id, connection_id, payload, attempts, organizations:organization_id!inner(status)")
+    .eq("organizations.status", STATUS_OPERANTE)
     .in("status", ["pending", "error"])
     .lt("attempts", 8)
     .order("received_at", { ascending: true })
     .limit(25);
   if (error) return fail("internal_error", "Could not load Telegram updates.", 500, { requestId });
 
+  type UpdateRow = {
+    id: string;
+    organization_id: string;
+    connection_id: string;
+    payload: unknown;
+    attempts: number;
+    organizations: { status?: string | null } | Array<{ status?: string | null }> | null;
+  };
+  const rows = (updates ?? []) as unknown as UpdateRow[];
+
   let processed = 0;
   let ignored = 0;
   let failed = 0;
-  for (const row of updates ?? []) {
+  for (const row of rows) {
+    // Query filter applies before the batch limit; this per-row assertion is a
+    // second fail-closed check if relationship data or status semantics change.
+    if (!ehOperante(statusDaOrgEmbutida(row.organizations))) continue;
     const { data: claim, error: claimError } = await admin.from("telegram_webhook_updates")
       .update({ status: "processing", attempts: row.attempts + 1, processing_at: new Date().toISOString() })
       .eq("id", row.id)
@@ -64,7 +79,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       }
       const result = !connection || connection.status !== "active"
         ? "ignored"
-        : await ingestTelegramUpdate(admin, {
+        : await getInboundDriver("telegram").ingest(admin, {
             organizationId: row.organization_id,
             connectionId: row.connection_id,
             update: row.payload as Record<string, unknown>,

@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-const mocks = vi.hoisted(() => ({ marcarConversa: vi.fn(), aplicarEfeitos: vi.fn() }));
-vi.mock("@/lib/channels/marcar-conversa", () => ({ marcarConversaComMensagem: mocks.marcarConversa }));
-vi.mock("@/lib/channels/pos-entrada", () => ({ aplicarEfeitosPosEntrada: mocks.aplicarEfeitos }));
+const mocks = vi.hoisted(() => ({ persistir: vi.fn(), capability: vi.fn() }));
+vi.mock("@/lib/channels/inbound/persistir-texto", () => ({ persistirTextoEntranteNaInbox: mocks.persistir }));
 
 import { ingestTelegramUpdate } from "./ingest";
 
@@ -11,6 +10,7 @@ function builder(result: unknown) {
   const self = {
     select: vi.fn(() => self),
     eq: vi.fn(() => self),
+    is: vi.fn(() => self),
     maybeSingle: vi.fn(async () => result),
   };
   return self;
@@ -19,17 +19,18 @@ function builder(result: unknown) {
 describe("Telegram inbound Inbox adapter", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.persistir.mockResolvedValue("ingested");
+    mocks.capability.mockResolvedValue({ data: null, error: null });
   });
 
   it("normalizes a private text update into shared contact, conversation and message records", async () => {
     const session = builder({ data: { id: "session-1", status: "WORKING" }, error: null });
-    const messageInsert = {
-      select: vi.fn(() => ({ maybeSingle: async () => ({ data: { id: "message-1" }, error: null }) })),
-    };
     const admin = {
       from: vi.fn((table: string) => table === "channel_sessions"
         ? session
-        : { insert: vi.fn(() => messageInsert) }),
+        : table === "telegram_bot_surface_capabilities"
+          ? builder({ data: null, error: null })
+          : {}),
       rpc: vi.fn(async (name: string) => name === "fn_upsert_telegram_contact"
         ? { data: "contact-1", error: null }
         : { data: "conversation-1", error: null }),
@@ -55,11 +56,42 @@ describe("Telegram inbound Inbox adapter", () => {
     }));
     expect(admin.rpc).toHaveBeenNthCalledWith(2, "fn_upsert_telegram_conversation", expect.objectContaining({
       p_org: "org-1", p_contact: "contact-1", p_session: "session-1",
+      p_provider_conversation_id: "987654321",
     }));
-    expect(mocks.aplicarEfeitos).toHaveBeenCalledWith(admin, expect.objectContaining({
-      organizationId: "org-1", conversationId: "conversation-1", canal: "telegram", apenasInbox: true,
+    expect(mocks.persistir).toHaveBeenCalledWith(admin, expect.objectContaining({
+      organizationId: "org-1", conversationId: "conversation-1", channel: "telegram", inboxOnly: true,
+      externalId: "telegram:bot-1:987654321:51", text: "Olá, preciso de ajuda",
     }));
-    expect(mocks.marcarConversa).toHaveBeenCalledOnce();
+  });
+
+  it("retém mensagem na Inbox quando a capacidade de IA não está concedida", async () => {
+    const session = builder({ data: { id: "session-1", status: "WORKING" }, error: null });
+    const admin = {
+      from: vi.fn((table: string) => table === "channel_sessions"
+        ? session
+        : builder({ data: null, error: { message: "unavailable" } })),
+      rpc: vi.fn(async (name: string) => name === "fn_upsert_telegram_contact"
+        ? { data: "contact-1", error: null }
+        : { data: "conversation-1", error: null }),
+    } as unknown as SupabaseClient;
+    const update = { update_id: 12, message: { message_id: 51, text: "Oi", chat: { id: 123, type: "private" }, from: { id: 123 } } };
+    await ingestTelegramUpdate(admin, { organizationId: "org-1", connectionId: "bot-1", update });
+    expect(mocks.persistir).toHaveBeenCalledWith(admin, expect.objectContaining({ inboxOnly: true }));
+  });
+
+  it("despacha para o pipeline comum de IA só com capability concedida", async () => {
+    const session = builder({ data: { id: "session-1", status: "WORKING" }, error: null });
+    const admin = {
+      from: vi.fn((table: string) => table === "channel_sessions"
+        ? session
+        : builder({ data: { id: "ai-capability" }, error: null })),
+      rpc: vi.fn(async (name: string) => name === "fn_upsert_telegram_contact"
+        ? { data: "contact-1", error: null }
+        : { data: "conversation-1", error: null }),
+    } as unknown as SupabaseClient;
+    const update = { update_id: 12, message: { message_id: 51, text: "Oi", chat: { id: 123, type: "private" }, from: { id: 123 } } };
+    await ingestTelegramUpdate(admin, { organizationId: "org-1", connectionId: "bot-1", update });
+    expect(mocks.persistir).toHaveBeenCalledWith(admin, expect.objectContaining({ inboxOnly: false }));
   });
 
   it("ignores groups, media-only and non-message updates", async () => {

@@ -303,12 +303,12 @@ async function manageLifecycle(input: {
       .eq("organization_id", input.organizationId)
       .eq("connection_id", input.connection_id)
       .eq("surface", "inbox")
-      .in("capability", ["receive_messages", "human_replies"]);
+      .in("capability", ["receive_messages", "human_replies", "ai_replies"]);
     if (bindingError)
       return fail("internal_error", "Não foi possível validar o uso de Inbox deste bot.", 500, { requestId: input.requestId });
     const capabilities = new Set((receiveBinding ?? []).map((row) => row.capability));
-    if (!capabilities.has("receive_messages") || !capabilities.has("human_replies"))
-      return fail("state_conflict", "Configure recebimento e respostas humanas na Inbox antes de ativar o bot.", 409, { requestId: input.requestId });
+    if (!capabilities.has("receive_messages") || (!capabilities.has("human_replies") && !capabilities.has("ai_replies")))
+      return fail("state_conflict", "Configure o recebimento e ao menos um tipo de resposta na Inbox antes de ativar o bot.", 409, { requestId: input.requestId });
 
     const identity = await validateTelegramBotToken(token);
     if (!identity || identity.id !== connection.telegram_bot_id)

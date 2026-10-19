@@ -1,6 +1,6 @@
 # Telegram — primeira fatia funcional
 
-> Estado atualizado em 2026-10-19: cadastro, lifecycle do webhook e runtime básico de mensagens estão implementados localmente na branch `codex/telegram-vps-compatible`; ainda sem aplicação das migrations ou publicação na VPS. Base de produto: [`../specs/2026-10-17-integracao-telegram-design.md`](../specs/2026-10-17-integracao-telegram-design.md).
+> Estado atualizado em 2026-10-19: cadastro, lifecycle do webhook e runtime básico de mensagens estão implementados localmente na branch `codex/telegram-vps-compatible`; ainda sem aplicação das migrations ou publicação na VPS. A entrada normalizada agora usa um contrato e registro inbound compartilhados com o núcleo da Inbox; isso é a base explícita para outros provedores. Base de produto: [`../specs/2026-10-17-integracao-telegram-design.md`](../specs/2026-10-17-integracao-telegram-design.md).
 > Essa etapa conecta e configura bots; não declara o runtime de mensagens pronto.
 
 ## Objetivo desta etapa
@@ -13,7 +13,7 @@ Permitir que um administrador do tenant valide e registre vários tokens de bots
 - Validar o token pelo `getMe` no servidor antes de persistir. Guardar por `fn_encrypt_oauth`; se a chave de instalação estiver ausente, recusar sem persistência.
 - Armazenar o token cifrado numa tabela service-role-only, isolada por `organization_id`. Rotas de tenant exigem `requireRole("admin")` e filtram a organização em toda operação.
 - Persistir bindings e capacidades de forma tipada e distinta da credencial. Operações de plataforma não pertencem ao tenant e não aparecem como checkbox deste modal.
-- Após `getMe`, criar rascunho e abrir o modal. Perfis de uso são presets editáveis; o padrão é Inbox com resposta humana. IA automática, grupos, envio proativo e ferramentas que escrevem ficam desligados.
+- Após `getMe`, criar rascunho e abrir o modal. Perfis de uso são presets editáveis; o padrão é Inbox com resposta humana. IA automática continua desligada por padrão; quando concedida, usa o pipeline existente de autorização e política. Grupos, envio proativo e ferramentas que escrevem permanecem sem consumidor.
 - Exibir estados verdadeiros. Nesta etapa, “configurado” significa token validado e usos salvos; ainda não significa webhook recebendo mensagens.
 - Não implantar migration nem imagem na VPS nesta etapa sem uma autorização específica para atualizar o ambiente e o banco.
 
@@ -58,10 +58,33 @@ privada de texto para contato/conversa/mensagem no ledger compartilhado. A respo
 na Inbox usa o adapter da Bot API e exige a capability `human_replies`. A fila apaga o payload bruto
 após processamento, retém recibos por 30 dias e faz retry limitado para falhas transitórias.
 
-O runtime implementado **não** liga os outros checkboxes da tela: mídia, edição, grupos, IA,
+O limite de arquitetura entre provedores está mais claro: `InboundChannelDriver` representa a porta
+de entrada já autenticada/traduzida, `getInboundDriver` seleciona o driver sem fallback, e
+`InboundTextEvent` é o contrato canônico entregue a `persistirTextoEntranteNaInbox`. Esse caso de uso
+é quem aplica a chave idempotente e os efeitos comuns (marcador da conversa, opt-out, handoff e
+automações). Telegram implementa o driver em `lib/channels/telegram/driver.ts`; o worker consome a
+porta do registro, sem importar o parser Telegram. Um próximo provedor de texto pode implementar
+essa porta e reutilizar o ledger/efeitos, mantendo autenticação, identidade, destinos, API externa,
+retries e capabilities específicas no seu próprio adapter. Não se generaliza credencial ou fila
+antes de existir um segundo fluxo com invariantes equivalentes.
+
+O caminho de saída já tinha `ChannelAdapter` e `getAdapter`; agora há uma porta correspondente para
+ingresso. O padrão é **Ports and Adapters** (drivers de protocolo nas bordas), com **Registry** de
+composição e um **Application Service** comum para persistir mensagens. Não há interface genérica
+para cada chamada Bot API nem abstração de provedor fictícia: o contrato representa o comportamento
+estável que já foi medido e é compartilhável.
+
+O destino remoto da conversa também passou a ser persistido por `fn_upsert_telegram_conversation`.
+Sem `provider_conversation_id`, a conversa aparecia na Inbox mas o adapter de saída não tinha o
+`chat_id` para localizar o destinatário; a migration `0707` fecha essa lacuna sem derivar telefone.
+
+O runtime implementado **não** liga os outros checkboxes da tela: mídia, edição, grupos,
 envio proativo, avisos, casos, ferramentas, Mini Apps, Business, Login/OIDC, pagamentos e operação
-da plataforma continuam sem consumidor Telegram. A própria UI declara esse limite. O próximo passo
-é validar migration/baseline e integração ponta a ponta num ambiente controlado antes do release.
+da plataforma continuam sem consumidor Telegram. A capability `ai_replies` agora encaminha apenas
+mensagens privadas de texto ao pipeline comum de agentes, que ainda aplica autorização do contato e
+gates existentes; a resposta de saída relê a capability no bot de origem. A própria UI declara os
+limites restantes. Migration, baseline install/update, isolamento/grants e testes focados passaram
+em banco descartável; ainda falta prova visual/e2e em instalação configurada antes de release.
 
 ### Recorte do runtime de mensagens entregue no código local
 
