@@ -1154,6 +1154,10 @@ export const AUDIT_ACTIONS = [
   "telegram.bot_connected",
   /** Tenant administrator changed the surfaces/capabilities reserved for a Telegram bot. */
   "telegram.bot_settings_updated",
+  "telegram.bot_activated",
+  "telegram.bot_paused",
+  "telegram.bot_disconnected",
+  "telegram.bot_deleted",
 ] as const;
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */

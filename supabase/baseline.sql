@@ -57039,3 +57039,55 @@ end;
 $$;
 revoke execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) from public, anon, authenticated;
 grant execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) to service_role;
+
+-- ---- ciclo de vida do webhook de bots Telegram (migration 0704) ----
+alter table public.telegram_bot_connections
+  add column if not exists webhook_path_token text,
+  add column if not exists webhook_secret_encrypted bytea,
+  add column if not exists webhook_last_error text,
+  add column if not exists webhook_last_error_at timestamptz,
+  add column if not exists webhook_connected_at timestamptz;
+alter table public.telegram_bot_connections
+  drop constraint if exists telegram_bot_connections_status_check;
+alter table public.telegram_bot_connections
+  add constraint telegram_bot_connections_status_check
+  check (status in ('draft', 'configured', 'active', 'paused', 'disconnected', 'error'));
+create unique index if not exists telegram_bot_connections_webhook_path_unique
+  on public.telegram_bot_connections (webhook_path_token)
+  where webhook_path_token is not null;
+create unique index if not exists telegram_bot_connections_bot_global_unique
+  on public.telegram_bot_connections (telegram_bot_id);
+comment on column public.telegram_bot_connections.webhook_path_token is
+  'Segredo aleatório de URL para resolver webhook do bot; nunca retornado na API autenticada.';
+comment on column public.telegram_bot_connections.webhook_secret_encrypted is
+  'secret_token do header X-Telegram-Bot-Api-Secret-Token cifrado com fn_encrypt_oauth.';
+
+-- ---- updates recebidos por webhook Telegram (migration 0705) ----
+create table if not exists public.telegram_webhook_updates (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  connection_id uuid not null,
+  update_id bigint not null,
+  update_type text not null,
+  payload jsonb not null,
+  status text not null default 'pending',
+  attempts integer not null default 0,
+  last_error text,
+  received_at timestamptz not null default now(),
+  processed_at timestamptz,
+  constraint telegram_webhook_updates_connection_org_fk foreign key (organization_id, connection_id)
+    references public.telegram_bot_connections (organization_id, id) on delete cascade,
+  constraint telegram_webhook_updates_status_check
+    check (status in ('pending', 'processing', 'processed', 'ignored', 'error')),
+  constraint telegram_webhook_updates_attempts_check check (attempts >= 0),
+  constraint telegram_webhook_updates_connection_update_unique unique (connection_id, update_id)
+);
+create index if not exists telegram_webhook_updates_pending_idx
+  on public.telegram_webhook_updates (received_at, id) where status in ('pending', 'error');
+create index if not exists telegram_webhook_updates_org_connection_idx
+  on public.telegram_webhook_updates (organization_id, connection_id, received_at desc);
+alter table public.telegram_webhook_updates enable row level security;
+revoke all on public.telegram_webhook_updates from public, anon, authenticated;
+grant select, insert, update, delete on public.telegram_webhook_updates to service_role;
+comment on table public.telegram_webhook_updates is
+  'Fila durável e idempotente dos updates aceitos pelo webhook Telegram. Payload tem dados pessoais e só é acessível via service_role; consumidores devem apagar/reter conforme política LGPD.';

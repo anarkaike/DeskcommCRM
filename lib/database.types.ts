@@ -39,19 +39,48 @@ export type Database = {
           id: string; organization_id: string; telegram_bot_id: string; bot_username: string | null;
           display_name: string; token_encrypted: string; token_last4: string; status: string;
           created_by: string | null; updated_by: string | null; created_at: string; updated_at: string;
+          webhook_path_token: string | null; webhook_secret_encrypted: string | null;
+          webhook_last_error: string | null; webhook_last_error_at: string | null;
+          webhook_connected_at: string | null;
         };
         Insert: {
           id?: string; organization_id: string; telegram_bot_id: string; bot_username?: string | null;
           display_name: string; token_encrypted: string; token_last4: string; status?: string;
           created_by?: string | null; updated_by?: string | null; created_at?: string; updated_at?: string;
+          webhook_path_token?: string | null; webhook_secret_encrypted?: string | null;
+          webhook_last_error?: string | null; webhook_last_error_at?: string | null;
+          webhook_connected_at?: string | null;
         };
         Update: {
           id?: string; organization_id?: string; telegram_bot_id?: string; bot_username?: string | null;
           display_name?: string; token_encrypted?: string; token_last4?: string; status?: string;
           created_by?: string | null; updated_by?: string | null; created_at?: string; updated_at?: string;
+          webhook_path_token?: string | null; webhook_secret_encrypted?: string | null;
+          webhook_last_error?: string | null; webhook_last_error_at?: string | null;
+          webhook_connected_at?: string | null;
         };
         Relationships: [
           { foreignKeyName: "telegram_bot_connections_organization_id_fkey"; columns: ["organization_id"]; isOneToOne: false; referencedRelation: "organizations"; referencedColumns: ["id"] },
+        ];
+      };
+      telegram_webhook_updates: {
+        Row: {
+          id: string; organization_id: string; connection_id: string; update_id: number;
+          update_type: string; payload: Json; status: string; attempts: number;
+          last_error: string | null; received_at: string; processed_at: string | null;
+        };
+        Insert: {
+          id?: string; organization_id: string; connection_id: string; update_id: number;
+          update_type: string; payload: Json; status?: string; attempts?: number;
+          last_error?: string | null; received_at?: string; processed_at?: string | null;
+        };
+        Update: {
+          id?: string; organization_id?: string; connection_id?: string; update_id?: number;
+          update_type?: string; payload?: Json; status?: string; attempts?: number;
+          last_error?: string | null; received_at?: string; processed_at?: string | null;
+        };
+        Relationships: [
+          { foreignKeyName: "telegram_webhook_updates_connection_org_fk"; columns: ["organization_id", "connection_id"]; isOneToOne: false; referencedRelation: "telegram_bot_connections"; referencedColumns: ["organization_id", "id"] },
         ];
       };
       telegram_bot_bindings: {

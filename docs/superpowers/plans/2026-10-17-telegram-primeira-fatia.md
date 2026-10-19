@@ -52,6 +52,12 @@ transporte ainda não foi ativado. O runtime precisa de uma etapa arquitetural a
   Antes de admitir Telegram no ledger compartilhado, é preciso provar quais se aplicam e fazer
   canais existentes permanecerem invariantes.
 
+Desde esta auditoria, a branch local também ganhou o ciclo administrativo de webhook e um endpoint
+que autentica o `secret_token` da Bot API e grava updates em `telegram_webhook_updates` com chave
+única por bot/update. Isso entrega transporte de entrada durável, mas **ainda não converte os updates
+em contato/conversa/mensagem**: o consumidor do ledger e a resposta na Inbox seguem pendentes. A
+ativação atual não deve ser tratada como atendimento Telegram concluído.
+
 ### Recorte do primeiro runtime de mensagens
 
 O primeiro marco de tráfego será atendimento tenant em **chat privado**, com entrada autenticada,

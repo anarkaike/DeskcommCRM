@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -7,8 +7,13 @@ import { requireRole } from "@/lib/auth/require-role";
 import { audit } from "@/lib/audit";
 import { requireSupportWrite } from "@/lib/impersonate/support";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { encryptWebhookSecret } from "@/lib/webhooks/secrets";
-import { validateTelegramBotToken } from "@/lib/channels/telegram/bot-api";
+import { decryptWebhookSecret, encryptWebhookSecret } from "@/lib/webhooks/secrets";
+import {
+  deleteTelegramWebhook,
+  setTelegramWebhook,
+  validateTelegramBotToken,
+} from "@/lib/channels/telegram/bot-api";
+import { basePublicaDaInstalacao } from "@/lib/webhooks/url-publica";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -58,6 +63,11 @@ const settingsSchema = z
       }
     }
   });
+
+const lifecycleSchema = z.object({
+  action: z.enum(["activate", "pause", "reactivate", "disconnect", "delete"]),
+  connection_id: z.string().uuid(),
+});
 
 export async function GET(): Promise<NextResponse> {
   const requestId = randomUUID();
@@ -172,7 +182,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     .maybeSingle();
 
   if (error?.code === "23505")
-    return fail("state_conflict", "Este bot já está cadastrado nesta organização.", 409, {
+    return fail("state_conflict", "Este bot já está conectado em uma organização desta instalação.", 409, {
       requestId,
     });
   if (error || !bot)
@@ -196,11 +206,36 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
   if (!authz.ok) return authz.response;
   const supportDenied = await requireSupportWrite();
   if (supportDenied) return supportDenied;
-  const parsed = settingsSchema.safeParse(await req.json().catch(() => null));
+  const body = await req.json().catch(() => null);
+  const lifecycle = lifecycleSchema.safeParse(body);
+  if (lifecycle.success) {
+    return manageLifecycle({
+      requestId,
+      organizationId: authz.org.orgId,
+      actorUserId: authz.user.id,
+      req,
+      ...lifecycle.data,
+    });
+  }
+
+  const parsed = settingsSchema.safeParse(body);
   if (!parsed.success)
     return fail("validation_error", "As opções de uso do bot são inválidas.", 422, { requestId });
 
   const admin = createAdminClient();
+  const { data: connection, error: connectionError } = await admin
+    .from("telegram_bot_connections")
+    .select("status")
+    .eq("organization_id", authz.org.orgId)
+    .eq("id", parsed.data.connection_id)
+    .maybeSingle();
+  if (connectionError)
+    return fail("internal_error", "Não foi possível verificar o estado do bot.", 500, { requestId });
+  if (!connection)
+    return fail("not_found", "Esse bot não foi encontrado nesta organização.", 404, { requestId });
+  if (connection.status === "active")
+    return fail("state_conflict", "Pause o bot antes de alterar as configurações.", 409, { requestId });
+
   const payload = parsed.data.bindings.map((binding) => ({
     surface: binding.surface,
     capabilities: binding.capabilities,
@@ -230,4 +265,161 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     metadata: { surfaces: payload.map((binding) => binding.surface) },
   });
   return ok({ saved: true }, { requestId });
+}
+
+async function manageLifecycle(input: {
+  requestId: string;
+  organizationId: string;
+  actorUserId: string;
+  req: NextRequest;
+  action: z.infer<typeof lifecycleSchema>["action"];
+  connection_id: string;
+}): Promise<NextResponse> {
+  const admin = createAdminClient();
+  const { data: connection, error } = await admin
+    .from("telegram_bot_connections")
+    .select("id, telegram_bot_id, display_name, token_encrypted, status, webhook_path_token")
+    .eq("organization_id", input.organizationId)
+    .eq("id", input.connection_id)
+    .maybeSingle();
+  if (error)
+    return fail("internal_error", "Não foi possível carregar o bot Telegram.", 500, { requestId: input.requestId });
+  if (!connection)
+    return fail("not_found", "Esse bot não foi encontrado nesta organização.", 404, { requestId: input.requestId });
+
+  if (input.action === "activate" || input.action === "reactivate") {
+    const token = await decryptWebhookSecret(admin, String(connection.token_encrypted));
+    if (!token)
+      return fail("unprocessable_entity", "Não foi possível abrir a credencial cifrada deste bot.", 422, { requestId: input.requestId });
+    const { data: receiveBinding, error: bindingError } = await admin
+      .from("telegram_bot_surface_capabilities")
+      .select("id")
+      .eq("organization_id", input.organizationId)
+      .eq("connection_id", input.connection_id)
+      .eq("surface", "inbox")
+      .in("capability", ["receive_messages", "human_replies"]);
+    if (bindingError)
+      return fail("internal_error", "Não foi possível validar o uso de Inbox deste bot.", 500, { requestId: input.requestId });
+    const capabilities = new Set((receiveBinding ?? []).map((row) => row.capability));
+    if (!capabilities.has("receive_messages") || !capabilities.has("human_replies"))
+      return fail("state_conflict", "Configure recebimento e respostas humanas na Inbox antes de ativar o bot.", 409, { requestId: input.requestId });
+
+    const identity = await validateTelegramBotToken(token);
+    if (!identity || identity.id !== connection.telegram_bot_id)
+      return fail("invalid_credentials", "O token não é mais válido para este bot.", 422, { requestId: input.requestId });
+    const pathToken = randomBytes(32).toString("base64url");
+    const webhookSecret = randomBytes(32).toString("base64url");
+    const encryptedSecret = await encryptWebhookSecret(admin, webhookSecret);
+    if (!encryptedSecret)
+      return fail("unprocessable_entity", "A instalação não conseguiu cifrar o segredo do webhook.", 422, { requestId: input.requestId });
+
+    const base = basePublicaDaInstalacao(input.req);
+    try {
+      await setTelegramWebhook({
+        token,
+        url: `${base}/api/v1/webhooks/telegram/${pathToken}`,
+        secretToken: webhookSecret,
+      });
+    } catch (cause) {
+      const code = cause instanceof Error ? cause.message : "telegram_webhook_setup_failed";
+      return fail("upstream_error", "O Telegram recusou a ativação do webhook.", 502, {
+        requestId: input.requestId,
+        details: { code },
+      });
+    }
+
+    const { error: updateError } = await admin
+      .from("telegram_bot_connections")
+      .update({
+        status: "active",
+        webhook_path_token: pathToken,
+        webhook_secret_encrypted: encryptedSecret,
+        webhook_last_error: null,
+        webhook_last_error_at: null,
+        webhook_connected_at: new Date().toISOString(),
+        updated_by: input.actorUserId,
+      })
+      .eq("organization_id", input.organizationId)
+      .eq("id", input.connection_id);
+    if (updateError) {
+      await deleteTelegramWebhook(token).catch(() => undefined);
+      return fail("internal_error", "O webhook foi aceito, mas não foi possível registrar o estado. Tente ativar novamente.", 500, { requestId: input.requestId });
+    }
+    await audit({
+      action: "telegram.bot_activated",
+      actorUserId: input.actorUserId,
+      organizationId: input.organizationId,
+      resourceType: "telegram_bot_connection",
+      resourceId: input.connection_id,
+      requestId: input.requestId,
+      metadata: { telegram_bot_id: connection.telegram_bot_id },
+    });
+    return ok({ status: "active" }, { requestId: input.requestId });
+  }
+
+  const token = connection.status === "active" || connection.webhook_path_token
+    ? await decryptWebhookSecret(admin, String(connection.token_encrypted))
+    : null;
+  if ((connection.status === "active" || connection.webhook_path_token) && !token)
+    return fail("unprocessable_entity", "Não foi possível abrir a credencial cifrada deste bot para remover o webhook.", 422, { requestId: input.requestId });
+
+  if (token && (connection.status === "active" || connection.webhook_path_token)) {
+    try {
+      await deleteTelegramWebhook(token);
+    } catch {
+      return fail("upstream_error", "Não foi possível remover o webhook no Telegram; o estado foi mantido.", 502, { requestId: input.requestId });
+    }
+  }
+
+  if (input.action === "delete") {
+    const { error: markDisconnectedError } = await admin
+      .from("telegram_bot_connections")
+      .update({
+        status: "disconnected",
+        webhook_path_token: null,
+        webhook_secret_encrypted: null,
+        updated_by: input.actorUserId,
+      })
+      .eq("organization_id", input.organizationId)
+      .eq("id", input.connection_id);
+    if (markDisconnectedError)
+      return fail("internal_error", "O webhook foi removido, mas não foi possível registrar a desconexão antes de excluir.", 500, { requestId: input.requestId });
+    const { error: deleteError } = await admin
+      .from("telegram_bot_connections")
+      .delete()
+      .eq("organization_id", input.organizationId)
+      .eq("id", input.connection_id);
+    if (deleteError)
+      return fail("internal_error", "O webhook foi removido, mas não foi possível excluir o cadastro.", 500, { requestId: input.requestId });
+  } else {
+    const status = input.action === "pause" ? "paused" : "disconnected";
+    const { error: updateError } = await admin
+      .from("telegram_bot_connections")
+      .update({
+        status,
+        webhook_path_token: null,
+        webhook_secret_encrypted: null,
+        updated_by: input.actorUserId,
+      })
+      .eq("organization_id", input.organizationId)
+      .eq("id", input.connection_id);
+    if (updateError)
+      return fail("internal_error", "O webhook foi removido, mas não foi possível salvar o novo estado. Verifique a conexão antes de tentar novamente.", 500, { requestId: input.requestId });
+  }
+
+  const actionByState = {
+    pause: "telegram.bot_paused",
+    disconnect: "telegram.bot_disconnected",
+    delete: "telegram.bot_deleted",
+  } as const;
+  await audit({
+    action: actionByState[input.action as keyof typeof actionByState],
+    actorUserId: input.actorUserId,
+    organizationId: input.organizationId,
+    resourceType: "telegram_bot_connection",
+    resourceId: input.connection_id,
+    requestId: input.requestId,
+    metadata: { telegram_bot_id: connection.telegram_bot_id },
+  });
+  return ok({ status: input.action === "delete" ? "deleted" : input.action === "pause" ? "paused" : "disconnected" }, { requestId: input.requestId });
 }

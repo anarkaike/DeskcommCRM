@@ -28,7 +28,7 @@ type Bot = {
   bot_username: string | null;
   display_name: string;
   token_last4: string;
-  status: "draft" | "configured" | "paused" | "error";
+  status: "draft" | "configured" | "active" | "paused" | "disconnected" | "error";
   created_at: string;
   bindings: Binding[];
 };
@@ -176,6 +176,7 @@ export function TelegramConnectionsClient() {
   const [token, setToken] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [lifecycleConnectionId, setLifecycleConnectionId] = useState<string | null>(null);
   const [selectedBot, setSelectedBot] = useState<Bot | null>(null);
   const [selection, setSelection] = useState<Selection>(padraoInicial);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -305,6 +306,26 @@ export function TelegramConnectionsClient() {
     }
   }
 
+  async function runLifecycle(bot: Bot, action: "activate" | "pause" | "reactivate" | "disconnect" | "delete") {
+    if (action === "delete" && !window.confirm(t("Excluir este bot e remover seu webhook do Telegram?"))) return;
+    setLifecycleConnectionId(bot.id);
+    try {
+      await apiClient.patch("/api/v1/channels/telegram", { action, connection_id: bot.id });
+      toast.success(t({
+        activate: "Bot ativado e webhook registrado.",
+        reactivate: "Bot reativado e webhook registrado.",
+        pause: "Bot pausado; updates pendentes foram preservados.",
+        disconnect: "Bot desconectado do Telegram; o cadastro foi preservado.",
+        delete: "Bot excluído e webhook removido.",
+      }[action]));
+      await load(true);
+    } catch {
+      toast.error(t("Não foi possível alterar o estado do bot Telegram."));
+    } finally {
+      setLifecycleConnectionId(null);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4" data-testid="telegram-connections">
       <Card className="overflow-hidden border-accent/20 bg-gradient-to-r from-accent-soft via-surface to-surface p-5 md:p-7">
@@ -393,10 +414,15 @@ export function TelegramConnectionsClient() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <h5 className="font-semibold text-text">{bot.display_name}</h5>
-                        <Badge variant={bot.status === "configured" ? "secondary" : "outline"}>
-                          {bot.status === "configured"
-                            ? t("Preferências salvas")
-                            : t("Configurar usos")}
+                        <Badge variant={bot.status === "active" ? "secondary" : "outline"}>
+                          {t({
+                            draft: "Token validado",
+                            configured: "Configurado",
+                            active: "Ativo",
+                            paused: "Pausado",
+                            disconnected: "Desconectado",
+                            error: "Erro",
+                          }[bot.status])}
                         </Badge>
                       </div>
                       <p className="mt-1 text-sm text-text-muted">
@@ -420,16 +446,40 @@ export function TelegramConnectionsClient() {
                       variant="outline"
                       size="sm"
                       onClick={() => editSettings(bot)}
+                      disabled={bot.status === "active" || lifecycleConnectionId === bot.id}
                       aria-label={t("Configurações do bot")}
                     >
                       <Gear size={16} aria-hidden="true" />
                       {t("Configurar")}
                     </Button>
+                    {bot.status === "active" ? (
+                      <Button type="button" size="sm" variant="outline" disabled={lifecycleConnectionId === bot.id} onClick={() => void runLifecycle(bot, "pause")}>
+                        {t("Pausar")}
+                      </Button>
+                    ) : null}
+                    {bot.status === "configured" ? (
+                      <Button type="button" size="sm" disabled={lifecycleConnectionId === bot.id} onClick={() => void runLifecycle(bot, "activate")}>
+                        {t("Ativar")}
+                      </Button>
+                    ) : null}
+                    {bot.status === "paused" || bot.status === "disconnected" || bot.status === "error" ? (
+                      <Button type="button" size="sm" disabled={lifecycleConnectionId === bot.id} onClick={() => void runLifecycle(bot, "reactivate")}>
+                        {t("Reativar")}
+                      </Button>
+                    ) : null}
+                    {bot.status !== "disconnected" ? (
+                      <Button type="button" size="sm" variant="outline" disabled={lifecycleConnectionId === bot.id} onClick={() => void runLifecycle(bot, "disconnect")}>
+                        {t("Desconectar")}
+                      </Button>
+                    ) : null}
+                    <Button type="button" size="sm" variant="destructive" disabled={lifecycleConnectionId === bot.id} onClick={() => void runLifecycle(bot, "delete")}>
+                      {t("Excluir")}
+                    </Button>
                   </div>
                   <p className="mt-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-text">
-                    {t(
-                      "Cadastro e preferências salvos; o recebimento e envio de mensagens Telegram ainda não está ativo.",
-                    )}
+                    {bot.status === "active"
+                      ? t("Webhook conectado; as atualizações são armazenadas para processamento idempotente.")
+                      : t("Bot ainda não está recebendo atualizações Telegram.")}
                   </p>
                 </article>
               ))
