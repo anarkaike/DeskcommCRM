@@ -95,6 +95,7 @@ fonte só (`lib/onboarding/passos.ts`) — eram três listas que discordavam. Ga
 | J2.5 | WAHA derrubado (docker stop) | banner claro, botões desabilitados, 503 amigável |
 | J2.6 | Atendente (role agent) não vê botão de conectar | gate admin respeitado na UI |
 | J2.7 | AntiBanSheet: editar ritmo/janela/teto | salva, persiste em `channel_knobs`, validação de janela |
+| J2.8 | Abrir Conexões › Telegram por link direto | aba fica ativa e mostra o cadastro de bots para admin · **PASS** (`tests/e2e/telegram-conexoes.spec.ts`)
 
 ## J3 — Agentes de IA `[P0]` (criação) / `[P1]` (rotina)
 

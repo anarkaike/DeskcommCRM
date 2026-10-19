@@ -7,13 +7,13 @@ alter table public.channel_session_groups
   check (group_chat_id like '%@g.us' or group_chat_id ~ '^-?[0-9]{1,20}$');
 
 drop function if exists public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text);
-create function public.fn_upsert_telegram_conversation(
+create or replace function public.fn_upsert_telegram_conversation(
   p_org uuid,
   p_contact uuid,
   p_session uuid,
   p_provider_conversation_id text,
-  p_is_group boolean default false,
-  p_group_chat_id text default null
+  p_is_group boolean,
+  p_group_chat_id text
 ) returns uuid
 language plpgsql security definer set search_path = public as $$
 declare v_id uuid;

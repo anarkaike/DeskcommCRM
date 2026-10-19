@@ -10,6 +10,7 @@ function builder(result: unknown) {
   const self = {
     select: vi.fn(() => self),
     eq: vi.fn(() => self),
+    in: vi.fn(() => self),
     is: vi.fn(() => self),
     maybeSingle: vi.fn(async () => result),
   };
@@ -94,10 +95,28 @@ describe("Telegram inbound Inbox adapter", () => {
     expect(mocks.persistir).toHaveBeenCalledWith(admin, expect.objectContaining({ inboxOnly: false }));
   });
 
-  it("ignores groups and non-message updates", async () => {
-    const admin = { from: vi.fn(), rpc: vi.fn() } as unknown as SupabaseClient;
+  it("ignores groups until receive and group-message capabilities are both granted", async () => {
+    const session = builder({ data: { id: "session-1", status: "WORKING" }, error: null });
+    const admin = {
+      from: vi.fn((table: string) => table === "channel_sessions"
+        ? session
+        : table === "telegram_bot_surface_capabilities"
+          ? builder({ data: null, error: null })
+          : {}),
+      rpc: vi.fn(),
+    } as unknown as SupabaseClient;
     const result = await ingestTelegramUpdate(admin, {
       organizationId: "org-1", connectionId: "bot-1", update: { update_id: 1, message: { message_id: 2, chat: { id: 123, type: "group" }, from: { id: 123 }, text: "Oi" } },
+    });
+    expect(result).toBe("ignored");
+    expect(admin.rpc).not.toHaveBeenCalled();
+    expect(mocks.persistir).not.toHaveBeenCalled();
+  });
+
+  it("ignores non-message Telegram updates", async () => {
+    const admin = { from: vi.fn(), rpc: vi.fn() } as unknown as SupabaseClient;
+    const result = await ingestTelegramUpdate(admin, {
+      organizationId: "org-1", connectionId: "bot-1", update: { update_id: 1, callback_query: { id: "callback-1" } },
     });
     expect(result).toBe("ignored");
     expect(admin.from).not.toHaveBeenCalled();
