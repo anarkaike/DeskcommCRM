@@ -1,6 +1,6 @@
 # Telegram — primeira fatia funcional
 
-> Estado medido em 2026-10-19: apenas cadastro/validação de bots foi implementado na branch `codex/telegram-vps-compatible` (commit `52f2e3492`); o runtime não está ativo. Base de produto: [`../specs/2026-10-17-integracao-telegram-design.md`](../specs/2026-10-17-integracao-telegram-design.md).
+> Estado atualizado em 2026-10-19: cadastro, lifecycle do webhook e runtime básico de mensagens estão implementados localmente na branch `codex/telegram-vps-compatible`; ainda sem aplicação das migrations ou publicação na VPS. Base de produto: [`../specs/2026-10-17-integracao-telegram-design.md`](../specs/2026-10-17-integracao-telegram-design.md).
 > Essa etapa conecta e configura bots; não declara o runtime de mensagens pronto.
 
 ## Objetivo desta etapa
@@ -52,20 +52,25 @@ transporte ainda não foi ativado. O runtime precisa de uma etapa arquitetural a
   Antes de admitir Telegram no ledger compartilhado, é preciso provar quais se aplicam e fazer
   canais existentes permanecerem invariantes.
 
-Desde esta auditoria, a branch local também ganhou o ciclo administrativo de webhook e um endpoint
-que autentica o `secret_token` da Bot API e grava updates em `telegram_webhook_updates` com chave
-única por bot/update. Isso entrega transporte de entrada durável, mas **ainda não converte os updates
-em contato/conversa/mensagem**: o consumidor do ledger e a resposta na Inbox seguem pendentes. A
-ativação atual não deve ser tratada como atendimento Telegram concluído.
+Desde esta auditoria, a branch local também ganhou o ciclo administrativo de webhook, endpoint que
+autentica o `secret_token` da Bot API, fila idempotente, worker agendado e tradução de mensagem
+privada de texto para contato/conversa/mensagem no ledger compartilhado. A resposta humana de texto
+na Inbox usa o adapter da Bot API e exige a capability `human_replies`. A fila apaga o payload bruto
+após processamento, retém recibos por 30 dias e faz retry limitado para falhas transitórias.
 
-### Recorte do primeiro runtime de mensagens
+O runtime implementado **não** liga os outros checkboxes da tela: mídia, edição, grupos, IA,
+envio proativo, avisos, casos, ferramentas, Mini Apps, Business, Login/OIDC, pagamentos e operação
+da plataforma continuam sem consumidor Telegram. A própria UI declara esse limite. O próximo passo
+é validar migration/baseline e integração ponta a ponta num ambiente controlado antes do release.
 
-O primeiro marco de tráfego será atendimento tenant em **chat privado**, com entrada autenticada,
+### Recorte do runtime de mensagens entregue no código local
+
+O primeiro marco de tráfego é atendimento tenant em **chat privado**, com entrada autenticada,
 idempotência por bot/update, contato reconhecido por identidade opaca, conversa na Inbox e resposta
 humana de texto pelo mesmo bot. IA, grupos/tópicos, mídia, alertas, casos, ferramentas de agente,
 Mini Apps, Login/OIDC, Telegram Business, pagamentos e operação de plataforma permanecem
 desativados até terem contratos, autorização e testes próprios. “Bot cadastrado” e “Telegram ativo”
-devem ser estados distintos, com teste de ida e volta antes da ativação.
+são estados distintos; a ativação exige `receive_messages` e `human_replies`.
 
 ### Bloqueio para publicação na VPS
 

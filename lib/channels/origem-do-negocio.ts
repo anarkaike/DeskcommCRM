@@ -62,7 +62,14 @@ export const ORIGEM_DO_WHATSAPP_OPERADOR: OrigemDoNascimento = {
   motivo: "primeira mensagem enviada pelo celular",
 };
 
+const ORIGEM_DO_TELEGRAM: OrigemDoNascimento = {
+  rotulo: "Telegram",
+  source: "telegram",
+  motivo: "primeira mensagem recebida no Telegram",
+};
+
 export function origemDoNegocioPeloCanal(canal: string | null | undefined): OrigemDoNascimento {
+  if (canal === "telegram") return ORIGEM_DO_TELEGRAM;
   const rede = SOCIAL_NETWORKS.find((r) => r.inbox && r.id === canal);
   if (!rede) return ORIGEM_DO_WHATSAPP;
   return {

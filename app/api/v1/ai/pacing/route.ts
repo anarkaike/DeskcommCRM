@@ -16,7 +16,7 @@ import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth/require-role";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { traduzir } from "@/lib/i18n/dicionario";
-import { PROVIDERS_DE_MENSAGEM } from "@/lib/channels/capabilities";
+import { PROVIDERS_DE_ENVIO_AUTOMATIZADO } from "@/lib/channels/capabilities";
 import {
   pacingKnobsUpdateSchema,
   knobsView,
@@ -63,7 +63,7 @@ export async function GET(): Promise<Response> {
       .is("archived_at", null)
       // Ritmo de envio é regra de canal de MENSAGEM. A linha de chamada de voz
       // (spec 18) não dispara nada e não tem intervalo a calibrar.
-      .in("provider", [...PROVIDERS_DE_MENSAGEM])
+      .in("provider", [...PROVIDERS_DE_ENVIO_AUTOMATIZADO])
       .order("created_at", { ascending: true }),
     admin
       .from("channel_knobs")

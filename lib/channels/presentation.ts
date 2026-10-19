@@ -3,6 +3,8 @@ export function channelBrand(
   session?: { provider?: string | null; social_platform?: string | null } | null,
 ) {
   switch (session?.provider) {
+    case "telegram":
+      return "telegram";
     case "waha":
     case "meta_cloud":
     case "zernio":

@@ -89,7 +89,7 @@ describe("conexões Telegram", () => {
     expect(JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body))).toMatchObject({
       secret_token: "a-secure-webhook-secret-token",
       drop_pending_updates: false,
-      allowed_updates: ["message", "edited_message"],
+      allowed_updates: ["message"],
     });
     await expect(getTelegramWebhookInfo(token)).resolves.toMatchObject({
       pendingUpdateCount: 3,
@@ -145,7 +145,7 @@ describe("conexões Telegram", () => {
     expect(screen.getByRole("checkbox", { name: /Respostas automáticas de IA/ })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: /Mensagens em grupos/ })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: /Envio proativo/ })).not.toBeChecked();
-    expect(screen.getByText(/o transporte Telegram ainda não foi ativado/i)).toBeInTheDocument();
+    expect(screen.getByText(/recebe mensagens de texto em conversas privadas no Inbox/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Salvar configurações" }));
     await waitFor(() =>

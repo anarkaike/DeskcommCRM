@@ -11,13 +11,14 @@
 import { describe, expect, it } from "vitest";
 import {
   CHANNEL_CAPABILITIES,
+  PROVIDERS_DE_ENVIO_AUTOMATIZADO,
   capabilitiesOf,
   transportaMensagem,
   type ChannelProvider,
   type ProviderDeMensagem,
 } from "@/lib/channels/capabilities";
 
-const PROVIDERS = ["waha", "meta_cloud", "zernio", "zernio_social", "datafy"] as const satisfies readonly ProviderDeMensagem[];
+const PROVIDERS = ["waha", "meta_cloud", "zernio", "zernio_social", "datafy", "telegram"] as const satisfies readonly ProviderDeMensagem[];
 
 /**
  * Esquecer um provider aqui passa a ser erro de COMPILAÇÃO.
@@ -40,6 +41,7 @@ const CAPABILITIES = [
   "groups",
   "costPerMessage",
   "alteraMensagemEnviada",
+  "automatedOutbound",
 ] as const;
 
 describe("matriz capability × provider é exaustiva", () => {
@@ -60,7 +62,13 @@ describe("matriz capability × provider é exaustiva", () => {
   });
 
   it("resolução é fail-closed — provider desconhecido lança", () => {
-    expect(() => capabilitiesOf("telegram" as ChannelProvider)).toThrow(/unknown_channel_provider/);
+    expect(() => capabilitiesOf("not_a_provider" as ChannelProvider)).toThrow(/unknown_channel_provider/);
+  });
+
+  it("Telegram fica disponível para a Inbox humana, não para automações ainda sem consumidor", () => {
+    expect(CHANNEL_CAPABILITIES.telegram.automatedOutbound).toBe(false);
+    expect(PROVIDERS_DE_ENVIO_AUTOMATIZADO).not.toContain("telegram");
+    expect(PROVIDERS_DE_ENVIO_AUTOMATIZADO).toContain("waha");
   });
 
   it("chamada de voz não responde a pergunta de canal de mensagem", () => {
@@ -74,7 +82,7 @@ describe("matriz capability × provider é exaustiva", () => {
     for (const p of PROVIDERS) expect(transportaMensagem(p)).toBe(true);
     // Provider mais novo que este código (clone que atualizou o schema antes da
     // imagem) também não serve para mandar recado.
-    expect(transportaMensagem("telegram")).toBe(false);
+    expect(transportaMensagem("not_a_provider")).toBe(false);
     expect(transportaMensagem(null)).toBe(false);
   });
 

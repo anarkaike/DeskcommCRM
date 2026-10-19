@@ -913,6 +913,7 @@ export async function sendMessageHandler(
     phoneNumber: c.contacts?.phone_number,
     waIdentity: c.contacts?.wa_identity,
     waLid: c.contacts?.wa_lid,
+    providerConversationId: c.provider_conversation_id,
   });
 
   // Releitura no sink: o operador pode ter fechado o canal enquanto o modelo
@@ -1107,6 +1108,7 @@ export async function sendMessageHandler(
         await checkBoundary();
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
+          actorType: ctx.actor.type,
           organizationId: ctx.organization_id,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,
@@ -1134,6 +1136,7 @@ export async function sendMessageHandler(
         await checkBoundary();
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
+          actorType: ctx.actor.type,
           organizationId: ctx.organization_id,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,
@@ -1162,6 +1165,7 @@ export async function sendMessageHandler(
         await checkBoundary();
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
+          actorType: ctx.actor.type,
           organizationId: ctx.organization_id,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,
@@ -1179,6 +1183,7 @@ export async function sendMessageHandler(
         await checkBoundary();
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
+          actorType: ctx.actor.type,
           organizationId: ctx.organization_id,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,

@@ -124,6 +124,8 @@ export interface EntradaDeMensagem {
    * nascia com `source = 'whatsapp'`.
    */
   canal?: string;
+  /** Inbound channels whose only activated surface is the human Inbox. */
+  apenasInbox?: boolean;
 }
 
 /**
@@ -170,6 +172,7 @@ export async function aplicarEfeitosPosEntrada(
   }
   await guardarOrigemDaPagina(admin, entrada);
   await abrirDemanda(admin, entrada);
+  if (entrada.apenasInbox) return;
   await avaliarCampanha(admin, entrada);
   const sinal = {
     organizationId: entrada.organizationId,

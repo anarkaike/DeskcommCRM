@@ -608,7 +608,7 @@ export function TelegramConnectionsClient() {
           </div>
           <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-text">
             {t(
-              "Capacidades sensíveis, como respostas automáticas de IA, grupos, envio proativo e escrita por agentes, começam desligadas. Nesta etapa, as opções apenas ficam registradas; o transporte Telegram ainda não foi ativado.",
+              "O bot ativo recebe mensagens de texto em conversas privadas no Inbox e permite respostas humanas. IA automática, grupos, envio proativo, casos, ferramentas e Mini Apps ainda não executam ações; suas opções ficam registradas para uma etapa posterior.",
             )}
           </p>
           <DialogFooter>

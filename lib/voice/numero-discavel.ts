@@ -27,7 +27,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
   CHANNEL_SESSION_REF_COLUMNS,
-  PROVIDERS_DE_MENSAGEM,
+  PROVIDERS_DE_ENVIO_AUTOMATIZADO,
   getAdapter,
   resolveSessionRef,
   type ChannelAdapter,
@@ -70,7 +70,7 @@ export async function resolverNumeroDiscavel(
     .eq("organization_id", organizationId)
     .eq("status", "WORKING")
     .is("archived_at", null)
-    .in("provider", [...PROVIDERS_DE_MENSAGEM])
+    .in("provider", [...PROVIDERS_DE_ENVIO_AUTOMATIZADO])
     .limit(10);
   const sessoes = (data ?? []) as ChannelSessionRef[];
   if (sessoes.length === 0) return doCadastro;

@@ -22,7 +22,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { nomeDoCanal } from "@/lib/channels/estado";
 
 import { ARCHIVED_AT, queryTolerantToMissingArchived } from "./archived";
-import { PROVIDERS_DE_MENSAGEM, capabilitiesOf, transportaMensagem } from "./capabilities";
+import { PROVIDERS_DE_ENVIO_AUTOMATIZADO, capabilitiesOf, transportaMensagem } from "./capabilities";
 import type { ProviderDeMensagem } from "./types";
 
 /** Um canal oferecível como destino, já com o rótulo resolvido para a tela. */
@@ -103,7 +103,7 @@ export async function listSelectableChannels(
       // Uma linha de chamada de voz (spec 18) aqui vira número escolhível,
       // agente preso a um canal mudo e "1 canal conectado" numa instalação com
       // zero canal de mensagem.
-      .in("provider", [...PROVIDERS_DE_MENSAGEM]);
+      .in("provider", [...PROVIDERS_DE_ENVIO_AUTOMATIZADO]);
 
   const { data, error } = await queryTolerantToMissingArchived(
     () => base().is(ARCHIVED_AT, null).order("created_at", { ascending: true }),

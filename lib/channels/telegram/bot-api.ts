@@ -93,7 +93,7 @@ export async function setTelegramWebhook(input: {
   token: string;
   url: string;
   secretToken: string;
-  allowedUpdates?: string[];
+    allowedUpdates?: string[];
 }): Promise<void> {
   const url = new URL(input.url);
   if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
@@ -105,7 +105,7 @@ export async function setTelegramWebhook(input: {
   const result = await callTelegram<boolean>(input.token, "setWebhook", {
     url: url.toString(),
     secret_token: input.secretToken,
-    allowed_updates: input.allowedUpdates ?? ["message", "edited_message"],
+    allowed_updates: input.allowedUpdates ?? ["message"],
     drop_pending_updates: false,
   });
   if (result !== true) throw new Error("telegram_webhook_rejected");

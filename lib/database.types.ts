@@ -42,6 +42,7 @@ export type Database = {
           webhook_path_token: string | null; webhook_secret_encrypted: string | null;
           webhook_last_error: string | null; webhook_last_error_at: string | null;
           webhook_connected_at: string | null;
+          deleted_at: string | null;
         };
         Insert: {
           id?: string; organization_id: string; telegram_bot_id: string; bot_username?: string | null;
@@ -50,6 +51,7 @@ export type Database = {
           webhook_path_token?: string | null; webhook_secret_encrypted?: string | null;
           webhook_last_error?: string | null; webhook_last_error_at?: string | null;
           webhook_connected_at?: string | null;
+          deleted_at?: string | null;
         };
         Update: {
           id?: string; organization_id?: string; telegram_bot_id?: string; bot_username?: string | null;
@@ -58,6 +60,7 @@ export type Database = {
           webhook_path_token?: string | null; webhook_secret_encrypted?: string | null;
           webhook_last_error?: string | null; webhook_last_error_at?: string | null;
           webhook_connected_at?: string | null;
+          deleted_at?: string | null;
         };
         Relationships: [
           { foreignKeyName: "telegram_bot_connections_organization_id_fkey"; columns: ["organization_id"]; isOneToOne: false; referencedRelation: "organizations"; referencedColumns: ["id"] },
@@ -67,17 +70,17 @@ export type Database = {
         Row: {
           id: string; organization_id: string; connection_id: string; update_id: number;
           update_type: string; payload: Json; status: string; attempts: number;
-          last_error: string | null; received_at: string; processed_at: string | null;
+          last_error: string | null; received_at: string; processed_at: string | null; processing_at: string | null;
         };
         Insert: {
           id?: string; organization_id: string; connection_id: string; update_id: number;
           update_type: string; payload: Json; status?: string; attempts?: number;
-          last_error?: string | null; received_at?: string; processed_at?: string | null;
+          last_error?: string | null; received_at?: string; processed_at?: string | null; processing_at?: string | null;
         };
         Update: {
           id?: string; organization_id?: string; connection_id?: string; update_id?: number;
           update_type?: string; payload?: Json; status?: string; attempts?: number;
-          last_error?: string | null; received_at?: string; processed_at?: string | null;
+          last_error?: string | null; received_at?: string; processed_at?: string | null; processing_at?: string | null;
         };
         Relationships: [
           { foreignKeyName: "telegram_webhook_updates_connection_org_fk"; columns: ["organization_id", "connection_id"]; isOneToOne: false; referencedRelation: "telegram_bot_connections"; referencedColumns: ["organization_id", "id"] },
@@ -4300,7 +4303,7 @@ export type Database = {
           created_by: string | null
           daily_message_limit: number
           display_name: string | null
-          engine: string
+          engine: string | null
           id: string
           is_warmup_complete: boolean | null
           last_health_check_at: string | null
@@ -4321,6 +4324,7 @@ export type Database = {
           wacalls_jid: string | null
           wacalls_paired_at: string | null
           wacalls_session_id: string | null
+          telegram_bot_connection_id: string | null
           waha_session_name: string | null
           warmup_completed_at: string | null
           warmup_started_at: string | null
@@ -4336,7 +4340,7 @@ export type Database = {
           created_by?: string | null
           daily_message_limit?: number
           display_name?: string | null
-          engine?: string
+          engine?: string | null
           id?: string
           is_warmup_complete?: boolean | null
           last_health_check_at?: string | null
@@ -4357,6 +4361,7 @@ export type Database = {
           wacalls_jid?: string | null
           wacalls_paired_at?: string | null
           wacalls_session_id?: string | null
+          telegram_bot_connection_id?: string | null
           waha_session_name?: string | null
           warmup_completed_at?: string | null
           warmup_started_at?: string | null
@@ -4372,7 +4377,7 @@ export type Database = {
           created_by?: string | null
           daily_message_limit?: number
           display_name?: string | null
-          engine?: string
+          engine?: string | null
           id?: string
           is_warmup_complete?: boolean | null
           last_health_check_at?: string | null
@@ -4393,6 +4398,7 @@ export type Database = {
           wacalls_jid?: string | null
           wacalls_paired_at?: string | null
           wacalls_session_id?: string | null
+          telegram_bot_connection_id?: string | null
           waha_session_name?: string | null
           warmup_completed_at?: string | null
           warmup_started_at?: string | null

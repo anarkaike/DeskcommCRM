@@ -55,6 +55,7 @@ CRONS="
 */5 * * * *|25|api/v1/cron/recover-stuck-messages
 * * * * *|25|api/v1/cron/proposta-travada
 * * * * *|45|api/v1/cron/webhook-replay
+* * * * *|45|api/v1/cron/telegram-updates
 */5 * * * *|25|api/v1/cron/storage-redaction?limit=50
 */5 * * * *|25|api/v1/cron/snooze-watcher
 */5 * * * *|60|api/v1/cron/handoff-devolucao
