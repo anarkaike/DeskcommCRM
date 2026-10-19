@@ -1,15 +1,16 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ChannelProvider } from "../types";
 
-/** Evento canônico produzido depois de autenticar e interpretar o payload do canal. */
-export interface InboundTextEvent {
+/** Evento canônico produzido após autenticar e interpretar payload do canal. */
+export interface InboundMessageEvent {
   organizationId: string;
   channel: ChannelProvider;
   channelSessionId: string;
   contactId: string;
   conversationId: string;
   externalId: string;
-  text: string;
+  text: string | null;
+  media?: { kind: "image" | "audio" | "document" | "video"; reference: string; mime: string | null };
   sentAt: string;
   contactName: string | null;
   origin: string;

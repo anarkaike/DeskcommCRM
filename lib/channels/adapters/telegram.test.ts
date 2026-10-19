@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ send: vi.fn(), decrypt: vi.fn(), admin: vi.fn() }));
+const mocks = vi.hoisted(() => ({ send: vi.fn(), sendMedia: vi.fn(), fetchMedia: vi.fn(), decrypt: vi.fn(), admin: vi.fn() }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: mocks.admin }));
 vi.mock("@/lib/webhooks/secrets", () => ({ decryptWebhookSecret: mocks.decrypt }));
-vi.mock("../telegram/bot-api", () => ({ sendTelegramText: mocks.send }));
+vi.mock("../telegram/bot-api", () => ({ sendTelegramText: mocks.send, sendTelegramMedia: mocks.sendMedia, fetchTelegramMedia: mocks.fetchMedia }));
 
 import { telegramAdapter } from "./telegram";
 
@@ -21,6 +21,7 @@ describe("Telegram channel adapter", () => {
     vi.clearAllMocks();
     mocks.decrypt.mockResolvedValue("server-only-token");
     mocks.send.mockResolvedValue({ messageId: "88", chatId: "987654321", date: 1_800_000_000 });
+    mocks.sendMedia.mockResolvedValue({ messageId: "89", chatId: "987654321", date: 1_800_000_001 });
   });
 
   it("uses the provider thread id as the destination rather than requiring a phone", () => {
@@ -61,6 +62,23 @@ describe("Telegram channel adapter", () => {
     expect(mocks.send).toHaveBeenCalledWith({ token: "server-only-token", chatId: "987654321", text: "Olá, Ana" });
   });
 
+  it("translates the shared reply reference to Telegram's numeric message id", async () => {
+    const connection = query({ data: { token_encrypted: "ciphertext", status: "active" }, error: null });
+    const capability = query({ data: { id: "capability-1" }, error: null });
+    mocks.admin.mockReturnValue({ from: vi.fn((table: string) => table === "telegram_bot_connections" ? connection : capability) });
+
+    await telegramAdapter.send({
+      organizationId: "org-1", actorType: "user", sessionRef: "connection-1",
+      to: "987654321", kind: "text", body: "Respondendo à mensagem",
+      replyToExternalId: "telegram:connection-1:987654321:51",
+    });
+
+    expect(mocks.send).toHaveBeenCalledWith({
+      token: "server-only-token", chatId: "987654321", text: "Respondendo à mensagem",
+      replyToMessageId: "51",
+    });
+  });
+
   it("fails closed for non-human senders before loading credentials", async () => {
     await expect(telegramAdapter.send({
       organizationId: "org-1",
@@ -82,5 +100,19 @@ describe("Telegram channel adapter", () => {
       to: "987654321", kind: "text", body: "Resposta automática",
     })).resolves.toEqual({ externalId: "987654321:88" });
     expect(capability.eq).toHaveBeenCalledWith("capability", "ai_replies");
+  });
+
+  it("maps a shared image envelope to Telegram media send", async () => {
+    const connection = query({ data: { token_encrypted: "ciphertext", status: "active" }, error: null });
+    const capability = query({ data: { id: "capability-1" }, error: null });
+    mocks.admin.mockReturnValue({ from: vi.fn((table: string) => table === "telegram_bot_connections" ? connection : capability) });
+    await expect(telegramAdapter.send({
+      organizationId: "org-1", actorType: "user", sessionRef: "connection-1", to: "987654321",
+      kind: "image", body: "Legenda", media: { url: "https://storage.example/signed", mime: "image/jpeg", caption: "Legenda" },
+    })).resolves.toEqual({ externalId: "987654321:89" });
+    expect(mocks.sendMedia).toHaveBeenCalledWith({
+      token: "server-only-token", chatId: "987654321", kind: "image",
+      media: { url: "https://storage.example/signed", mime: "image/jpeg", caption: "Legenda" },
+    });
   });
 });

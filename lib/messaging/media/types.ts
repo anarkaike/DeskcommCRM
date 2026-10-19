@@ -1,7 +1,7 @@
 /**
  * Tipos canônicos de mídia do messaging — camada provider-agnóstica.
- * Hoje só o WAHA produz mídia; a Meta Cloud API (futura) implementa a mesma
- * interface de fetch e o resto do sistema não muda (spec Onda 0).
+ * Adapters implementam fetch/upload e o worker compartilhado cuida de Storage,
+ * retenção e derivação, sem ramificar pela plataforma de origem.
  */
 
 export const MAX_MEDIA_BYTES = 52_428_800; // 50MB — espelha file_size_limit do bucket
@@ -12,8 +12,8 @@ export interface FetchedMedia {
 }
 
 export class MediaTooLargeError extends Error {
-  constructor() {
-    super(`media exceeds ${MAX_MEDIA_BYTES} bytes`);
+  constructor(limit = MAX_MEDIA_BYTES) {
+    super(`media exceeds ${limit} bytes`);
     this.name = "MediaTooLargeError";
   }
 }
@@ -49,7 +49,7 @@ export function extFromMime(mime: string): string {
   return MIME_EXT[base] ?? "bin";
 }
 
-/** Path canônico no bucket whatsapp-media: {org}/{conversa}/{mensagem}.{ext} */
+/** Path canônico no bucket privado da conversa: {org}/{conversa}/{mensagem}.{ext} */
 export function storagePathFor(
   orgId: string,
   conversationId: string,

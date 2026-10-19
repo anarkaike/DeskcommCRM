@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const mocks = vi.hoisted(() => ({ persistir: vi.fn(), capability: vi.fn() }));
-vi.mock("@/lib/channels/inbound/persistir-texto", () => ({ persistirTextoEntranteNaInbox: mocks.persistir }));
+vi.mock("@/lib/channels/inbound/persistir-mensagem", () => ({ persistirMensagemEntranteNaInbox: mocks.persistir }));
 
 import { ingestTelegramUpdate } from "./ingest";
 
@@ -94,12 +94,40 @@ describe("Telegram inbound Inbox adapter", () => {
     expect(mocks.persistir).toHaveBeenCalledWith(admin, expect.objectContaining({ inboxOnly: false }));
   });
 
-  it("ignores groups, media-only and non-message updates", async () => {
+  it("ignores groups and non-message updates", async () => {
     const admin = { from: vi.fn(), rpc: vi.fn() } as unknown as SupabaseClient;
     const result = await ingestTelegramUpdate(admin, {
-      organizationId: "org-1", connectionId: "bot-1", update: { update_id: 1, message: { message_id: 2, photo: [{}] } },
+      organizationId: "org-1", connectionId: "bot-1", update: { update_id: 1, message: { message_id: 2, chat: { id: 123, type: "group" }, from: { id: 123 }, text: "Oi" } },
     });
     expect(result).toBe("ignored");
     expect(admin.from).not.toHaveBeenCalled();
+  });
+
+  it("normaliza foto sem legenda para o evento comum com referência Telegram", async () => {
+    const session = builder({ data: { id: "session-1", status: "WORKING" }, error: null });
+    const admin = {
+      from: vi.fn((table: string) => table === "channel_sessions"
+        ? session
+        : builder({ data: null, error: null })),
+      rpc: vi.fn(async (name: string) => name === "fn_upsert_telegram_contact"
+        ? { data: "contact-1", error: null }
+        : { data: "conversation-1", error: null }),
+    } as unknown as SupabaseClient;
+    const result = await ingestTelegramUpdate(admin, {
+      organizationId: "org-1", connectionId: "bot-1", update: {
+        update_id: 13,
+        message: {
+          message_id: 52, date: 1_800_000_000,
+          chat: { id: 987654321, type: "private" },
+          from: { id: 987654321, first_name: "Ana" },
+          photo: [{ file_id: "small" }, { file_id: "largest_file", file_size: 1234 }],
+        },
+      },
+    });
+    expect(result).toBe("ingested");
+    expect(mocks.persistir).toHaveBeenCalledWith(admin, expect.objectContaining({
+      text: null,
+      media: { kind: "image", reference: "telegram-media:largest_file", mime: "image/jpeg" },
+    }));
   });
 });

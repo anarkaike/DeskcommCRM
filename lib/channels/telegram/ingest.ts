@@ -1,12 +1,18 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { persistirTextoEntranteNaInbox } from "@/lib/channels/inbound/persistir-texto";
-import type { InboundTextEvent } from "@/lib/channels/inbound/types";
+import { persistirMensagemEntranteNaInbox } from "@/lib/channels/inbound/persistir-mensagem";
+import type { InboundMessageEvent } from "@/lib/channels/inbound/types";
 import { ARCHIVED_AT, queryTolerantToMissingArchived } from "@/lib/channels/archived";
 
 type TelegramMessage = {
   message_id?: unknown;
   date?: unknown;
   text?: unknown;
+  caption?: unknown;
+  photo?: unknown;
+  audio?: unknown;
+  voice?: unknown;
+  document?: unknown;
+  video?: unknown;
   chat?: { id?: unknown; type?: unknown };
   from?: { id?: unknown; is_bot?: unknown; first_name?: unknown; last_name?: unknown; username?: unknown };
 };
@@ -21,9 +27,12 @@ export async function ingestTelegramUpdate(
   const message = input.update.message as TelegramMessage | undefined;
   const from = message?.from;
   const chat = message?.chat;
+  const media = extrairMidiaTelegram(message);
+  const text = typeof message?.text === "string" ? message.text
+    : typeof message?.caption === "string" ? message.caption : null;
   if (
     !message || !from || !chat || chat.type !== "private" || from.is_bot === true ||
-    (typeof message.text !== "string") || !message.text.trim() ||
+    (!text?.trim() && !media) ||
     (typeof message.message_id !== "number" && typeof message.message_id !== "string") ||
     (typeof from.id !== "number" && typeof from.id !== "string") ||
     (typeof chat.id !== "number" && typeof chat.id !== "string")
@@ -72,19 +81,40 @@ export async function ingestTelegramUpdate(
 
   const sentAt = new Date((typeof message.date === "number" ? message.date : Math.floor(Date.now() / 1000)) * 1000).toISOString();
   const externalId = `telegram:${input.connectionId}:${chatId}:${String(message.message_id)}`;
-  const event: InboundTextEvent = {
+  const event: InboundMessageEvent = {
     organizationId: input.organizationId,
     channel: "telegram",
     channelSessionId: session.id,
     contactId: contactId as string,
     conversationId: conversationId as string,
     externalId,
-    text: message.text,
+    text,
+    ...(media ? { media } : {}),
     sentAt,
     contactName: fullName || null,
     origin: "telegram_webhook",
     metadata: { telegram_chat_id: chatId, telegram_user_id: userId, telegram_update_id: input.update.update_id },
     inboxOnly: !aiRepliesEnabled,
   };
-  return persistirTextoEntranteNaInbox(admin, event);
+  return persistirMensagemEntranteNaInbox(admin, event);
+}
+
+function extrairMidiaTelegram(message: TelegramMessage | undefined): InboundMessageEvent["media"] {
+  if (!message) return undefined;
+  const photo = Array.isArray(message.photo) ? message.photo.at(-1) as Record<string, unknown> | undefined : undefined;
+  const candidates: Array<{ kind: "image" | "audio" | "document" | "video"; value: unknown; fallbackMime: string }> = [
+    { kind: "image", value: photo, fallbackMime: "image/jpeg" },
+    { kind: "audio", value: message.voice ?? message.audio, fallbackMime: message.voice ? "audio/ogg" : "audio/mpeg" },
+    { kind: "video", value: message.video, fallbackMime: "video/mp4" },
+    { kind: "document", value: message.document, fallbackMime: "application/octet-stream" },
+  ];
+  const selected = candidates.find(({ value }) => value && typeof value === "object");
+  if (!selected) return undefined;
+  const file = selected.value as Record<string, unknown>;
+  if (typeof file.file_id !== "string" || !file.file_id) return undefined;
+  return {
+    kind: selected.kind,
+    reference: `telegram-media:${file.file_id}`,
+    mime: typeof file.mime_type === "string" ? file.mime_type : selected.fallbackMime,
+  };
 }

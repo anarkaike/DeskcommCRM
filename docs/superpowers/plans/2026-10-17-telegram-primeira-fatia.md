@@ -1,11 +1,11 @@
 # Telegram — primeira fatia funcional
 
-> Estado atualizado em 2026-10-19: cadastro, lifecycle do webhook e runtime básico de mensagens estão implementados localmente na branch `codex/telegram-vps-compatible`; ainda sem aplicação das migrations ou publicação na VPS. A entrada normalizada agora usa um contrato e registro inbound compartilhados com o núcleo da Inbox; isso é a base explícita para outros provedores. Base de produto: [`../specs/2026-10-17-integracao-telegram-design.md`](../specs/2026-10-17-integracao-telegram-design.md).
-> Essa etapa conecta e configura bots; não declara o runtime de mensagens pronto.
+> Estado atualizado em 2026-10-19: cadastro, lifecycle, webhook, Inbox privada para texto/mídia e adapter de saída estão implementados localmente na branch `codex/telegram-vps-compatible`; ainda sem prova visual ponta a ponta ou publicação na VPS. Os contratos inbound e outbound reutilizam as portas comuns de canais. Base de produto: [`../specs/2026-10-17-integracao-telegram-design.md`](../specs/2026-10-17-integracao-telegram-design.md).
+> Esta página registra o primeiro recorte de implementação; os recursos avançados listados como pendentes permanecem fora do runtime.
 
 ## Objetivo desta etapa
 
-Permitir que um administrador do tenant valide e registre vários tokens de bots Telegram, configure para que superfícies cada conexão ficará reservada e reabra essa configuração pelo botão de engrenagem. O token nunca retorna ao navegador depois do POST. Um bot validado começa como rascunho e permanece sem webhook/envio até a etapa de transporte.
+Permitir que um administrador do tenant valide e registre vários tokens de bots Telegram, configure para que superfícies cada conexão ficará reservada e reabra essa configuração pelo botão de engrenagem. O token nunca retorna ao navegador depois do POST. Este foi o objetivo original da primeira fatia; os marcos seguintes agora incluem tráfego privado na Inbox.
 
 ## Decisões e limites
 
@@ -14,7 +14,7 @@ Permitir que um administrador do tenant valide e registre vários tokens de bots
 - Armazenar o token cifrado numa tabela service-role-only, isolada por `organization_id`. Rotas de tenant exigem `requireRole("admin")` e filtram a organização em toda operação.
 - Persistir bindings e capacidades de forma tipada e distinta da credencial. Operações de plataforma não pertencem ao tenant e não aparecem como checkbox deste modal.
 - Após `getMe`, criar rascunho e abrir o modal. Perfis de uso são presets editáveis; o padrão é Inbox com resposta humana. IA automática continua desligada por padrão; quando concedida, usa o pipeline existente de autorização e política. Grupos, envio proativo e ferramentas que escrevem permanecem sem consumidor.
-- Exibir estados verdadeiros. Nesta etapa, “configurado” significa token validado e usos salvos; ainda não significa webhook recebendo mensagens.
+- Exibir estados verdadeiros. “Configurado” significa token validado e usos salvos; “ativo” exige webhook registrado e runtime operacional.
 - Não implantar migration nem imagem na VPS nesta etapa sem uma autorização específica para atualizar o ambiente e o banco.
 
 ## Entregas
@@ -22,7 +22,7 @@ Permitir que um administrador do tenant valide e registre vários tokens de bots
 1. Contrato de persistência para conexões e usos/bindings, com migration versionada e espelho idempotente no apêndice de `supabase/baseline.sql`.
 2. `GET` para listar conexões sem segredo, `POST` para validar e criar rascunho, `PATCH` para salvar bindings; todas as mutações auditadas.
 3. Cliente de servidor Telegram para `getMe`, com timeout, erros sanitizados e sem registrar token/URL em log.
-4. UI de Conexões: lista real/estado vazio, formulário funcional, abertura automática do modal após validação, engrenagem para editar e avisos claros sobre o runtime ainda indisponível.
+4. UI de Conexões: lista real/estado vazio, formulário funcional, abertura automática do modal após validação, engrenagem para editar e estado/saúde do webhook.
 5. Tipos DB focados nos objetos novos e controles de autorização/isolamento correspondentes.
 
 ## Próximas etapas (fora desta fatia)
@@ -60,13 +60,14 @@ após processamento, retém recibos por 30 dias e faz retry limitado para falhas
 
 O limite de arquitetura entre provedores está mais claro: `InboundChannelDriver` representa a porta
 de entrada já autenticada/traduzida, `getInboundDriver` seleciona o driver sem fallback, e
-`InboundTextEvent` é o contrato canônico entregue a `persistirTextoEntranteNaInbox`. Esse caso de uso
-é quem aplica a chave idempotente e os efeitos comuns (marcador da conversa, opt-out, handoff e
-automações). Telegram implementa o driver em `lib/channels/telegram/driver.ts`; o worker consome a
-porta do registro, sem importar o parser Telegram. Um próximo provedor de texto pode implementar
-essa porta e reutilizar o ledger/efeitos, mantendo autenticação, identidade, destinos, API externa,
-retries e capabilities específicas no seu próprio adapter. Não se generaliza credencial ou fila
-antes de existir um segundo fluxo com invariantes equivalentes.
+`InboundMessageEvent` é o contrato canônico entregue a `persistirMensagemEntranteNaInbox`. Esse caso
+de uso aplica a chave idempotente e os efeitos comuns (marcador da conversa, opt-out, handoff e
+automações) e agenda mídia pelo mesmo `event_log` usado pelos demais canais. Telegram implementa o
+driver em `lib/channels/telegram/driver.ts`; o worker consome a porta do registro, sem importar o
+parser Telegram. Um próximo provedor pode implementar essa porta e reutilizar o ledger/efeitos,
+Storage e derivação de mídia, mantendo autenticação, identidade, destinos, API externa, retries e
+capabilities específicas no seu próprio adapter. Não se generaliza credencial ou fila antes de
+existir um segundo fluxo com invariantes equivalentes.
 
 O caminho de saída já tinha `ChannelAdapter` e `getAdapter`; agora há uma porta correspondente para
 ingresso. O padrão é **Ports and Adapters** (drivers de protocolo nas bordas), com **Registry** de
@@ -78,22 +79,23 @@ O destino remoto da conversa também passou a ser persistido por `fn_upsert_tele
 Sem `provider_conversation_id`, a conversa aparecia na Inbox mas o adapter de saída não tinha o
 `chat_id` para localizar o destinatário; a migration `0707` fecha essa lacuna sem derivar telefone.
 
-O runtime implementado **não** liga os outros checkboxes da tela: mídia, edição, grupos,
-envio proativo, avisos, casos, ferramentas, Mini Apps, Business, Login/OIDC, pagamentos e operação
-da plataforma continuam sem consumidor Telegram. A capability `ai_replies` agora encaminha apenas
-mensagens privadas de texto ao pipeline comum de agentes, que ainda aplica autorização do contato e
-gates existentes; a resposta de saída relê a capability no bot de origem. A própria UI declara os
-limites restantes. Migration, baseline install/update, isolamento/grants e testes focados passaram
-em banco descartável; ainda falta prova visual/e2e em instalação configurada antes de release.
+O runtime de mensagens agora cobre entrada de texto, foto, áudio, vídeo e documento em chat privado;
+os bytes passam pelo `fetchInboundMedia` do adapter e pelo worker comum de Storage, e a saída admite
+texto e esses tipos de mídia pelo `ChannelAdapter`. Respostas citadas também usam o envelope comum,
+traduzidas para `message_id` na fronteira Telegram. IA ainda é conservadora para texto enquanto mídia
+aguarda persistência/derivação; grupos, edição, envio proativo, avisos, casos, ferramentas, Mini Apps,
+Business, Login/OIDC, pagamentos e operação da plataforma seguem sem consumidor. Migration, baseline
+install/update, isolamento/grants e testes focados passaram em banco descartável; ainda falta prova
+visual/e2e em instalação configurada antes de release.
 
 ### Recorte do runtime de mensagens entregue no código local
 
 O primeiro marco de tráfego é atendimento tenant em **chat privado**, com entrada autenticada,
-idempotência por bot/update, contato reconhecido por identidade opaca, conversa na Inbox e resposta
-humana de texto pelo mesmo bot. IA, grupos/tópicos, mídia, alertas, casos, ferramentas de agente,
-Mini Apps, Login/OIDC, Telegram Business, pagamentos e operação de plataforma permanecem
-desativados até terem contratos, autorização e testes próprios. “Bot cadastrado” e “Telegram ativo”
-são estados distintos; a ativação exige `receive_messages` e `human_replies`.
+idempotência por bot/update, contato reconhecido por identidade opaca, conversa na Inbox e respostas
+humanas de texto e mídia pelo mesmo bot. IA para texto usa o pipeline existente sob capability; os
+demais recursos da matriz acima seguem desativados até terem consumidores, autorização e testes
+próprios. “Bot cadastrado” e “Telegram ativo” são estados distintos; a ativação exige
+`receive_messages` e pelo menos uma capability de resposta.
 
 ### Bloqueio para publicação na VPS
 
@@ -104,11 +106,12 @@ com o app numa imagem local `deskcommcrm:telegram-preview-df33c72c0`, worker e s
 storage e WAHA foi criado em 2026-10-19; nenhum código, banco ou container foi alterado nesta
 auditoria. Atualizar agora só publicaria o formulário de cadastro, não o ciclo de mensagens.
 
-## Aceitação desta etapa
+## Aceitação atual do runtime privado
 
 - Token inválido não cria conexão e nenhuma resposta/log ecoa o token.
 - Token válido é cifrado, identificado por nome/username/id do bot e não pode ser lido via GET.
 - Mesmo bot não pode ser cadastrado duas vezes na mesma organização; outra organização permanece isolada.
 - A configuração abre após validar e também pelo controle de engrenagem; bindings persistem sem conceder papel.
-- O status e a mensagem deixam claro que nenhum update ou envio de Telegram está ativo até o runtime ser entregue.
-- Migration e baseline são idempotentes, RLS/grants são verificáveis, e a interface é provada pelo browser antes da conclusão.
+- Updates privados autenticados e duplicados não geram mensagens duplicadas; falhas de ingestão permitem retry.
+- Texto, mídia e respostas citadas usam a Inbox, o pipeline de mídia e o adapter comum sem expor o token.
+- Migration e baseline são idempotentes, RLS/grants são verificáveis, e interface e ida/volta real são provadas no browser antes da conclusão.
