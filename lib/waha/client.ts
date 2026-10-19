@@ -1,0 +1,948 @@
+/**
+ * Minimal WAHA REST client used during onboarding (and elsewhere). Returns
+ * `null` from `getWahaClient()` when env is not configured so callers can
+ * gracefully render a "Docker is not up" banner instead of crashing.
+ *
+ * Auth: o contêiner recebe SHA512 hex; X-Api-Key recebe a chave plaintext.
+ */
+import { z } from "zod";
+import { describeWahaServer, type WahaServerCapabilities } from "@/lib/channels/waha-server";
+
+import { logger } from "@/lib/logger";
+import { classificarFalhaDeAlcance, explicarFalhaDeAlcance } from "@/lib/net/alcance";
+
+/**
+ * AS CONVERSAS QUE O CRM NÃO ATENDE, E POR ISSO NÃO PRECISA RECEBER.
+ *
+ * ─── O que isto custava, medido no banco de produção ────────────────────────
+ *
+ * Todo evento que o WAHA manda é arquivado inteiro em `webhook_events_log`.
+ * Separando os eventos de mensagem por origem, em 20/08/2026:
+ *
+ *   estados / difusão ......... 23.010 eventos ... 271 MB
+ *   grupos .................... 17.970 eventos .... 89 MB
+ *   canais / newsletter ........ 1.818 eventos .... 16 MB
+ *   conversa 1-a-1 ............. 4.739 eventos .... 19 MB   ← o negócio
+ *
+ * Ou seja: 376 dos 395 MB eram conversa que o CRM RECEBE, GRAVA INTEIRA e
+ * DESCARTA. `handleInbound` já ignora tudo que não é 1-a-1 — o dinheiro era
+ * gasto antes da decisão, no transporte e no arquivo.
+ *
+ * ─── Por que no WAHA e não num `if` nosso ───────────────────────────────────
+ *
+ * A doc dele é explícita: `ignore` impede "event processing AND database
+ * storage" — ou seja, ele nem processa nem guarda. Um filtro do nosso lado
+ * chegaria tarde: a mensagem já teria atravessado a rede, ocupado CPU do
+ * contêiner e entrado no banco DELE. Cortar na fonte é a única versão que
+ * economiza as três coisas.
+ *
+ * ─── Grupos entram na lista, e isso não muda o produto ──────────────────────
+ *
+ * O CLAUDE.md manda pular o vínculo de CRM quando o chat termina em `@g.us`.
+ * Já hoje nenhuma mensagem de grupo vira conversa, contato ou lead: o
+ * comportamento visível é idêntico com ou sem esta linha. O que muda é parar
+ * de pagar por elas. Quem um dia quiser grupos inverte a chave.
+ */
+export const CONVERSAS_IGNORADAS = {
+  /** Os "estados" que os contatos publicam. Sozinhos eram 69% do arquivo. */
+  status: true,
+  /** Listas de difusão. */
+  broadcast: true,
+  /** Canais / newsletters. */
+  channels: true,
+  /** Ver o parágrafo acima: o CRM já os descarta na entrada. */
+  groups: true,
+} as const;
+
+/**
+ * O ACERVO DO NÚMERO — o histórico que existe ANTES da vinculação.
+ *
+ * ─── O defeito (issue #999) ────────────────────────────────────────────────
+ *
+ * A sessão do NOWEB nascia só com o filtro: `config: { ignore }`. O padrão da
+ * engine é `store { enabled: false, fullSync: false }` e não há variável de
+ * ambiente que o mude — quem cria a sessão é que precisa PEDIR. Sem o pedido,
+ * o canal não guarda nem entrega o que já estava no aparelho: só o que
+ * acontece depois da vinculação. Medido na instalação da issue: 3 conversas e
+ * 1 MB, contra 825 conversas e 57 MB com o acervo pedido.
+ *
+ * ─── Por que `fullSync` e não só `enabled` ─────────────────────────────────
+ *
+ * `fullSync` manda baixar o histórico ANTERIOR à vinculação. Ligando só
+ * `enabled`, o acervo só enche a partir de agora — o mesmo defeito com outra
+ * roupa. O custo é real e é do pareamento: na vinculação de um número
+ * movimentado, o canal baixa o passado inteiro (tempo, CPU e disco DELE, no
+ * teto de memória do contêiner). Quem não quer esse custo não liga a opção.
+ *
+ * ─── Desligado por padrão: decisão do mantenedor, não descuido ─────────────
+ *
+ * A #999 reabriu com decisão registrada na issue: desligado por padrão, com
+ * opção POR CONEXÃO. O acervo guarda dado pessoal fora do alcance da
+ * anonimização do CRM (ela limpa o banco do CRM, não o do canal), e o que ele
+ * destrava hoje é pouco — o CRM ainda não lê o histórico de volta. Por isso a
+ * constante abaixo NÃO entra no corpo sozinha: quem liga é a conexão
+ * (`channel_sessions.metadata.guardar_historico`, sem migration).
+ *
+ * `resolvePhoneForLid`, mais abaixo neste arquivo, depende do store — a tabela
+ * que traduz `<lid>` em telefone só existe com ele ligado. O caminho que cria
+ * a sessão dispensava o que outro caminho do mesmo arquivo exigia.
+ */
+export const ACERVO_DO_HISTORICO = {
+  /** Liga o acervo: sem isto o canal não guarda nem entrega o que já passou. */
+  enabled: true,
+  /** Baixa o histórico anterior à vinculação, não só o que vier depois. */
+  fullSync: true,
+} as const;
+
+/**
+ * O que a CONEXÃO pede ao canal na criação/reconfiguração da sessão.
+ *
+ * `undefined`/`{}` = o corpo continua idêntico ao de antes da #999. O nome da
+ * opção é o do botão na tela, para o leitor do chamador reconhecer a decisão.
+ *
+ * Três estados, não dois: `true` liga, `false` desliga, e AUSENTE não toca no
+ * `store` — deixa como encontrou. A reconexão de quem não tem a chave no
+ * `metadata` chega sem a opção, e a sessão dela pode ter o store ligado por
+ * fora (pelo painel do canal, ou criada enquanto o #1000 esteve na main). A
+ * doc do NOWEB avisa: "Do not change the values after you scanned QR, it can
+ * lead to the loss of the chat history". Desligar só com `false` explícito,
+ * que vem do PATCH /acervo — escolha de quem administra, na tela.
+ */
+export interface OpcoesDeAcervo {
+  /** Guarda (`true`) ou desliga (`false`) o acervo; ausente = não mexe. */
+  guardarHistorico?: boolean;
+}
+
+/** O `store` que a sessão TEM hoje — `null` = a engine está no default (desligado). */
+function storeDaSessao(config: Record<string, unknown> | null | undefined) {
+  const noweb = config?.noweb;
+  if (!noweb || typeof noweb !== "object" || Array.isArray(noweb)) return null;
+  const store = (noweb as Record<string, unknown>).store;
+  if (!store || typeof store !== "object" || Array.isArray(store)) return null;
+  return store as { enabled?: unknown; fullSync?: unknown };
+}
+
+/**
+ * A sessão já está do jeito que a conexão PEDIU?
+ *
+ * `guardar=false` conforma com o default da engine (sem `noweb.store`, ou com
+ * `enabled: false`); `guardar=true` exige `enabled: true`. É a régua de AMBOS
+ * os lados: ela decide se a convergência precisa de um PUT, e um PUT reinicia
+ * a sessão — ninguém pode pagar restart por uma opção que não mudou.
+ */
+function acervoEstaConferido(config: Record<string, unknown> | null | undefined, guardar: boolean | undefined): boolean {
+  if (guardar === undefined) return true;
+  const ligado = storeDaSessao(config)?.enabled === true;
+  return guardar ? ligado : !ligado;
+}
+
+/** Grava (ou desliga) o acervo na config que vai no PUT, sem tocar no resto do `noweb`. */
+function aplicarAcervoNaConfig(config: Record<string, unknown>, guardar: boolean | undefined): void {
+  if (acervoEstaConferido(config, guardar)) return;
+  const atual = config.noweb;
+  const noweb = atual && typeof atual === "object" && !Array.isArray(atual)
+    ? { ...(atual as Record<string, unknown>) }
+    : {};
+  noweb.store = guardar ? ACERVO_DO_HISTORICO : { enabled: false, fullSync: false };
+  config.noweb = noweb;
+}
+
+/**
+ * As chaves do filtro que o CRM IMPÕE. `groups` fica de fora de propósito: desde a
+ * funcionalidade de grupos na inbox, quem decide `groups` é `definirRecebimentoDeGrupos`,
+ * a partir de `channel_session_groups`. Compatibilidade e convergência não a tocam.
+ */
+export const CHAVES_DO_FILTRO_FIXAS = Object.fromEntries(
+  Object.entries(CONVERSAS_IGNORADAS).filter(([k]) => k !== "groups"),
+) as Omit<typeof CONVERSAS_IGNORADAS, "groups">;
+
+/**
+ * Teto de relógio das chamadas ao WAHA.
+ *
+ * 15s não é número escolhido aqui: é o que `docs/specs/03-spec-whatsapp-waha.md`
+ * já prescrevia na linha 636 (`timeoutMs: cfg?.timeoutMs ?? 15_000`). Duas
+ * réguas para a mesma grandeza divergem na primeira mudança.
+ *
+ * O WAHA é dependência externa e cai. O modo de falha caro não é a recusa
+ * imediata — essa devolve `ECONNREFUSED` na hora — é o socket que ACEITA e não
+ * responde: sem teto, a Server Action ou a rota fica presa até o limite do
+ * runtime. (issue #470)
+ */
+export const TETO_PADRAO_MS = 15_000;
+
+/**
+ * Mídia tem teto MAIOR, e por um motivo medível: `lib/waha/media-send.ts:28,31`
+ * manda `convert: true` em `sendVideo` e `sendVoice`. O WAHA roda ffmpeg e BAIXA
+ * a URL do Storage antes de responder.
+ *
+ * Um teto único calibrado para `sendText` cortaria envio de áudio legítimo — o
+ * conserto do timeout viraria um defeito novo, e mais difícil de ver que o
+ * original, porque a mensagem simplesmente não sai.
+ *
+ * 30s é o mesmo teto que a mídia de ENTRADA já usa
+ * (`lib/messaging/media/waha-source.ts:18`).
+ */
+export const TETO_DE_MIDIA_MS = 30_000;
+
+/**
+ * O ERRO DIZ O STATUS. NUNCA O CORPO QUE O WAHA DEVOLVEU.
+ *
+ * ─── Por onde o corpo saía ──────────────────────────────────────────────────
+ *
+ * Oito pontos deste arquivo montavam a exceção como
+ * `waha_<acao>_<status>: <200 primeiros bytes do corpo>`. E essa mensagem não
+ * fica no log: as três rotas de sessão a devolvem ao cliente HTTP —
+ *
+ *   app/api/v1/channel-sessions/route.ts:127
+ *   app/api/v1/channel-sessions/[id]/route.ts:324
+ *   app/api/v1/channel-sessions/[id]/reconnect/route.ts:155
+ *
+ *       return fail("waha_error", wahaFriendlyError(err), 502, { requestId });
+ *
+ * e `wahaFriendlyError` termina em `... (WAHA): ${msg}` para tudo que
+ * `classificarFalhaDeAlcance` não reconhece — que é justamente o caso de um
+ * HTTP com status: não houve falha de rede, houve resposta. Ou seja: o corpo
+ * de um serviço de terceiro atravessava a nossa API e chegava ao navegador.
+ *
+ * ─── Por que "logar em vez de propagar" não é a saída ───────────────────────
+ *
+ * A alternativa óbvia seria manter o corpo, mas só no log estruturado. O
+ * cabeçalho de `lib/logger.ts` fecha essa porta com todas as letras: "Never log
+ * secrets, raw tokens, message bodies, CPF, or phone numbers". O corpo de erro
+ * do WAHA é, por construção, um envelope que pode conter qualquer um dos
+ * cinco — ele responde sobre sessões cujo conteúdo é conversa de cliente.
+ * Conteúdo de origem desconhecida não vira nem resposta nem linha de log.
+ *
+ * ─── O que NÃO se perde ─────────────────────────────────────────────────────
+ *
+ * O status HTTP continua no nome do erro (`waha_create_500`), e ele é o que
+ * separa "configuração/credencial" (4xx) de "o WAHA quebrou" (5xx). O teto de
+ * relógio continua dizendo `waha_timeout` com o alvo. Quem precisa do corpo
+ * inteiro lê o log do próprio contêiner do WAHA, que é onde ele nasce e o
+ * único lugar em que ele já estava com dono.
+ *
+ * Achado de @prevprocesso-maker no PR #465.
+ */
+export interface WahaClientOpts {
+  /** Sobrescreve o teto padrão. Existe para o teste; produção usa o default. */
+  tetoMs?: number;
+}
+
+const sessionSnapshotSchema = z.object({
+  name: z.string(),
+  status: z.string(),
+  config: z.record(z.string(), z.unknown()).nullable().optional(),
+  engine: z.union([z.string(), z.object({ engine: z.string().optional() })]).optional(),
+  me: z.record(z.string(), z.unknown()).nullable().optional(),
+  qr: z.string().optional(),
+}).passthrough();
+
+export type WahaSessionSnapshot = z.infer<typeof sessionSnapshotSchema>;
+type SessionOperation = "create" | "start" | "stop" | "logout" | "delete";
+
+/** Mantém o prefixo/status que checkHealth e os callers já classificam. */
+export class WahaSessionError extends Error {
+  constructor(
+    public readonly operation: SessionOperation,
+    public readonly httpStatus: number,
+  ) {
+    super(`waha_${operation}_${httpStatus}`);
+    this.name = "WahaSessionError";
+  }
+}
+
+const errorEnvelope = z.object({ statusCode: z.number(), error: z.string(), message: z.string() });
+
+/** Envelopes exatos observados/upstream; não há allowlist genérica de 409. */
+function knownSessionConflict(body: unknown, status: number, operation: SessionOperation, name: string): boolean {
+  const parsed = errorEnvelope.safeParse(body);
+  if (!parsed.success || parsed.data.statusCode !== status) return false;
+  const value = parsed.data;
+  if (status === 404) return value.error === "Not Found" && value.message === "Session not found";
+  if (status !== 422 || value.error !== "Unprocessable Entity") return false;
+  if (operation === "create") return value.message === `Session '${name}' already exists. Use PUT to update it.`;
+  if (operation === "start") return value.message === `Session '${name}' is already started.`;
+  return false;
+}
+
+export class WahaClient {
+  private readonly tetoMs: number;
+
+  constructor(
+    private readonly baseUrl: string,
+    private readonly apiKey: string,
+    opts: WahaClientOpts = {},
+  ) {
+    this.tetoMs = opts.tetoMs ?? TETO_PADRAO_MS;
+  }
+
+  /**
+   * `fetch` com teto, e com erro que DIZ que foi o relógio.
+   *
+   * Sem a segunda parte, um estouro de teto chega ao log como um erro de rede
+   * genérico e o diagnóstico começa procurando defeito de contrato — que é o
+   * caminho mais caro possível para "a dependência externa não respondeu".
+   */
+  private async fetchComTeto(
+    url: string | URL,
+    init: RequestInit,
+    tetoMs?: number,
+  ): Promise<Response> {
+    const teto = tetoMs ?? this.tetoMs;
+    try {
+      return await fetch(url, { ...init, signal: AbortSignal.timeout(teto) });
+    } catch (e) {
+      const nome = e instanceof Error ? e.name : "";
+      if (nome === "TimeoutError" || nome === "AbortError") {
+        throw new Error(`waha_timeout: o WAHA não respondeu em ${teto}ms (${url})`);
+      }
+      throw e;
+    }
+  }
+
+  /** server/version é diagnóstico, nunca uma licença inventada pelo cliente. */
+  async getServerVersion(): Promise<WahaServerCapabilities> {
+    const res = await this.fetchComTeto(`${this.baseUrl}/api/server/version`, {
+      headers: { "X-Api-Key": this.apiKey },
+    });
+    if (!res.ok) throw new Error(`waha_version_${res.status}`);
+    return describeWahaServer(await res.json().catch(() => null));
+  }
+
+  private async sessionAfter(name: string, operation: SessionOperation, status: number): Promise<WahaSessionSnapshot | null> {
+    const res = await this.fetchComTeto(`${this.baseUrl}/api/sessions/${encodeURIComponent(name)}`, {
+      headers: { "X-Api-Key": this.apiKey },
+    });
+    // O endpoint exato é a pós-condição de ausência; 404 de proxy/HTML não é.
+    const body: unknown = await res.json().catch(() => null);
+    if (res.status === 404 && knownSessionConflict(body, 404, operation, name)) return null;
+    if (!res.ok) throw new WahaSessionError(operation, res.status);
+    const parsed = sessionSnapshotSchema.safeParse(body);
+    if (!parsed.success || parsed.data.name !== name) throw new WahaSessionError(operation, status);
+    return parsed.data;
+  }
+
+  /** Leitura de identidade exata para sincronização local, incluindo ausência estruturada. */
+  async getVerifiedSession(name: string): Promise<WahaSessionSnapshot | null> {
+    return this.sessionAfter(name, "start", 502);
+  }
+
+  private async compatibleSession(session: WahaSessionSnapshot): Promise<boolean> {
+    if (!session.config) return false;
+    const engine = typeof session.engine === "string" ? session.engine : session.engine?.engine;
+    const actualEngine = engine ?? (await this.getServerVersion()).engine;
+    // O contrato de criação atual é NOWEB. Engine desconhecido não é licença:
+    // a operação já foi tentada, mas não podemos confirmar uma sessão incompatível.
+    if (actualEngine !== "NOWEB") return false;
+    const ignore = session.config.ignore;
+    if (ignore === undefined) return true; // sessão legada; convergência preserva webhooks
+    if (!ignore || typeof ignore !== "object" || Array.isArray(ignore)) return false;
+    return Object.entries(CHAVES_DO_FILTRO_FIXAS).every(([key, value]) =>
+      !(key in ignore) || (ignore as Record<string, unknown>)[key] === value);
+  }
+
+  /** Porta granular para a futura reserva: created nunca significa ownership. */
+  async createSession(name: string, opcoes: OpcoesDeAcervo = {}): Promise<{ created: boolean; session: WahaSessionSnapshot }> {
+    // O acervo vai JUNTO com o filtro, mas SÓ quando a conexão pediu (opção
+    // desligada por padrão — decisão do mantenedor na issue #999). Sem a opção,
+    // o corpo é byte a byte o de sempre. Ver ACERVO_DO_HISTORICO.
+    const config: Record<string, unknown> = { ignore: CONVERSAS_IGNORADAS };
+    if (opcoes.guardarHistorico) config.noweb = { store: ACERVO_DO_HISTORICO };
+    const res = await this.fetchComTeto(`${this.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "X-Api-Key": this.apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ name, start: false, config }),
+    });
+    if (!res.ok && !knownSessionConflict(await res.json().catch(() => null), res.status, "create", name)) {
+      throw new WahaSessionError("create", res.status);
+    }
+    // 404 não é conflito de create, mesmo que use envelope reconhecido.
+    if (!res.ok && res.status !== 422) throw new WahaSessionError("create", res.status);
+    const session = await this.sessionAfter(name, "create", res.status);
+    if (!session || !(await this.compatibleSession(session))) throw new WahaSessionError("create", res.status);
+    return { created: res.ok, session };
+  }
+
+  /** Compatível com os callers: cria se necessário e inicia, confirmando GET. */
+  async startSession(name: string, opcoes: OpcoesDeAcervo = {}): Promise<{ qr?: string; status: string }> {
+    const creation = await this.createSession(name, opcoes);
+    const ignore = creation.session.config?.ignore;
+    const filtersCurrent = ignore && typeof ignore === "object" && Object.entries(CHAVES_DO_FILTRO_FIXAS)
+      .every(([key, value]) => (ignore as Record<string, unknown>)[key] === value);
+    // Sessão que JÁ existe: `POST /api/sessions` responde 422 e a config não é
+    // aplicada nesse caminho. Então quem ligou a opção em um número já pareado
+    // só consegue o acervo pela convergência (guardando daqui em diante: o
+    // fullSync é da vinculação). Sem a opção, o critério é o de sempre
+    // e o store fica como estava (ver OpcoesDeAcervo).
+    const acervoFalta = !acervoEstaConferido(creation.session.config, opcoes.guardarHistorico);
+    if (!creation.created && (!filtersCurrent || acervoFalta)) await this.convergirConfigDaSessao(name, opcoes);
+    return this.startExistingSession(name);
+  }
+
+  /** Não cria nem remove: a futura operação de reserva mantém seu próprio recibo. */
+  async startExistingSession(name: string): Promise<WahaSessionSnapshot> {
+    const res = await this.fetchComTeto(`${this.baseUrl}/api/sessions/${encodeURIComponent(name)}/start`, {
+      method: "POST",
+      headers: { "X-Api-Key": this.apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok && !(res.status === 422 && knownSessionConflict(await res.json().catch(() => null), res.status, "start", name))) {
+      throw new WahaSessionError("start", res.status);
+    }
+    const session = await this.sessionAfter(name, "start", res.status);
+    if (!session || !["STARTING", "SCAN_QR_CODE", "WORKING"].includes(session.status) || !(await this.compatibleSession(session))) {
+      throw new WahaSessionError("start", res.status);
+    }
+    return session;
+  }
+
+  private async finishSession(name: string, operation: "stop" | "logout" | "delete"): Promise<void> {
+    const path = `/api/sessions/${encodeURIComponent(name)}${operation === "delete" ? "" : `/${operation}`}`;
+    const res = await this.fetchComTeto(`${this.baseUrl}${path}`, {
+      method: operation === "delete" ? "DELETE" : "POST",
+      headers: { "X-Api-Key": this.apiKey, "Content-Type": "application/json" },
+      ...(operation === "delete" ? {} : { body: JSON.stringify({}) }),
+    });
+    if (!res.ok && !(res.status === 404 && knownSessionConflict(await res.json().catch(() => null), res.status, operation, name))) {
+      throw new WahaSessionError(operation, res.status);
+    }
+    const session = await this.sessionAfter(name, operation, res.status);
+    // Ausência confirmada satisfaz parar/deslogar também, sem recriar transporte.
+    if (!session) return;
+    if (operation === "stop" && session.status === "STOPPED") return;
+    // Logout mantém config; quando ativo reinicia sem autenticação. WORKING ou
+    // me preenchido não provam descarte de credenciais. STARTING sem me é a
+    // retomada do transporte após logout, não promessa de canal conectado.
+    // https://waha.devlike.pro/docs/how-to/sessions/#logout-session
+    if (operation === "logout" && ["STOPPED", "STARTING", "SCAN_QR_CODE"].includes(session.status) && session.me === null) return;
+    throw new WahaSessionError(operation, res.status);
+  }
+
+  async stopSession(name: string): Promise<void> {
+    return this.finishSession(name, "stop");
+  }
+
+  async logoutSession(name: string): Promise<void> {
+    return this.finishSession(name, "logout");
+  }
+
+  /**
+   * Põe a config de uma sessão que já existe no estado que queremos.
+   *
+   * ─── LÊ ANTES DE ESCREVER, e isto não é preciosismo ────────────────────────
+   *
+   * A doc do WAHA é literal: o PUT "updates a session with a FULL new
+   * configuration". Mandar `{config: {ignore}}` sozinho não acrescenta o filtro
+   * — SUBSTITUI a config inteira, e leva junto o bloco `webhooks`. O resultado
+   * seria uma sessão de pé, conectada, sem entregar mensagem nenhuma ao CRM:
+   * a pior forma de falhar, porque nada fica vermelho.
+   *
+   * Por isso o GET vem primeiro e o `ignore` é ENXERTADO no que já existe. Se o
+   * GET não responder, não há PUT: sem saber o que há lá, escrever é apostar o
+   * canal inteiro numa economia de bytes.
+   *
+   * ─── E ele REINICIA a sessão ───────────────────────────────────────────────
+   *
+   * "If the session is not in a STOPPED status, it will be stopped and started
+   * with the new configuration." Sem QR novo — as credenciais moram em disco —
+   * mas é uma janela de segundos sem canal. Aceitável aqui porque este caminho
+   * só roda dentro de `startSession`, que já é o momento em que a sessão está
+   * sendo (re)iniciada de propósito.
+   *
+   * NÃO lança: é melhoria de custo, não condição de envio. Uma versão do WAHA
+   * que não conheça a rota faria toda reconexão falhar por causa de uma
+   * economia — trocar mensagem por byte é o negócio errado.
+   */
+  async convergirConfigDaSessao(name: string, opcoes: OpcoesDeAcervo = {}): Promise<boolean> {
+    const url = `${this.baseUrl}/api/sessions/${encodeURIComponent(name)}`;
+    try {
+      const atual = await this.fetchComTeto(url, { headers: { "X-Api-Key": this.apiKey } });
+      if (!atual.ok) {
+        logger.warn("[waha] não li a config da sessão; não vou reescrevê-la", {
+          status: atual.status,
+        });
+        return false;
+      }
+      const parsed = sessionSnapshotSchema.safeParse(await atual.json().catch(() => null));
+      if (!parsed.success || parsed.data.name !== name) {
+        logger.warn("[waha] a sessão respondeu sem identidade correta; não vou reescrevê-la", {});
+        return false;
+      }
+      const sessao = parsed.data;
+      if (!sessao.config) return false;
+
+      // Checa só o ENGINE aqui, não `compatibleSession()` inteiro: aquele também
+      // exige que o filtro JÁ esteja correto, e o trabalho deste método é
+      // justamente corrigir um filtro que drift ou — o caso comum — entrou
+      // como `{}` numa sessão legada. Recusar converger porque o filtro está
+      // errado seria recusar o próprio propósito da função.
+      const engine = typeof sessao.engine === "string" ? sessao.engine : sessao.engine?.engine;
+      const actualEngine = engine ?? (await this.getServerVersion()).engine;
+      if (actualEngine !== "NOWEB") {
+        logger.warn("[waha] engine incompatível; não vou reescrever o filtro da sessão", {});
+        return false;
+      }
+
+      // `groups` NÃO entra no que este método impõe: desde a funcionalidade de
+      // grupos na inbox, quem decide `groups` é `definirRecebimentoDeGrupos`.
+      // Preserva o valor atual (ou o default de criação, se a sessão nunca
+      // teve a chave) em vez de reescrevê-lo às cegas.
+      const ignoreAtual = (typeof sessao.config.ignore === "object" && sessao.config.ignore !== null
+        ? sessao.config.ignore
+        : {}) as Record<string, unknown>;
+      const groupsAtual = typeof ignoreAtual.groups === "boolean" ? ignoreAtual.groups : CONVERSAS_IGNORADAS.groups;
+      // Já está como queremos: não reiniciar a sessão à toa. Este caminho roda
+      // em TODA reconexão, e um restart desnecessário por rodada seria pior que
+      // o gasto que ele evita.
+      // Comparação chave a chave, não `JSON.stringify`: `stringify` é sensível
+      // à ORDEM das chaves, então o dia em que o WAHA devolver o mesmo objeto
+      // com as chaves noutra sequência, esta guarda passa a dizer "mudou" e a
+      // sessão reinicia a cada reconexão — sem que nada tenha mudado.
+      const guardarHistorico = opcoes.guardarHistorico;
+      const filtroConferido = Object.entries(CHAVES_DO_FILTRO_FIXAS).every(([k, v]) => ignoreAtual[k] === v);
+      // O acervo entra na MESMA régua do filtro: sem isto, quem ligou a opção em
+      // um número já pareado nunca teria o PUT (o filtro já estava certo), e
+      // quem desligou levaria um restart para reafirmar o default da engine.
+      if (filtroConferido && acervoEstaConferido(sessao.config, guardarHistorico)) return true;
+      const config: Record<string, unknown> = { ...sessao.config, ignore: { ...CHAVES_DO_FILTRO_FIXAS, groups: groupsAtual } };
+      aplicarAcervoNaConfig(config, guardarHistorico);
+
+      const res = await this.fetchComTeto(url, {
+        method: "PUT",
+        headers: { "X-Api-Key": this.apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ name, config }),
+      });
+      if (!res.ok) {
+        logger.warn("[waha] não consegui convergir a config da sessão", { status: res.status });
+        return false;
+      }
+      return true;
+    } catch (err) {
+      // Rede fora aqui não é assunto de quem só quer iniciar a sessão — a
+      // convergência é oportunista e a sessão sobe do mesmo jeito. Mas os
+      // outros dois caminhos de falha deste mesmo bloco logam, e sem esta
+      // linha a única falha INVISÍVEL seria justamente a que faz a economia
+      // não acontecer: a config fica velha e ninguém fica sabendo.
+      logger.warn("[waha] não consegui falar com o WAHA para convergir a config", {
+        erro: err instanceof Error ? err.message : "unknown",
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Grupos em que o número está. Medido no WAHA real (Task 0,
+   * `.superpowers/sdd/2026-09-23-grupos-na-inbox/task-0-report.md`):
+   * `GET /api/{session}/groups` devolve um OBJETO chaveado por id de grupo,
+   * não um array — mas a tolerância a array também fica, para não quebrar
+   * contra uma versão futura do WAHA que volte a ele.
+   *
+   * `group.id` é sempre string simples (nunca `{ _serialized }`), em dois
+   * formatos: moderno (`<18 dígitos>@g.us`) e legado
+   * (`<telefone>-<timestamp>@g.us`, 34/98 grupos reais medidos). Os dois
+   * terminam em `@g.us`, e é essa a única checagem — não `18 dígitos`.
+   */
+  async listarGrupos(session: string): Promise<Array<{ chatId: string; subject: string | null }>> {
+    const res = await this.fetchComTeto(`${this.baseUrl}/api/${encodeURIComponent(session)}/groups`, {
+      headers: { "X-Api-Key": this.apiKey },
+    });
+    if (!res.ok) throw new Error(`waha_groups_${res.status}`);
+    const bruto = (await res.json().catch(() => null)) as unknown;
+    const lista = Array.isArray(bruto) ? bruto : bruto && typeof bruto === "object" ? Object.values(bruto) : [];
+    const grupos: Array<{ chatId: string; subject: string | null }> = [];
+    for (const item of lista) {
+      if (!item || typeof item !== "object") continue;
+      const o = item as Record<string, unknown>;
+      const id = o.id;
+      const chatId =
+        typeof id === "string" ? id
+        : id && typeof id === "object" && typeof (id as Record<string, unknown>)._serialized === "string"
+          ? ((id as Record<string, unknown>)._serialized as string)
+          : typeof o.JID === "string" ? (o.JID as string) : null;
+      if (!chatId || !chatId.endsWith("@g.us")) continue;
+      const subject = typeof o.subject === "string" ? o.subject : typeof o.name === "string" ? o.name : null;
+      grupos.push({ chatId, subject });
+    }
+    return grupos;
+  }
+
+  /**
+   * Liga ou desliga o recebimento de grupos NESTA sessão. Só devolve `true` quando o GET
+   * seguinte confirma a troca: o WAHA já respondeu 200 para operação que não aconteceu
+   * (medido na issue melgarafael/DeskcommCRM#1428).
+   *
+   * ─── Por que não chama `startExistingSession` ──────────────────────────────
+   *
+   * A Task 0 mediu o WAHA real (2026.7.2, NOWEB): o `PUT` já muda o status para
+   * `STARTING` sozinho, como efeito colateral, e a sessão volta a `WORKING` por
+   * conta própria em poucos segundos (≤5s, 6/6 polls) — sem pedido de restart
+   * manual. Chamar `startExistingSession` aqui seria um segundo restart em cima
+   * do que o próprio WAHA já dispara.
+   *
+   * O que este método faz em vez disso: espera, com teto, a sessão sair de
+   * `STARTING`, e só então confirma `ignore.groups`. Devolver `true` com a
+   * sessão ainda reiniciando seria aceitável SE o valor já estivesse
+   * confirmado — mas medir enquanto ainda está `STARTING` arriscaria ler um
+   * `config` transitório, então a espera vem antes da leitura que decide.
+   */
+  async definirRecebimentoDeGrupos(name: string, receber: boolean): Promise<boolean> {
+    const url = `${this.baseUrl}/api/sessions/${encodeURIComponent(name)}`;
+    const ler = async () => {
+      const r = await this.fetchComTeto(url, { headers: { "X-Api-Key": this.apiKey } });
+      if (!r.ok) return null;
+      const p = sessionSnapshotSchema.safeParse(await r.json().catch(() => null));
+      return p.success && p.data.name === name ? p.data : null;
+    };
+    const atual = await ler();
+    if (!atual?.config) return false;
+    // IDEMPOTENTE: já está como pedido → confirma sem PUT. O PUT reinicia a
+    // sessão (vai a STARTING), e este método é chamado em TODO "ligar grupo" e
+    // em toda (re)conexão do número — escrever sem mudança seria um reinício
+    // de sessão por clique.
+    const ignoreAtual = typeof atual.config.ignore === "object" && atual.config.ignore
+      ? (atual.config.ignore as Record<string, unknown>)
+      : null;
+    if (ignoreAtual && ignoreAtual.groups === !receber) return true;
+    const ignore = {
+      ...((typeof atual.config.ignore === "object" && atual.config.ignore) || {}),
+      ...CHAVES_DO_FILTRO_FIXAS,
+      groups: !receber,
+    };
+    const put = await this.fetchComTeto(url, {
+      method: "PUT",
+      headers: { "X-Api-Key": this.apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ name, config: { ...atual.config, ignore } }),
+    });
+    if (!put.ok) return false;
+    // Teto de ~10s no total, em passos de 2s: bounded, e curto o bastante para
+    // não prender a rota que chama isto. Só espera quando a sessão realmente
+    // está reiniciando (STARTING); no caso comum (fica WORKING o tempo todo,
+    // como a Task 0 mediu em produção) o laço nem entra.
+    const TETO_DE_ESPERA_MS = 10_000;
+    const PASSO_MS = 2_000;
+    const inicio = Date.now();
+    let depois = await ler();
+    while (depois?.status === "STARTING" && Date.now() - inicio < TETO_DE_ESPERA_MS) {
+      await new Promise((r) => setTimeout(r, PASSO_MS));
+      depois = await ler();
+    }
+    const g = depois?.config && typeof depois.config.ignore === "object" && depois.config.ignore
+      ? (depois.config.ignore as Record<string, unknown>).groups
+      : undefined;
+    return g === !receber;
+  }
+
+  /** Remoção só converge depois de GET da identidade exata confirmar ausência. */
+  async deleteSession(name: string): Promise<void> {
+    return this.finishSession(name, "delete");
+  }
+
+  async getSessionQr(name: string): Promise<{ qr?: string; status: string }> {
+    const res = await this.fetchComTeto(`${this.baseUrl}/api/sessions/${encodeURIComponent(name)}`, {
+      headers: { "X-Api-Key": this.apiKey },
+    });
+    if (!res.ok) throw new Error(`waha_${res.status}`);
+    return (await res.json()) as { qr?: string; status: string };
+  }
+
+  /**
+   * URL da foto de perfil do contato, ou null.
+   *
+   * NÃO lança quando falha: contato sem foto, com privacidade fechada ou
+   * simplesmente desconhecido é o caso COMUM, não erro. Quem chama é um cron de
+   * varredura — transformar isso em exceção encheria o log de ruído sobre o
+   * estado normal da maioria dos contatos.
+   *
+   * A URL vem assinada pelo CDN do WhatsApp e expira (~9 dias, medido em
+   * instalação real). Quem chama baixa e persiste; guardar a URL faz a foto
+   * sumir sozinha depois.
+   */
+  async getProfilePictureUrl(session: string, chatId: string): Promise<string | null> {
+    try {
+      const res = await this.fetchComTeto(
+        `${this.baseUrl}/api/contacts/profile-picture` +
+          `?session=${encodeURIComponent(session)}&contactId=${encodeURIComponent(chatId)}`,
+        { headers: { "X-Api-Key": this.apiKey } },
+      );
+      if (!res.ok) return null;
+      const body = (await res.json()) as { profilePictureURL?: string | null };
+      return body.profilePictureURL ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * O telefone por trás de um id opaco (`<lid>@lid`), quando o canal souber.
+   *
+   * ─── Por que isto não é sempre possível ─────────────────────────────────
+   *
+   * O WhatsApp passou a identificar quem escreve por um id opaco em vez do
+   * número. O canal mantém uma tabela de tradução, mas ela só existe com o
+   * STORE habilitado na sessão (`noweb.store.enabled`) — sem isso, todo pedido
+   * volta 400 dizendo exatamente isso, medido numa instalação real.
+   *
+   * E mesmo com o store ligado a tabela é POVOADA POR ATIVIDADE: ela nasce
+   * vazia e enche conforme as conversas acontecem. `null` aqui significa "ainda
+   * não sei", não "não existe" — quem chama precisa poder tentar de novo depois
+   * sem tratar isto como erro.
+   */
+  async resolvePhoneForLid(session: string, lid: string): Promise<string | null> {
+    try {
+      const res = await this.fetchComTeto(
+        `${this.baseUrl}/api/${encodeURIComponent(session)}/lids/${encodeURIComponent(lid)}`,
+        { headers: { "X-Api-Key": this.apiKey } },
+      );
+      if (!res.ok) return null;
+      const body = (await res.json()) as { pn?: string | null };
+      // `595981402525@c.us` → `+595981402525`. O sufixo é endereçamento do
+      // canal, não parte do número, e guardá-lo faria a tela mostrar lixo.
+      const pn = body.pn;
+      if (!pn) return null;
+      const digitos = String(pn).split("@")[0]?.replace(/\D/g, "") ?? "";
+      return digitos.length >= 8 ? `+${digitos}` : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * `replyTo` = citar uma mensagem, como o "responder em cima" do WhatsApp.
+   *
+   * ─── O defeito que isto conserta ──────────────────────────────────────────
+   *
+   * A citação já existia de ponta a ponta MENOS aqui: a tela deixava escolher a
+   * mensagem, o handler resolvia o `external_id` da citada e gravava
+   * `reply_to_message_id`, e a bolha aparecia pendurada — no CRM. No WhatsApp do
+   * cliente chegava mensagem solta. Ou seja, a tela prometia uma coisa e o
+   * aparelho do outro lado mostrava outra, sem nada ficar vermelho.
+   *
+   * ─── O formato do id, que é onde isto falha em silêncio ───────────────────
+   *
+   * O `reply_to` do WAHA quer o id COMPLETO (`{fromMe}_{chatId}_{bareId}`), não
+   * o cru. E o WAHA é assimétrico: a resposta de envio devolve o cru (`3EB0…`) e
+   * o webhook entrega o completo — ver `bareWaMessageId`.
+   *
+   * Medido numa instalação real: as 1.734 mensagens de ENTRADA têm o id
+   * completo, que é o formato certo. E citar o que o cliente disse é o caso que
+   * importa — quem responde "em cima" está respondendo a ele.
+   *
+   * Por isso o id vai como está, sem reconstrução AQUI. Quem completa o bare é
+   * o adapter (`idCompletoDaMensagem`, `lib/channels/adapters/waha.ts`), pela
+   * mesma regra de editar e apagar: o que fica gravado bare é só o que é nosso
+   * (`fromMe`) — o envio e, desde o #1855, o eco do celular.
+   */
+  async sendMessage(
+    session: string,
+    chatId: string,
+    text: string,
+    replyTo?: string | null,
+  ): Promise<unknown> {
+    const res = await this.fetchComTeto(`${this.baseUrl}/api/sendText`, {
+      method: "POST",
+      headers: {
+        "X-Api-Key": this.apiKey,
+        "Content-Type": "application/json",
+      },
+      // Só entra quando existe: mandar `reply_to: null` é pedir para citar
+      // "nada", e a API não tem por que ser gentil com isso.
+      body: JSON.stringify({ session, chatId, text, ...(replyTo ? { reply_to: replyTo } : {}) }),
+    });
+    if (!res.ok) throw new Error(`waha_${res.status}`);
+    return res.json();
+  }
+
+  /**
+   * O visto azul: marca como lida a conversa (`Send Seen` da API do WAHA).
+   *
+   * `POST /api/sendSeen` — a sessão vai no CORPO, como em `sendText`, e não no
+   * caminho, como a família de presença (`/api/{session}/presence`). Sem
+   * `messageIds`, o pedido é "li esta conversa": o WAHA marca as não lidas dos
+   * últimos 7 dias (até 30 numa conversa individual, 100 num grupo), que é o
+   * que "respondi, então li" quer dizer — e sem precisar navegar pelos ids que
+   * só o webhook conhece.
+   *
+   * LANÇA `waha_<status>`, como os vizinhos, e a decisão de falhar macio é de
+   * QUEM CHAMA: `marcarConversaComoLida` (`./send`) engole e loga, e o põe
+   * DEPOIS do envio para a resposta nunca esperar por enfeite de conversa.
+   */
+  async sendSeen(session: string, chatId: string): Promise<void> {
+    const res = await this.fetchComTeto(`${this.baseUrl}/api/sendSeen`, {
+      method: "POST",
+      headers: {
+        "X-Api-Key": this.apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ session, chatId }),
+    });
+    if (!res.ok) throw new Error(`waha_${res.status}`);
+  }
+
+  /** O id completo identifica a mensagem no WAHA; o id curto do sendText não basta. */
+  async editMessage(session: string, chatId: string, messageId: string, text: string): Promise<void> {
+    const path = `/api/${encodeURIComponent(session)}/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`;
+    const res = await this.fetchComTeto(`${this.baseUrl}${path}`, {
+      method: "PUT",
+      headers: { "X-Api-Key": this.apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error(`waha_${res.status}`);
+  }
+
+  /** Sem `forMe`: para mensagem enviada, WAHA revoga para todos. */
+  async deleteMessage(session: string, chatId: string, messageId: string): Promise<void> {
+    const path = `/api/${encodeURIComponent(session)}/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`;
+    const res = await this.fetchComTeto(`${this.baseUrl}${path}`, {
+      method: "DELETE",
+      headers: { "X-Api-Key": this.apiKey },
+    });
+    if (!res.ok) throw new Error(`waha_${res.status}`);
+  }
+
+  /**
+   * O "digitando…" (e o "gravando…") no aparelho do cliente.
+   *
+   * ─── O contrato, e por que ele é diferente do resto deste arquivo ─────────
+   *
+   * A sessão vai no CAMINHO (`/api/{session}/presence`), não no corpo — ao
+   * contrário de `sendText`/`sendMedia`, que a levam no corpo. Não é escolha
+   * nossa: é como a doc do WAHA especifica a família de presença (a mesma que
+   * expõe `GET /api/{session}/presence/{chatId}`). Uniformizar "para ficar
+   * consistente" daria 404 em silêncio, e como quem chama falha macio, o
+   * sintoma seria um "digitando…" que nunca acende e nenhum erro em lugar
+   * nenhum.
+   *
+   * Valores aceitos: `online` e `offline` (sem `chatId`), `typing`, `recording`
+   * e `paused` (com `chatId`). Aqui só os que precisam de chat entram no tipo —
+   * `online`/`offline` mudariam a assinatura (o `chatId` sai) e ninguém os usa.
+   *
+   * ─── LANÇA, e isso é de propósito ────────────────────────────────────────
+   *
+   * A decisão de falhar macio é de QUEM CHAMA, não daqui: este cliente reporta
+   * o que aconteceu (mesmo `waha_<status>` dos demais métodos) e o chamador —
+   * `esperarComoHumano` — engole e loga. Engolir aqui esconderia de todo
+   * chamador futuro que a chamada nem sequer é suportada pelo engine.
+   *
+   * ⚠️ Nem todo engine implementa presença de fato. No NOWEB (o default deste
+   * produto) há relato de a chamada ser aceita e não surtir efeito visível. É
+   * mais um motivo para o atraso de tempo — e não o indicador — ser a parte do
+   * recurso que carrega o valor: o "digitando…" é bônus quando o engine
+   * coopera, nunca a condição do conserto.
+   */
+  async setPresence(
+    session: string,
+    chatId: string,
+    presence: "typing" | "recording" | "paused",
+  ): Promise<void> {
+    const res = await this.fetchComTeto(
+      `${this.baseUrl}/api/${encodeURIComponent(session)}/presence`,
+      {
+        method: "POST",
+        headers: { "X-Api-Key": this.apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ chatId, presence }),
+      },
+    );
+    if (!res.ok) throw new Error(`waha_${res.status}`);
+  }
+
+  /**
+   * Confere se o número existe no WhatsApp e devolve o chatId canônico.
+   * Obrigatório antes de vcard em BR — o nono dígito do CRM nem sempre bate com o wa_id.
+   */
+  async checkContactExists(
+    session: string,
+    phoneDigits: string,
+  ): Promise<{ numberExists: boolean; chatId?: string | null; pn?: string | null }> {
+    const url = new URL(`${this.baseUrl}/api/contacts/check-exists`);
+    url.searchParams.set("session", session);
+    url.searchParams.set("phone", phoneDigits.replace(/\D/g, ""));
+    const res = await this.fetchComTeto(url, {
+      headers: { "X-Api-Key": this.apiKey, Accept: "application/json" },
+    });
+    if (!res.ok) {
+      throw new Error(`waha_${res.status}`);
+    }
+    return res.json() as Promise<{ numberExists: boolean; chatId?: string | null; pn?: string | null }>;
+  }
+
+  async sendContactVcard(
+    session: string,
+    chatId: string,
+    contacts: Array<{
+      fullName: string;
+      phoneNumber: string;
+      whatsappId: string;
+      vcard: string;
+    }>,
+  ): Promise<unknown> {
+    const res = await this.fetchComTeto(`${this.baseUrl}/api/sendContactVcard`, {
+      method: "POST",
+      headers: {
+        "X-Api-Key": this.apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ session, chatId, contacts }),
+    });
+    if (!res.ok) {
+      throw new Error(`waha_${res.status}`);
+    }
+    return res.json();
+  }
+
+  async sendMedia(
+    session: string,
+    chatId: string,
+    plan: { endpoint: string; payload: Record<string, unknown> },
+  ): Promise<unknown> {
+    // Teto MAIOR aqui: `media-send.ts` manda `convert: true` em vídeo e áudio, e
+    // o WAHA roda ffmpeg e baixa a URL do Storage antes de responder. Com o teto
+    // de texto, o envio de áudio legítimo seria cortado — o conserto do timeout
+    // viraria um defeito novo, e mais silencioso que o original.
+    const res = await this.fetchComTeto(`${this.baseUrl}/api/${plan.endpoint}`, {
+      method: "POST",
+      headers: { "X-Api-Key": this.apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ session, chatId, ...plan.payload }),
+    }, TETO_DE_MIDIA_MS);
+    if (!res.ok) {
+      throw new Error(`waha_${res.status}`);
+    }
+    return res.json();
+  }
+}
+
+/**
+ * Traduz erros crus do WAHA numa mensagem que aponta ONDE mexer.
+ *
+ * A versão anterior mandava TODA falha de rede para a mesma frase — "confirme
+ * que o container está no ar" —, inclusive `ENOTFOUND`, que significa o oposto:
+ * o endereço configurado não existe, então não há container nenhum a conferir.
+ * Em produção isso mandou o dono reiniciar durante semanas um container que
+ * nunca havia caído. Reiniciar o que está de pé não conserta um endereço errado,
+ * e a frase errada é pior que nenhuma: ela encerra a investigação.
+ *
+ * Aceita o erro CRU, e não só a mensagem, porque o código real (`ENOTFOUND`,
+ * `ECONNREFUSED`) vive na cadeia de `cause` — `err.message` sozinho é sempre
+ * "fetch failed". Continua aceitando string para os pontos que já achataram o
+ * erro; lá a classificação cai no texto e degrada para "indeterminada", que é a
+ * verdade disponível.
+ */
+export function wahaFriendlyError(erro: unknown): string {
+  const falha = classificarFalhaDeAlcance(erro);
+  if (falha !== "indeterminada") {
+    return explicarFalhaDeAlcance(falha, "o WhatsApp (WAHA)");
+  }
+  const msg = erro instanceof Error ? erro.message : String(erro ?? "unknown");
+  return `Falha na comunicação com o WhatsApp (WAHA): ${msg}`;
+}
+
+/**
+ * Returns a configured client or null. Null means the WAHA Docker isn't up
+ * or the env is using the dev placeholder; the UI must render a banner
+ * prompting the user to start it.
+ */
+export function getWahaClient(): WahaClient | null {
+  const url = process.env.WAHA_API_BASE_URL;
+  const key = process.env.WAHA_API_KEY;
+  if (!url || !key || key === "dev_plaintext_change_me") return null;
+  return new WahaClient(url, key);
+}

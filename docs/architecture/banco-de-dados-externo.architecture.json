@@ -1,0 +1,429 @@
+{
+  "schema_version": 1,
+  "titulo": "Banco de dados externo",
+  "descricao": "A organização cadastra um PostgreSQL de OUTRO sistema (segundo CRM, ERP) e o consulta de dentro do CRM — pela tela e pela IA que atende. O cadastro é de admin; a leitura é de qualquer autenticado. Schema lido ao vivo, nada hard-coded. Recortes do PR #1130, de @vgamkt.",
+  "lanes": [
+    {
+      "id": "dados",
+      "label": "Cadastro e segredo (Supabase)"
+    },
+    {
+      "id": "nucleo",
+      "label": "Núcleo lib/external-db"
+    },
+    {
+      "id": "api",
+      "label": "API /api/v1/external-db"
+    },
+    {
+      "id": "ui",
+      "label": "Tela /app/integracao-dados"
+    },
+    {
+      "id": "agente",
+      "label": "Agente (tools MCP)"
+    }
+  ],
+  "mainPath": [
+    "migration0372",
+    "credenciais",
+    "acesso",
+    "dialeto",
+    "apiLeitura",
+    "telaExplorador"
+  ],
+  "nodes": [
+    {
+      "id": "migration0372",
+      "lane": "dados",
+      "label": "external_db_connections",
+      "sublabel": "migration 0372 · tenant-aware, RLS, senha AES-GCM",
+      "type": "table",
+      "dot": "sky"
+    },
+    {
+      "id": "safeview",
+      "lane": "dados",
+      "label": "external_db_connections_safe",
+      "sublabel": "view sem as colunas cifradas · a única que a tela lê",
+      "type": "table",
+      "dot": "sky"
+    },
+    {
+      "id": "auditlog",
+      "lane": "dados",
+      "label": "api_audit_log",
+      "sublabel": "mutações e leituras — sem os valores de filtro (PII)",
+      "type": "table",
+      "dot": "slate"
+    },
+    {
+      "id": "credenciais",
+      "lane": "nucleo",
+      "label": "credenciais.ts",
+      "sublabel": "leitura SEMPRE com organization_id; cifra just-in-time",
+      "type": "lib",
+      "dot": "blue"
+    },
+    {
+      "id": "guardas",
+      "lane": "nucleo",
+      "label": "guardas.ts",
+      "sublabel": "política de rede: LAN permitida, link-local/loopback sempre bloqueados; IPv6 normalizado",
+      "type": "lib",
+      "dot": "red"
+    },
+    {
+      "id": "pool",
+      "lane": "nucleo",
+      "label": "conexao.ts",
+      "sublabel": "pool por conexão, invalidado por updated_at; BEGIN READ ONLY + timeouts",
+      "type": "lib",
+      "dot": "blue"
+    },
+    {
+      "id": "introspeccao",
+      "lane": "nucleo",
+      "label": "introspeccao.ts",
+      "sublabel": "catálogo ao vivo: tabelas, campos, chave, estimativa",
+      "type": "lib",
+      "dot": "blue"
+    },
+    {
+      "id": "leitura",
+      "lane": "nucleo",
+      "label": "leitura.ts",
+      "sublabel": "SELECT montado no servidor: identificadores quotados, valores parametrizados, teto de linhas",
+      "type": "lib",
+      "dot": "blue"
+    },
+    {
+      "id": "acesso",
+      "lane": "nucleo",
+      "label": "acesso.ts",
+      "sublabel": "carrega a conexão + revalida o destino antes de abrir o pool",
+      "type": "lib",
+      "dot": "blue"
+    },
+    {
+      "id": "dialeto",
+      "lane": "nucleo",
+      "label": "dialeto.ts",
+      "sublabel": "o ÚNICO caminho de leitura: aplica as fontes liberadas e abre o pool",
+      "type": "lib",
+      "dot": "blue"
+    },
+    {
+      "id": "fontes",
+      "lane": "nucleo",
+      "label": "fontes.ts",
+      "sublabel": "esquema central das fontes liberadas + o que é visível (puro)",
+      "type": "lib",
+      "dot": "blue"
+    },
+    {
+      "id": "apiConnections",
+      "lane": "api",
+      "label": "GET/POST/PATCH/DELETE connections",
+      "sublabel": "lista: autenticado · criar/editar/apagar: admin · valida o host no cadastro",
+      "type": "api",
+      "dot": "green"
+    },
+    {
+      "id": "apiTest",
+      "lane": "api",
+      "label": "POST connections/[id]/test",
+      "sublabel": "Client descartável, grava last_test_*; 200 mesmo em falha do teste",
+      "type": "api",
+      "dot": "green"
+    },
+    {
+      "id": "apiLeitura",
+      "lane": "api",
+      "label": "GET .../schemas e .../tables/[schema]/[tabela]",
+      "sublabel": "autenticado · sem filtro na querystring (PII não vai a log)",
+      "type": "api",
+      "dot": "green"
+    },
+    {
+      "id": "apiFontes",
+      "lane": "api",
+      "label": "GET catalog · GET/PUT sources",
+      "sublabel": "catálogo completo e troca da lista: admin · ler a lista: autenticado",
+      "type": "api",
+      "dot": "green"
+    },
+    {
+      "id": "telaLista",
+      "lane": "ui",
+      "label": "Lista de conexões",
+      "sublabel": "todos veem · card de cadastro/edição só para admin",
+      "type": "route",
+      "dot": "purple"
+    },
+    {
+      "id": "telaExplorador",
+      "lane": "ui",
+      "label": "Explorador",
+      "sublabel": "árvore por schema + grade paginada com ordem e PK",
+      "type": "route",
+      "dot": "purple"
+    },
+    {
+      "id": "telaFontes",
+      "lane": "ui",
+      "label": "Painel \"O que o assistente pode ver\"",
+      "sublabel": "admin marca tabelas e colunas, descreve e salva · os demais só leem",
+      "type": "route",
+      "dot": "purple"
+    },
+    {
+      "id": "toolsAgente",
+      "lane": "agente",
+      "label": "crm_describe / crm_query_external_data",
+      "sublabel": "lib/mcp/tools/dados-externos.ts · tetos da conexão · aviso anti prompt-injection · vazio fica vazio",
+      "type": "lib",
+      "dot": "amber"
+    },
+    {
+      "id": "ingressos",
+      "lane": "agente",
+      "label": "Ingressos: turno do agente e /api/mcp",
+      "sublabel": "aplicam redigirParaAuditoria (tira os valores de filtro) e motivoDoVazio (erro não é sucesso)",
+      "type": "lib",
+      "dot": "amber"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "migration0372",
+      "to": "safeview",
+      "label": "expõe sem cifra"
+    },
+    {
+      "id": "e2",
+      "from": "migration0372",
+      "to": "credenciais",
+      "label": "linha decifrada"
+    },
+    {
+      "id": "e3",
+      "from": "safeview",
+      "to": "apiConnections",
+      "label": "lista e detalhe"
+    },
+    {
+      "id": "e6",
+      "from": "credenciais",
+      "to": "acesso",
+      "label": "conexão decifrada"
+    },
+    {
+      "id": "e7",
+      "from": "credenciais",
+      "to": "apiTest",
+      "label": "carrega para testar"
+    },
+    {
+      "id": "e8",
+      "from": "guardas",
+      "to": "acesso",
+      "label": "revalida o destino"
+    },
+    {
+      "id": "e9",
+      "from": "guardas",
+      "to": "apiConnections",
+      "label": "valida no cadastro"
+    },
+    {
+      "id": "e10",
+      "from": "pool",
+      "to": "acesso",
+      "label": "pool da conexão"
+    },
+    {
+      "id": "e11",
+      "from": "pool",
+      "to": "introspeccao",
+      "label": "consultar read-only"
+    },
+    {
+      "id": "e12",
+      "from": "pool",
+      "to": "leitura",
+      "label": "consultar read-only"
+    },
+    {
+      "id": "e13",
+      "from": "introspeccao",
+      "to": "dialeto",
+      "label": "catálogo"
+    },
+    {
+      "id": "e15",
+      "from": "leitura",
+      "to": "dialeto",
+      "label": "dados paginados"
+    },
+    {
+      "id": "e17",
+      "from": "acesso",
+      "to": "apiLeitura",
+      "label": "dialeto pronto"
+    },
+    {
+      "id": "e20",
+      "from": "apiConnections",
+      "to": "telaLista",
+      "label": "lista"
+    },
+    {
+      "id": "e21",
+      "from": "telaLista",
+      "to": "apiConnections",
+      "label": "criar/editar/testar"
+    },
+    {
+      "id": "e22",
+      "from": "apiConnections",
+      "to": "auditlog",
+      "label": "audita mutação"
+    },
+    {
+      "id": "e23",
+      "from": "apiTest",
+      "to": "auditlog",
+      "label": "audita teste"
+    },
+    {
+      "id": "e24",
+      "from": "apiLeitura",
+      "to": "telaExplorador",
+      "label": "grade"
+    },
+    {
+      "id": "e25",
+      "from": "telaLista",
+      "to": "telaExplorador",
+      "label": "abre a conexão"
+    },
+    {
+      "id": "e30",
+      "from": "safeview",
+      "to": "toolsAgente",
+      "label": "conexões ativas da org"
+    },
+    {
+      "id": "e31",
+      "from": "acesso",
+      "to": "toolsAgente",
+      "label": "dialeto pronto"
+    },
+    {
+      "id": "e34",
+      "from": "toolsAgente",
+      "to": "ingressos",
+      "label": "resultado + args redigidos"
+    },
+    {
+      "id": "e35",
+      "from": "ingressos",
+      "to": "auditlog",
+      "label": "audita sem valores de filtro"
+    },
+    {
+      "id": "e36",
+      "from": "credenciais",
+      "to": "fontes",
+      "label": "modo + lista (validados, falha fechada)"
+    },
+    {
+      "id": "e37",
+      "from": "fontes",
+      "to": "dialeto",
+      "label": "o que é visível"
+    },
+    {
+      "id": "e38",
+      "from": "acesso",
+      "to": "dialeto",
+      "label": "abre o pool e liga a regra"
+    },
+    {
+      "id": "e39",
+      "from": "dialeto",
+      "to": "apiLeitura",
+      "label": "só o liberado"
+    },
+    {
+      "id": "e40",
+      "from": "dialeto",
+      "to": "toolsAgente",
+      "label": "só o liberado"
+    },
+    {
+      "id": "e41",
+      "from": "apiFontes",
+      "to": "migration0372",
+      "label": "grava source_mode e sources"
+    },
+    {
+      "id": "e42",
+      "from": "dialeto",
+      "to": "apiFontes",
+      "label": "catálogo completo (admin)"
+    },
+    {
+      "id": "e43",
+      "from": "telaFontes",
+      "to": "apiFontes",
+      "label": "lê o catálogo completo e grava a lista"
+    },
+    {
+      "id": "e44",
+      "from": "telaLista",
+      "to": "telaFontes",
+      "label": "abre o painel (conexão nova ou sem fontes)"
+    },
+    {
+      "id": "e45",
+      "from": "telaFontes",
+      "to": "telaExplorador",
+      "label": "a grade passa a mostrar só o liberado"
+    }
+  ],
+  "cards": [
+    {
+      "id": "card-leitura",
+      "tone": "blue",
+      "title": "Somente leitura, imposta pelo banco",
+      "body": "Toda consulta roda dentro de `BEGIN READ ONLY` com statement_timeout/lock_timeout. Mesmo que algo escapasse da montagem do SELECT, o Postgres recusaria a escrita. O teto de linhas (200) existe para uma tabela de milhões não derrubar o worker."
+    },
+    {
+      "id": "card-rede",
+      "tone": "red",
+      "title": "A guarda de rede roda a CADA abertura de pool",
+      "body": "Validar só no cadastro deixaria a janela do DNS binding aberta entre o POST e o primeiro SELECT. `abrirAcesso` revalida o destino em toda leitura. RFC1918 é permitido (Postgres na LAN é caso real); link-local/metadata, loopback e CGNAT nunca."
+    },
+    {
+      "id": "card-pii",
+      "tone": "amber",
+      "title": "O audit guarda o QUE foi lido, nunca o CONTEÚDO",
+      "body": "A leitura externa pode carregar PII. As ações `external_db_connection.*` registram a conexão, o schema e a tabela; nenhum valor de filtro e nenhuma linha lida entram em `api_audit_log`. Log é lugar de metadado, não de conteúdo."
+    },
+    {
+      "id": "card-fontes-liberadas",
+      "tone": "slate",
+      "title": "D6 revisada: o administrador marca o que o assistente pode ler",
+      "body": "A Spec 20 (D6) deixava a IA ler QUALQUER tabela da conexão, com o argumento de que uma lista seria uma segunda lista para manter em sincronia com um schema que muda todo dia. A Spec 23 revisa isso: a lista guarda NOMES (não cópia de schema), fonte que sumiu do banco é ignorada e sinalizada, e 'marcar todas' é uma lista explícita — não o modo `all`. Conexões que já existem ficam em `all` (a D6 original); as novas nascem em `list`. As travas anteriores continuam: somente leitura, tetos e auditoria sem valores."
+    },
+    {
+      "id": "card-vazio-fica-vazio",
+      "tone": "amber",
+      "title": "Filtro sem resultado devolve vazio, nunca a tabela inteira",
+      "body": "A versão do PR reexecutava sem o filtro e entregava até 100 linhas ao modelo, pensando num catálogo de produtos. A tool é genérica: numa tabela de clientes, o CPF que não casa entregaria os registros de outras pessoas. O vazio fica vazio, e a resposta ensina o modelo a repetir com um trecho menor do termo."
+    }
+  ]
+}

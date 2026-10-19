@@ -1,0 +1,285 @@
+/**
+ * Acesso tipado às tabelas núcleo do harness. SQL cru, sem ORM.
+ *
+ * ponytail: fluxo de espelho morto no porte para o DeskcommCRM (mesmo banco agora) —
+ * removidos createTenant, upsertLead, getLead, listLeads, ingestCrmEvent,
+ * listCrmEvents e os tipos TenantRow/LeadRow/EventInboxRow (organizations/contacts
+ * são as tabelas reais do CRM; o drain lê event_log direto). Sobra o inbox de
+ * escalação humana (agent_inbox_items).
+ *
+ * Regra de isolamento (F2-02): toda query filtra `organization_id` — nenhuma função
+ * devolve linha de outra org (`null` = item de plataforma).
+ */
+import type pg from 'pg';
+
+// Vocabulário compartilhado de referências navegáveis; linhas legadas seguem defensivas.
+export type { InboxRefKind } from '@/lib/ai/inbox-destino';
+
+/**
+ * O vocabulário dos avisos do runtime. Espelha o CHECK de
+ * `agent_inbox_items.kind` — e o espelho é MECÂNICO: o invariante
+ * `tests/invariants/vocabulario-banco-x-typescript.test.ts` compara os dois
+ * conjuntos contra Postgres real, porque o compilador não enxerga o banco.
+ *
+ * Esta lista já ficou 3 valores atrás do banco (`judge_unaligned`,
+ * `followup_dead`, `next_action_ambiguous`) sem nada falhar. Quem adiciona um
+ * kind numa migration adiciona aqui na mesma mudança.
+ */
+export type InboxKind =
+  | 'case_stale'
+  | 'canal_mudo_sem_numero'
+  // (migration 0589, issue #2389) A pausa de uma conexão era silenciosa para
+  // todo mundo menos para quem clicou. O audit registrava, mas audit é
+  // histórico para quem procura — a Central é comunicação. O item nasce no
+  // `channel.disabled` e se resolve sozinho no `channel.enabled`/arquivamento,
+  // sem clique (laço do canal-mudo, só que instantâneo).
+  | 'canal_pausado'
+  | 'appointment_outcome_required'
+  | 'appointment_recovery_review'
+  | 'qr_rescan'
+  | 'routing_unassigned'
+  | 'job_dead'
+  | 'event_dead'
+  | 'budget_exceeded'
+  | 'handoff'
+  | 'promotion_review'
+  | 'judge_unaligned'
+  | 'followup_dead'
+  | 'snooze_expired'
+  | 'next_action_ambiguous'
+  | 'risk_backlog_seeded'
+  | 'reactivation_expired'
+  | 'capabilities_missing'
+  | 'message_send_stuck'
+  // (migration 0120) A plataforma do canal decide sozinha: reprova um modelo
+  // aprovado, suspende o número, exige KYC. Nada disso chegava ao operador — a
+  // descoberta acontecia no disparo que não saiu.
+  //
+  // Estes DOIS nomes precisam existir aqui, e não só no CHECK do banco:
+  // `vocabulario-banco-x-typescript` exige que os dois vocabulários digam a
+  // mesma coisa, e foi ele que pegou a primeira versão desta mudança — que
+  // tinha o banco atualizado e o tipo não.
+  | 'channel_template_review'
+  | 'channel_number_alert'
+  | 'midia_nao_lida'
+  | 'promise_unfulfilled'
+  | 'contact_proposal_expired'
+  // (migration 0292) O aviso de caso não chegou ao WhatsApp da equipe, em
+  // definitivo. Nasce com `ref_kind='agent_case'` para levar AO CASO, que
+  // continua esperando — um aviso que não leva ao assunto é meio aviso.
+  | 'aviso_de_caso_nao_entregue'
+  // (migration 0159) O degrau de AVISO do teto de gasto de IA — o que a
+  // organização vê antes de qualquer parada. Existe separado de
+  // `budget_exceeded` porque diz coisa diferente: um relata que algo
+  // ACONTECEU e a IA segue; o outro, que ela parou. Severity 'warn'.
+  | 'budget_warning'
+  // (migration 0181) O material que a pessoa enviou não entrou na base de
+  // conhecimento: falta chave de embedding, a extração do arquivo falhou, ou
+  // nenhum trecho foi gravado. UM kind e não dois, porque quem lê a Central
+  // quer saber que o material não entrou — o porquê é o corpo do aviso.
+  | 'conhecimento_nao_indexado'
+  // (migration 0232) Chamada de voz que TOCOU e ninguém atendeu — inbound
+  // encerrada sem nunca ter passado por `connected`. O `end_reason` do upstream
+  // não distingue "tocou e ninguém pegou" de "o operador recusou", e para quem
+  // lê a Central os dois pedem a mesma coisa: alguém precisa ligar de volta.
+  | 'voice_call_missed'
+  | 'proposal_expired_notice'
+  | 'proposal_acceptance_rate_drop'
+  | 'proposal_promised_not_created'
+  // (migration 0312) O fluxo de follow-up PUBLICADO que nunca vai disparar:
+  // gatilho automático só enrolla se um agente publicado arma o ponteiro, e sem
+  // esse vínculo os produtores saem por `pointers_armados = 0` em silêncio —
+  // `active` na tela, morto no motor. Quem abre e quem FECHA é o mesmo cron
+  // (`followup-sem-agente`): o aviso some sozinho quando o vínculo aparece.
+  | 'followup_sem_agente'
+  // (migration 0500) O Jev percebeu, onde a regra de hoje não viu nada, um
+  // pedido para falar com uma pessoa ou para parar de receber mensagens, e a
+  // empresa escolheu "Avisar a equipe" (`lib/ai/decisao/pedidos.ts`). Um por
+  // conversa e pedido (índice único), com `ref_kind='conversation'`. Os dois
+  // fecham com a conversa encerrada; o de falar com uma pessoa também quando
+  // ela fica com uma pessoa (assumida ou passada); o de parar de receber, não —
+  // ele pede assumir E o PARAR — e fecha quando o contato é bloqueado (gatilhos
+  // da 0500). O Jev só avisa.
+  | 'jev_pedido_de_humano'
+  | 'jev_parar_de_receber'
+  // Proposta presa em `enviando` há mais de 5min — o cron `proposta-travada`
+  // a devolveu a rascunho sozinho, sem reenviar nada.
+  | 'proposta_travada'
+  // A proposta rascunhada pela IA precisa de revisão de uma pessoa — a Central
+  // acompanha até resolver.
+  | 'proposta_pronta_para_revisao'
+  // (migration 0501) A organização voltou de uma suspensão e há conversas que
+  // receberam mensagem enquanto ela estava parada. A IA não respondeu e não vai
+  // responder sozinha, então quem abre o Inbox é uma pessoa. Nasce sem referência.
+  | 'org_reativada'
+  // (migration 0601) Cobrança do revendedor: os avisos da régua ao admin da
+  // empresa (sem referência) e o de 80% do teto de IA do plano (ref_kind plano).
+  | 'cobranca'
+  // (migration 0614) O admin da plataforma trocou o e-mail de login de uma
+  // pessoa da equipe. O aviso leva o nome e a data, nunca o endereço — é
+  // gravado pela rota `PATCH /api/v1/admin/tenants/[id]/members/[userId]/email`.
+  | 'email_de_login_trocado'
+  | 'other';
+
+export interface InboxItemRow {
+  id: string;
+  organization_id: string | null;
+  kind: InboxKind;
+  severity: 'info' | 'warn' | 'critical';
+  title: string;
+  body: string | null;
+  ref_kind: string | null;
+  ref_id: string | null;
+  status: 'open' | 'ack' | 'resolved';
+  created_at: Date;
+}
+
+function one<T>(rows: T[], what: string): T {
+  const row = rows[0];
+  if (row === undefined) {
+    throw new Error(`esperava uma linha de ${what}, veio nenhuma`);
+  }
+  return row;
+}
+
+/**
+ * Como não abrir um segundo aviso para o mesmo problema ainda aberto.
+ *
+ * `kind` — um por organização. Serve para defeito SISTÊMICO, que não é de um
+ * cliente: teto de orçamento estourado, capacidades que não montaram.
+ *
+ * `kind_e_ref` — um por (kind, ref). Serve para aviso que fala de UMA conversa
+ * ou de UM lead. Dedupar esses por `kind` sozinho engoliria o aviso de outro
+ * cliente, que é pior que repetir: some sinal em vez de sobrar ruído.
+ *
+ * `kind_e_titulo` — um por (kind, título). Serve quando o mesmo `kind` carrega
+ * problemas de natureza diferente, distinguidos por um título FIXO: o
+ * `event_dead` da IA que deixou de responder não pode sumir atrás do
+ * `event_dead` de uma mídia (`lib/event-log/aviso-de-evento-morto.ts`).
+ *
+ * `kind_ref_e_titulo` — um por (kind, ref, título). É a soma dos dois de cima, e
+ * existe porque UM `kind` genérico (`other`) carrega problemas diferentes DE UM
+ * MESMO lead: o espelho do funil recusa por escopo e recusa por perda sem motivo
+ * (`lib/agent-engine/edge/crm/move-lead-stage.ts`), com textos opostos e o mesmo
+ * `ref`. Por `kind_e_ref`, o segundo sumiria atrás do primeiro — o defeito que o
+ * dedupe existe para evitar, invertido. Por `kind_e_titulo`, o aviso de um lead
+ * calaria o do lead seguinte.
+ */
+export type InboxDedupe = 'kind' | 'kind_e_ref' | 'kind_e_titulo' | 'kind_ref_e_titulo';
+
+/**
+ * Abre um aviso na Central.
+ *
+ * ═══ POR QUE O DEDUP MORA AQUI, E NÃO EM CADA CHAMADOR ═══
+ *
+ * A guarda de "não abre outro enquanto o anterior está aberto" existia escrita
+ * três vezes à mão, em SQL inline, em três arquivos — e nunca na função que todos
+ * usam. Quem chama `insertInboxItem` não tinha como pedi-la, então não deduplicava:
+ * o aviso de promessa do papel Operador nascia de novo a cada turno, e N cópias do
+ * mesmo item enterram o item que pedia decisão. Alarme repetido treina o dono a
+ * ignorar o alarme certo.
+ *
+ * Omitir `dedupe` mantém o comportamento de sempre — uma linha por chamada —, e
+ * isso é deliberado: há kinds que QUEREM uma linha por evento (`job_dead` é um
+ * registro de ocorrência, não um estado).
+ *
+ * `where not exists` e não `on conflict`: os QUATRO modos têm chaves diferentes,
+ * e é esta escrita que os descreve — `on conflict` precisaria de um alvo por
+ * modo. Mas `where not exists` sozinho não fecha a corrida de dois inserts
+ * simultâneos: os dois leem "não existe" antes de qualquer escrita e os dois
+ * inserem (issue #880). Onde o grão tem índice, quem fecha a corrida é o BANCO:
+ * `agent_inbox_event_dead_aberto_unico` (0491) para o `event_dead` e
+ * `agent_inbox_job_dead_conversa_aberto_unico` (0538) para a resposta a caso
+ * obsoleto, `agent_inbox_other_por_titulo_aberto_unico` (0539) para os avisos
+ * `other` de grão título e `agent_inbox_budget_aberto_unico` (0540) para os
+ * avisos de orçamento — a segunda linha vira `23505`, capturado abaixo, e a
+ * condição deixa de morar só na consulta. Os grãos sem índice (a promessa e o
+ * handoff, que os turnos da fila já serializam por contato; os `other` de ref
+ * própria) continuam com a consulta como única guarda — como sempre foram.
+ *
+ * Devolve `null` quando o dedup barrou — a consulta que não achou nada ou o
+ * banco que recusou a segunda escrita são o MESMO desfecho. Não lança: "já
+ * havia um aviso aberto" é desfecho normal, não erro.
+ */
+export async function insertInboxItem(
+  db: Pick<pg.Pool, "query">,
+  tenantId: string | null, // null = plataforma (ex.: infra)
+  input: { kind: InboxKind; title: string; severity?: InboxItemRow['severity']; body?: string; refKind?: string; refId?: string },
+  dedupe?: InboxDedupe,
+): Promise<InboxItemRow | null> {
+  const valores = [
+    tenantId,
+    input.kind,
+    input.severity ?? 'warn',
+    input.title,
+    input.body ?? null,
+    input.refKind ?? null,
+    input.refId ?? null,
+  ];
+
+  if (dedupe === undefined) {
+    const { rows } = await db.query<InboxItemRow>(
+      `insert into agent_inbox_items (organization_id, kind, severity, title, body, ref_kind, ref_id)
+       values ($1, $2, $3, $4, $5, $6, $7)
+       returning *`,
+      valores,
+    );
+    return one(rows, 'agent_inbox_items');
+  }
+
+  // `is not distinct from` e não `=`: organização nula (avisos de plataforma) e
+  // ref nula precisam casar com nula, e `null = null` é null, não true.
+  try {
+    const { rows } = await db.query<InboxItemRow>(
+      `insert into agent_inbox_items (organization_id, kind, severity, title, body, ref_kind, ref_id)
+       select $1, $2, $3, $4, $5, $6, $7
+        where not exists (
+          select 1 from agent_inbox_items
+           where organization_id is not distinct from $1
+             and kind = $2
+             and status = 'open'
+             and ($8 = false or (ref_kind is not distinct from $6 and ref_id is not distinct from $7))
+             and ($9 = false or title = $4)
+        )
+       returning *`,
+      [
+        ...valores,
+        dedupe === 'kind_e_ref' || dedupe === 'kind_ref_e_titulo',
+        dedupe === 'kind_e_titulo' || dedupe === 'kind_ref_e_titulo',
+      ],
+    );
+    return rows[0] ?? null;
+  } catch (err) {
+    // `23505` — o BANCO recusou a segunda linha, e é ele quem fecha a corrida
+    // (migrations 0491, 0538, 0539 e 0540). O `where not exists` acima vale
+    // para os quatro modos, mas sozinho não separa dois inserts simultâneos: ambos leem "não
+    // existe" antes de qualquer escrita (issue #880). Quem chega segundo recebe
+    // `23505` do índice único parcial — e "o aviso já estava aberto" é o mesmo
+    // desfecho de ter achado a linha na consulta, não um erro.
+    if (ehColisaoDeChaveUnica(err)) return null;
+    throw err;
+  }
+}
+
+/**
+ * `unique_violation` do Postgres. É o código, e não a mensagem: o texto muda
+ * com o locale e com o nome do índice, o código não.
+ */
+function ehColisaoDeChaveUnica(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code?: unknown }).code === '23505'
+  );
+}
+
+export async function listOpenInboxItems(db: pg.Pool, tenantId: string): Promise<InboxItemRow[]> {
+  const { rows } = await db.query<InboxItemRow>(
+    `select * from agent_inbox_items
+     where organization_id = $1 and status = 'open'
+     order by created_at desc`,
+    [tenantId],
+  );
+  return rows;
+}

@@ -1,0 +1,231 @@
+/**
+ * Estado durável do pacing (F2-11) — Postgres do harness, sobrevive a restart:
+ * knobs por número/sessão (`channel_knobs`, 0010; coluna NULL = default de
+ * defaults.ts) e ledger de envios (`pacing_ledger`) de onde saem lastSentAt e
+ * sentToday (contado desde a meia-noite LOCAL do tenant). Quem grava no ledger
+ * é a cadeia de envio (F2-13) via `recordSend` — este módulo é o seam.
+ */
+import { fusoValido } from '@/lib/tempo/fusos';
+
+import type { Logger } from '../obs/logger';
+import type { Queryable } from '../queue/queue';
+import { PACING_DEFAULTS, type PacingKnobs, type WarmupStep } from './defaults';
+import { dayStartInTz, type PacingState } from './engine';
+
+interface ChannelKnobsRow {
+  throttle_ms: number | null;
+  jitter_max_ms: number | null;
+  window_start_hour: number | null;
+  window_end_hour: number | null;
+  /** Janela da RESPOSTA do agente (0495). NULL = usa `window_*` (comportamento anterior). */
+  resposta_start_hour: number | null;
+  resposta_end_hour: number | null;
+  /** Números do atraso humano antes da 1ª bolha (0499). NULL = default (defaults.ts). */
+  atraso_notar_ms: number | null;
+  ms_por_caractere: number | null;
+  atraso_minimo_ms: number | null;
+  atraso_maximo_ms: number | null;
+  allow_sunday: boolean | null;
+  /** Dias da prospecção (0642, `smallint[]`, 0=dom … 6=sáb). Coluna NOT NULL. */
+  prospeccao_dias: number[] | null;
+  timezone: string | null;
+  warmup_daily_caps: unknown; // jsonb — shape validado em parseWarmupCaps (nunca confiado)
+  /** Nulo quando o número não tem linha em channel_knobs (o `left join` da leitura). */
+  number_activated_at: Date | null;
+  /** `organizations.timezone` — o fuso da janela de quem não escolheu um no número. */
+  org_timezone?: string | null;
+}
+
+/**
+ * O fuso em que a janela de envio é avaliada: o do NÚMERO, se alguém o escolheu
+ * em Conexões › Proteção de envio; senão o da ORGANIZAÇÃO; senão o padrão.
+ *
+ * O degrau do meio faltava. Sem linha em `channel_knobs` — o caso de quem nunca
+ * abriu aquela tela — a janela caía direto no literal de `PACING_DEFAULTS`,
+ * `America/Sao_Paulo`, qualquer que fosse o fuso da empresa. Numa organização
+ * em `Europe/Lisbon` a janela 7h–22h virava 11h–02h de Lisboa, e a resposta do
+ * agente a quem escreveu às 9h esperava até as 11h. É o mesmo defeito que
+ * `agent/fuso-da-org.ts` descreve para o relógio do turno, do lado da janela.
+ *
+ * O fuso da organização não é validado por escritor nenhum (ver o cabeçalho de
+ * `fuso-da-org.ts`), e o `Intl` LANÇA num fuso inválido: por isso ele passa por
+ * `fusoValido` e degrada para o padrão, em vez de derrubar o envio.
+ */
+export function fusoDaJanela(
+  doCanal: string | null | undefined,
+  daOrganizacao: string | null | undefined,
+): string {
+  if (doCanal) return doCanal;
+  const tz = daOrganizacao?.trim() ?? '';
+  return tz !== '' && fusoValido(tz) ? tz : PACING_DEFAULTS.timezone;
+}
+
+/**
+ * Valida o shape do jsonb de degraus (defesa em profundidade com o CHECK da 0010:
+ * cobre linha legada/escritor externo e shape errado dentro de um array válido).
+ * Inválido → null: o load cai nos DEFAULTS conservadores — falha fechado sem
+ * exceção no caminho de envio. Array VAZIO conta como inválido: zero degraus =
+ * warm-up desligado, um fail-open silencioso; opt-out legítimo tem forma expressa
+ * `[{"minAgeDays":0,"cap":null}]` (1 degrau formado), nunca `[]`.
+ */
+export function parseWarmupCaps(value: unknown): WarmupStep[] | null {
+  if (!Array.isArray(value)) return null;
+  const steps: WarmupStep[] = [];
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) return null;
+    const { minAgeDays, cap } = item as Record<string, unknown>;
+    if (typeof minAgeDays !== 'number' || !Number.isFinite(minAgeDays)) return null;
+    if (cap !== null && (typeof cap !== 'number' || !Number.isFinite(cap))) return null;
+    steps.push({ minAgeDays, cap });
+  }
+  return steps.length > 0 ? steps : null;
+}
+
+/**
+ * Dias da prospecção vindos do banco (0642, `smallint[]`, 0=dom … 6=sáb).
+ * Fora do 0..6, duplicado ou vazio → null: o load cai na regra antiga
+ * (`allowSunday`), com warn — a mesma falha fechada do warm-up (nunca exceção
+ * no caminho de envio, nunca fila parada em silêncio por dado corrupto).
+ */
+export function parseDiasDaProspeccao(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const dias = [
+    ...new Set(
+      value.filter(
+        (d): d is number => typeof d === "number" && Number.isInteger(d) && d >= 0 && d <= 6,
+      ),
+    ),
+  ].sort((a, b) => a - b);
+  return dias.length > 0 ? dias : null;
+}
+
+export interface ChannelPacingConfig {
+  knobs: PacingKnobs;
+  /** null = sem linha em channel_knobs → o engine trata como idade 0 (conservador). */
+  numberActivatedAt: Date | null;
+}
+
+/**
+ * Knobs efetivos do número: linha de channel_knobs (se houver) sobre os defaults.
+ * `logger` (o estruturado de obs/) registra knob inválido descartado — a cadeia
+ * de envio (F2-13) passa o logger do daemon.
+ */
+export async function loadChannelKnobs(
+  db: Queryable,
+  tenantId: string,
+  channelSessionId: string,
+  logger?: Logger,
+): Promise<ChannelPacingConfig> {
+  // Parte da ORGANIZAÇÃO, e não do número: sem linha em channel_knobs a janela
+  // ainda precisa do fuso da empresa (`fusoDaJanela`). Uma ida ao banco só.
+  const { rows } = await db.query<ChannelKnobsRow>(
+    `select k.throttle_ms, k.jitter_max_ms, k.window_start_hour, k.window_end_hour,
+            k.resposta_start_hour, k.resposta_end_hour,
+            k.atraso_notar_ms, k.ms_por_caractere, k.atraso_minimo_ms, k.atraso_maximo_ms,
+            k.allow_sunday, k.prospeccao_dias, k.timezone, k.warmup_daily_caps, k.number_activated_at,
+            o.timezone as org_timezone
+     from organizations o
+     left join channel_knobs k
+       on k.organization_id = o.id and k.channel_session_id = $2
+     where o.id = $1`,
+    [tenantId, channelSessionId],
+  );
+  const row = rows[0];
+  if (!row) {
+    return { knobs: { ...PACING_DEFAULTS }, numberActivatedAt: null };
+  }
+  let warmupDailyCaps = PACING_DEFAULTS.warmupDailyCaps;
+  if (row.warmup_daily_caps !== null) {
+    const parsed = parseWarmupCaps(row.warmup_daily_caps);
+    if (parsed) {
+      warmupDailyCaps = parsed;
+    } else {
+      // Falha FECHADO sem derrubar o worker: knob inválido é descartado em favor
+      // dos defaults conservadores; o alerta é log (ids não são PII).
+      logger?.warn('warmup_daily_caps inválido em channel_knobs — usando defaults conservadores', {
+        tenantId,
+        channelSessionId,
+      });
+    }
+  }
+  return {
+    knobs: {
+      throttleMs: row.throttle_ms ?? PACING_DEFAULTS.throttleMs,
+      jitterMaxMs: row.jitter_max_ms ?? PACING_DEFAULTS.jitterMaxMs,
+      atrasoNotarMs: row.atraso_notar_ms ?? PACING_DEFAULTS.atrasoNotarMs,
+      msPorCaractere: row.ms_por_caractere ?? PACING_DEFAULTS.msPorCaractere,
+      atrasoMinimoMs: row.atraso_minimo_ms ?? PACING_DEFAULTS.atrasoMinimoMs,
+      atrasoMaximoMs: row.atraso_maximo_ms ?? PACING_DEFAULTS.atrasoMaximoMs,
+      windowStartHour: row.window_start_hour ?? PACING_DEFAULTS.windowStartHour,
+      windowEndHour: row.window_end_hour ?? PACING_DEFAULTS.windowEndHour,
+      // `null` nestas duas = o número nunca foi configurado com janela de
+      // resposta própria, e aí vale a janela de DISPARO. Sem esse `??`, um clone
+      // que rodou a 0495 porém nunca gravou as colunas teria resposta bloqueada
+      // fora de 7h-22h (o default do arquivo), que é justamente o que ele já
+      // fazia — mas por outro caminho, e ninguém saberia dizer qual.
+      respostaStartHour: row.resposta_start_hour ?? row.window_start_hour ?? PACING_DEFAULTS.respostaStartHour,
+      respostaEndHour: row.resposta_end_hour ?? row.window_end_hour ?? PACING_DEFAULTS.respostaEndHour,
+      allowSunday: row.allow_sunday ?? PACING_DEFAULTS.allowSunday,
+      // Dias próprios da prospecção (0642). Inválido/vazio cai na regra antiga
+      // (`allowSunday`), com warn — nunca fila parada em silêncio.
+      prospeccaoDias: (() => {
+        const dias = parseDiasDaProspeccao(row.prospeccao_dias);
+        if (dias) return dias;
+        if (row.prospeccao_dias !== null && row.prospeccao_dias !== undefined) {
+          logger?.warn('prospeccao_dias inválido em channel_knobs — usando a regra antiga', {
+            tenantId,
+            channelSessionId,
+          });
+        }
+        const domingo = row.allow_sunday ?? PACING_DEFAULTS.allowSunday;
+        return domingo ? [...PACING_DEFAULTS.prospeccaoDias] : [1, 2, 3, 4, 5, 6];
+      })(),
+      timezone: fusoDaJanela(row.timezone, row.org_timezone),
+      warmupDailyCaps,
+    },
+    numberActivatedAt: row.number_activated_at,
+  };
+}
+
+/** lastSentAt (qualquer dia) + sentToday (desde a meia-noite local do tenant). */
+export async function loadPacingState(
+  db: Queryable,
+  tenantId: string,
+  channelSessionId: string,
+  input: { now: Date; timezone: string; numberActivatedAt: Date | null },
+): Promise<PacingState> {
+  const dayStart = dayStartInTz(input.now, input.timezone);
+  // Dois subselects e não `max` + `count(*) filter`: com o filtro de data fora do
+  // WHERE, a agregação lia o histórico inteiro do número a cada envio, sob o lock.
+  // Assim os dois descem por `idx_pacing_ledger_session (org, sessão, sent_at desc)`:
+  // a última linha e só as linhas do dia. Mesmo molde de `ledger-supabase.ts`.
+  const { rows } = await db.query<{ last_sent_at: Date | null; sent_today: string }>(
+    `select (select sent_at from pacing_ledger
+              where organization_id = $1 and channel_session_id = $2
+              order by sent_at desc limit 1) as last_sent_at,
+            (select count(*) from pacing_ledger
+              where organization_id = $1 and channel_session_id = $2
+                and sent_at >= $3) as sent_today`,
+    [tenantId, channelSessionId, dayStart],
+  );
+  const row = rows[0];
+  return {
+    lastSentAt: row?.last_sent_at ?? null,
+    sentToday: Number(row?.sent_today ?? 0),
+    numberActivatedAt: input.numberActivatedAt,
+  };
+}
+
+/** Registra um envio efetivado — chamado pela cadeia de envio (F2-13) após o accept do CRM. */
+export async function recordSend(
+  db: Queryable,
+  tenantId: string,
+  channelSessionId: string,
+  sentAt: Date = new Date(),
+): Promise<void> {
+  await db.query(
+    `insert into pacing_ledger (organization_id, channel_session_id, sent_at)
+     values ($1, $2, $3)`,
+    [tenantId, channelSessionId, sentAt],
+  );
+}

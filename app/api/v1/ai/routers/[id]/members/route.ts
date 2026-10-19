@@ -1,0 +1,158 @@
+import { requireSupportWrite } from "@/lib/impersonate/support";
+/**
+ * PUT /api/v1/ai/routers/:id/members — substitui a lista INTEIRA de membros
+ * do router (admin), audit `ai.router_members_updated`. `position` = índice
+ * do array recebido. organization_id sempre da sessão/token.
+ */
+import { randomUUID } from "node:crypto";
+import { type NextRequest } from "next/server";
+import { z } from "zod";
+import type { PoolClient } from "pg";
+
+import { resolveAuthDual, tetoDeEscritaDoToken } from "@/lib/api/auth-dual";
+import { ok, fail } from "@/lib/api/wrappers";
+import { audit } from "@/lib/audit";
+import { getRequestPool } from "@/lib/agent-engine/db/request-pool";
+import { writeRouterMembers } from "@/lib/ai/agents/router-members";
+import { replaceRouterMembersHttp } from "@/lib/ai/agents/router-members-http";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { traduzir } from "@/lib/i18n/dicionario";
+
+export const dynamic = "force-dynamic";
+
+type RouteCtx = { params: Promise<{ id: string }> };
+
+const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const memberInputSchema = z.object({
+  agent_id: z.string().uuid(),
+  intent_name: z.string().min(1).max(120),
+  intent_description: z.string().min(1).max(2000),
+  examples: z.array(z.string()).default([]),
+  // Sem esta linha o Zod descartava o campo em silêncio e o vínculo
+  // intenção → roteiro nunca era gravado (revisão do #1573, B2).
+  flow_pointer_id: z.string().uuid().nullable().default(null),
+  // #2155 — funil/etapa de DESTINO quando a intenção casa. Sem destino, o
+  // roteamento continua só escolhendo o agente (comportamento de antes).
+  pipeline_id: z.string().uuid().nullable().default(null),
+  stage_id: z.string().uuid().nullable().default(null),
+}).refine((m) => m.stage_id === null || m.pipeline_id !== null, {
+  message: "stage_id exige pipeline_id",
+  path: ["stage_id"],
+});
+
+const membersPutSchema = z.object({
+  members: z.array(memberInputSchema),
+});
+
+export async function PUT(req: NextRequest, ctx: RouteCtx): Promise<Response> {
+  const supportDenied = await requireSupportWrite();
+  if (supportDenied) return supportDenied;
+
+  const requestId = randomUUID();
+  const { id } = await ctx.params;
+  if (!UUID_RX.test(id)) {
+    return fail("invalid_request", "id inválido.", 400, { requestId });
+  }
+
+  const authz = await resolveAuthDual(req, {
+    requestId,
+    resource: "ai_routers",
+    role: "admin",
+    scope: "config:write",
+    tokenRole: "admin",
+  });
+  if (!authz.ok) return authz.response;
+  const t = (texto: string) => traduzir(texto, authz.idioma ?? "pt-BR");
+  const { organizationId, actor } = authz;
+
+  const teto = await tetoDeEscritaDoToken(authz, "ai_routers", requestId);
+  if (teto) return teto;
+  const authUserId = actor.type === "user" ? actor.id : null;
+
+  let rawBody: unknown;
+  try {
+    rawBody = await req.json();
+  } catch {
+    return fail("invalid_request", t("Body JSON inválido."), 400, { requestId });
+  }
+
+  const parsed = membersPutSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return fail("validation_failed", t("Campos inválidos."), 422, {
+      requestId,
+      details: parsed.error.flatten(),
+    });
+  }
+  const { members } = parsed.data;
+
+  let db: PoolClient | undefined;
+  // #2624: consulta que estoura o query_timeout rejeita a promessa SEM destruir o
+  // socket (pg 8.23, fora do modo pipeline). Liberado com release() sem erro, este
+  // cliente volta ao pool com a transação antiga de pé e é reemprestado nela —
+  // o catch marca o erro e o finally lê dele (mesma direção do #2621).
+  let erroNaTransacao: Error | undefined;
+  try {
+    if (process.env.SUPABASE_DB_URL) {
+      db = await getRequestPool().connect();
+      await db.query("begin");
+      await writeRouterMembers(db, organizationId, id, members, "replace");
+      await db.query("commit");
+    } else {
+      await replaceRouterMembersHttp(createAdminClient(), organizationId, id, members);
+    }
+  } catch (error) {
+    // Marcado ANTES do rollback: se o próprio rollback estourar, o cliente ainda
+    // sai com erro e o pg-pool o descarta (release(err) → _remove → client.end()).
+    erroNaTransacao = error instanceof Error ? error : new Error(String(error));
+    if (db) await db.query("rollback");
+    const message = error instanceof Error ? error.message : "";
+    const code = (error as { code?: string }).code;
+    if (message === "router_not_found")
+      return fail("not_found", t("Router não encontrado."), 404, { requestId });
+    if (message === "member_agent_not_found")
+      return fail("validation_failed", t("Um dos agentes não existe nesta organização."), 422, {
+        requestId,
+      });
+    if (message === "member_flow_not_found")
+      return fail(
+        "validation_failed",
+        t("O fluxo de atendimento escolhido não existe nesta organização."),
+        422,
+        { requestId },
+      );
+    // As FKs compostas da 0542 recusam funil/etapa de outra empresa (ou já
+    // excluído). Agente e roteiro são conferidos antes, então o 23503 aqui é
+    // o destino — erro de quem configura, não do servidor.
+    if (code === "23503")
+      return fail(
+        "validation_failed",
+        t("O funil ou a etapa de destino não existe nesta organização."),
+        422,
+        { requestId },
+      );
+    if (message === "duplicate_intent_name" || code === "23505")
+      return fail(
+        "duplicate_intent_name",
+        t("Duas intenções não podem ter o mesmo nome no router."),
+        409,
+        { requestId },
+      );
+    return fail("internal_error", "Erro ao gravar membros do router.", 500, { requestId });
+  } finally {
+    db?.release(erroNaTransacao);
+  }
+
+  void audit({
+    action: "ai.router_members_updated",
+    actorUserId: authUserId,
+    actorApiTokenId: authz.apiTokenId ?? null,
+    organizationId,
+    resourceType: "ai_router",
+    resourceId: id,
+    requestId,
+    metadata: { count: members.length },
+  });
+
+  return ok({ count: members.length }, { requestId });
+}

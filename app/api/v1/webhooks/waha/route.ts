@@ -1,0 +1,248 @@
+/**
+ * POST /api/v1/webhooks/waha — global webhook receiver (no path token).
+ *
+ * Usado quando o WAHA tem um único WHATSAPP_HOOK_URL global (docker-compose
+ * atual). Resolve a channel_session por `body.session` (= waha_session_name).
+ * A variante /waha/[token] é a rota per-tenant canônica de produção.
+ *
+ * Só atende a REDE INTERNA. O WAHA da stack chama `http://app:3000` pela rede
+ * do Docker; quem está do outro lado da borda pública usa a rota por token.
+ * Requisição que traz a marca de um proxy de borda recebe 404
+ * (`chegouPelaBorda`, lib/http/ip-do-cliente.ts — régua de cabeçalho, válida
+ * nos proxies que o kit sobe). A regra mora na aplicação para valer igual em
+ * qualquer modo de instalação, sem depender da configuração do proxy.
+ *
+ * Pipeline: lookup session -> verifica HMAC SHA512 -> loga em
+ * webhook_events_log -> processarEventoWaha (ingestão compartilhada, ver
+ * lib/waha/ingest.ts). Idempotência e resolução atômica de contato/conversa
+ * vivem no módulo compartilhado.
+ */
+import { randomUUID } from "node:crypto";
+import type { NextRequest, NextResponse } from "next/server";
+
+import { fail, ok } from "@/lib/api/wrappers";
+import { audit } from "@/lib/audit";
+import { ARCHIVED_AT, queryTolerantToMissingArchived } from "@/lib/channels/archived";
+import { chegouPelaBorda } from "@/lib/http/ip-do-cliente";
+import { carregarComportamentoDaInstalacao } from "@/lib/instalacao/comportamento-servidor";
+import { logger } from "@/lib/logger";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { conferirContratoWaha, lerRoteamentoWaha } from "@/lib/waha/envelope";
+import { processarEventoWaha, REENTREGA_EM_SEGUNDOS } from "@/lib/waha/desfecho-do-webhook";
+import { esquecerSessaoDoWebhook, sessaoDoWebhook } from "@/lib/waha/sessao-do-webhook";
+import { authenticateWahaWebhook } from "@/lib/waha/webhook-auth";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+export async function POST(req: NextRequest): Promise<NextResponse> {
+  const requestId = randomUUID();
+
+  // Antes de ler o corpo e de tocar o banco: ver o cabeçalho deste arquivo.
+  if (chegouPelaBorda(req.headers)) {
+    // `warn` e sem corpo: o rastro serve a quem configurou o WAHA por um
+    // endereço público e viu a ingestão parar — a rota certa é a por token.
+    logger.warn("[waha.webhook] rota global recusou requisição vinda da borda", {
+      request_id: requestId,
+    });
+    return fail("not_found", "not found", 404, { requestId });
+  }
+
+  const rawBody = await req.text();
+  // ─── O contrato do fio, em DOIS momentos ─────────────────────────────────
+  //
+  // Isto era `JSON.parse(rawBody) as WahaEnvelope`: um cast, que não checa nada
+  // em tempo de execução. Um `payload.from` não-string fazia `parseChatId`
+  // lançar lá dentro, o `catch` do dispatch engolia, e a rota devolvia **200** —
+  // o provider riscava o evento da fila achando que entregou.
+  //
+  // O estágio 1 confere só o que é preciso para RESOLVER O TENANT e ARQUIVAR o
+  // corpo: aqui a `session` do corpo resolve a organização, e o id da mensagem
+  // vai numa coluna do arquivo. O contrato completo não pode barrar o arquivo,
+  // porque o AC do `docs/prd/03-prd-whatsapp-waha.md` §3.3 manda gravar o raw
+  // "mesmo se o parse falhar depois" — e o corpo cru de um payload cujo
+  // formato mudou é justamente o artefato que responde o que mudou.
+  //
+  // Desfecho da recusa: 400 com os CAMPOS (nunca os valores: são dado de
+  // cliente e podem ter megabytes) e uma linha no log estruturado. O 400 é
+  // escolhido por ser BARULHENTO: payload fora do contrato não é "evento que
+  // não interessa" — é o fio ter mudado, e um 200 diria que deu tudo certo. Não
+  // 500, porque o defeito está no corpo recebido, não numa falha nossa.
+  //
+  // Esta escolha NÃO se apoia em como o provider reage ao 400 (se reentrega,
+  // quantas vezes, se desiste): isso nunca foi medido contra o WAHA.
+  //
+  // O schema é LOOSE: campo desconhecido passa intacto. Ver lib/waha/envelope.ts.
+  const roteamento = lerRoteamentoWaha(rawBody);
+  if (!roteamento.ok) {
+    if (roteamento.motivo === "json_invalido") {
+      return fail("invalid_request", "invalid_json", 400, { requestId });
+    }
+    // `error`, e aqui isto está certo: requisição vinda da borda pública já
+    // saiu com 404 no topo desta função, então quem chega aqui é o WAHA pela
+    // rede interna.
+    // Recusa de contrato nesta rota é o fio ter mudado.
+    // Na rota por token, que é pública de propósito, o mesmo log é `warn`.
+    logger.error("[waha.webhook] payload fora do contrato do canal", {
+      request_id: requestId,
+      estagio: "roteamento",
+      campos: roteamento.campos,
+    });
+    return fail("validation_failed", "payload fora do contrato do canal", 400, {
+      requestId,
+      details: { campos: roteamento.campos },
+    });
+  }
+  // Nome deliberado: isto ainda NÃO é o envelope conferido. É o que o estágio
+  // 1 garante — sessão e id —, e só. Chamá-lo de `envelope` convidaria a ler
+  // `payload.from` daqui, que é justamente o campo ainda não conferido.
+  const roteado = roteamento.envelope;
+
+  const sessionName = roteado.session;
+  if (!sessionName) {
+    return fail("invalid_request", "missing session field", 400, { requestId });
+  }
+
+  const admin = createAdminClient();
+
+  // Canal ARQUIVADO não ingere — mesmo motivo da rota per-tenant: a sessão já foi
+  // removida do transporte, e o que ainda chega é evento em voo. Cai no ramo
+  // `session_not_registered` abaixo, que responde 200.
+  const base = () =>
+    admin
+      .from("channel_sessions")
+      .select(
+        "id, organization_id, waha_session_name, webhook_secret_encrypted, status, is_warmup_complete, warmup_started_at",
+      )
+      .eq("waha_session_name", sessionName);
+  // Memória de 30 s por processo: conexão + segredo decifrado. Ver
+  // lib/waha/sessao-do-webhook.ts — eram 2 chamadas ao banco por evento.
+  const chaveDaSessao = `nome:${sessionName}`;
+  const lida = await sessaoDoWebhook(
+    chaveDaSessao,
+    () =>
+      queryTolerantToMissingArchived(
+        () => base().is(ARCHIVED_AT, null).maybeSingle(),
+        () => base().maybeSingle(),
+      ),
+    async (ciphertext) => {
+      // Erro do RPC LANÇA (falha passageira, não guardada); `null` é "não há credencial".
+      const dec = await admin.rpc("fn_decrypt_oauth", { ciphertext });
+      if (dec.error) throw new Error(dec.error.message);
+      return typeof dec.data === "string" ? dec.data : null;
+    },
+  );
+
+  if (!lida.ok) {
+    return fail("internal_error", lida.erro, 500, { requestId });
+  }
+  const session = lida.valor?.session ?? null;
+  if (!session) {
+    // Sessão ainda não registrada no nosso DB — aceita e ignora. Comum quando a
+    // sessão foi iniciada pelo dashboard antes da nossa linha existir, e por isso
+    // 200: aqui NÃO houve defeito nenhum no corpo, ao contrário da recusa de
+    // contrato acima. O que o WAHA faz com um 4xx aqui nunca foi medido, e esta
+    // escolha não se apoia nisso.
+    return ok(
+      { accepted: false, reason: "session_not_registered", session: sessionName },
+      { requestId },
+    );
+  }
+
+  // Autenticação fail-closed — regras e o porquê em lib/waha/webhook-auth.ts.
+  const sigHeader = req.headers.get("x-webhook-hmac") ?? req.headers.get("X-Webhook-Hmac");
+  const sessionSecret = lida.valor?.segredo ?? null;
+
+  // O portão lê a exigência de assinatura da MEMÓRIA do processo, de forma
+  // síncrona. Sem carregar a linha da instalação aqui, um processo recém-subido
+  // responde com o piso do `.env` até alguém abrir outra tela que a carregue —
+  // e a escolha feita em /admin/sistema não vale para a entrada de mensagens.
+  // O memo de 30 s faz disto no máximo uma leitura por janela; nunca lança.
+  await carregarComportamentoDaInstalacao();
+  const auth = authenticateWahaWebhook({ rawBody, signatureHeader: sigHeader, sessionSecret });
+  if (!auth.ok) {
+    // Segredo pode ter sido trocado: o próximo evento relê do banco.
+    esquecerSessaoDoWebhook(chaveDaSessao);
+    await audit({
+      action: "webhook.hmac_invalid",
+      organizationId: session.organization_id,
+      metadata: {
+        provider: "waha",
+        session: session.waha_session_name,
+        event: roteado.event,
+        reason: auth.reason,
+        had_signature: Boolean(sigHeader),
+      },
+    });
+    return fail("unauthenticated", auth.reason, 401, { requestId });
+  }
+  const validSignature = auth.signatureVerified;
+
+  const eventType = roteado.event ?? "unknown";
+  const externalId = roteado.payload?.id ?? null;
+
+  const headersJson: Record<string, string> = {};
+  req.headers.forEach((value, key) => {
+    if (key.toLowerCase().startsWith("authorization")) return;
+    if (key.toLowerCase() === "cookie") return;
+    headersJson[key] = value;
+  });
+  // Estágio 2: o resto do contrato. Conferido ANTES do INSERT para a linha já
+  // nascer com o desfecho — o corpo cru é arquivado nos dois casos. Gravar
+  // `received` e corrigir depois abriria uma janela (e um segundo write que pode
+  // falhar) em que a recusa fica com a mesma palavra de um evento que deu certo.
+  const contrato = conferirContratoWaha(roteado);
+
+  const { data: arquivo } = await admin.from("webhook_events_log").insert({
+    organization_id: session.organization_id,
+    channel_session_id: session.id,
+    provider: "waha",
+    webhook_path_token: null,
+    http_method: "POST",
+    headers: headersJson,
+    raw_body: rawBody,
+    payload_parsed: roteado as unknown as Record<string, unknown>,
+    signature_header: sigHeader ?? null,
+    valid_signature: validSignature,
+    event_type: eventType,
+    external_id: externalId,
+    status: contrato.ok ? "received" : "error",
+    // Só os NOMES dos campos: o valor recusado é dado de cliente.
+    error_message: contrato.ok ? null : `${contrato.motivo}: ${contrato.campos.join(", ")}`,
+    attempts: 0,
+  }).select("id").maybeSingle();
+
+  if (!contrato.ok) {
+    logger.error("[waha.webhook] payload fora do contrato do canal", {
+      request_id: requestId,
+      estagio: "conteudo",
+      campos: contrato.campos,
+    });
+    return fail("validation_failed", "payload fora do contrato do canal", 400, {
+      requestId,
+      details: { campos: contrato.campos },
+    });
+  }
+
+  // Falha TRANSITÓRIA do banco não pode virar 200: o WAHA riscaria o evento
+  // achando que entregou, e a mensagem do cliente sumiria (medido: 14/09 e
+  // 24/09/2026). 503 + Retry-After pede a reentrega; a reentrega é segura porque
+  // `unique (organization_id, external_id)` faz o `23505` virar dedup. Se as
+  // reentregas do WAHA também não bastarem, o cron `webhook-replay` reprocessa o
+  // arquivo. Ver `lib/waha/desfecho-do-webhook.ts`.
+  const desfecho = await processarEventoWaha(
+    admin,
+    session,
+    contrato.envelope,
+    requestId,
+    (arquivo as { id?: string } | null)?.id ?? null,
+  );
+  if (desfecho === "tentar_de_novo") {
+    return fail("upstream_unavailable", "banco indisponível — reentregue o evento", 503, {
+      requestId,
+      headers: { "Retry-After": String(REENTREGA_EM_SEGUNDOS) },
+    });
+  }
+
+  return ok({ accepted: true }, { requestId });
+}

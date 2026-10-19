@@ -1,0 +1,687 @@
+/**
+ * LGPD export PDF renderer (PT-BR).
+ *
+ * Template para Art. 18, II — direito de acesso aos dados. Renderizado para
+ * Buffer via @react-pdf/renderer e entregue ao titular via Resend.
+ *
+ * ── ESTE DOCUMENTO NÃO LEVA MARCA. É decisão, não esquecimento ──────────────
+ *
+ * O rodapé imprime o CONTROLADOR (`organizations.legal_name`) e o Encarregado
+ * resolvido. Não imprime a marca do revendedor, não imprime a nossa, não leva
+ * logo e não leva cor.
+ *
+ * O motivo: o relatório do Art. 18 II responde a um DIREITO LEGAL do titular.
+ * Nomear ali o revendedor — que é OPERADOR, não controlador — inverteria os
+ * papéis num documento jurídico. Trocar `DeskcommCRM` por `Vendas Turbo CRM`
+ * no rodapé não é "completar o white-label": é piorar o defeito, porque hoje o
+ * nome é obviamente o do software, e depois passaria a parecer a declaração de
+ * quem responde pelos dados.
+ *
+ * Consequência boa e deliberada: a armadilha do @react-pdf não nos alcança.
+ * `var(--x)` e `oklch()` renderizam PDF VÁLIDO e descartam a cor em silêncio
+ * (medido: 1514 bytes contra 1538 do hex), então qualquer prova do tipo "gerei
+ * o PDF e ele abriu" passaria com a marca perdida. Como o documento não recebe
+ * cor de marca nenhuma, o `styles` de módulo abaixo pode continuar de módulo:
+ * zero risco assumido. Não parametrize, não mova para dentro do componente.
+ *
+ * A tela que resolve o outro lado disto é `/app/settings/tenant` (campo "Razão
+ * social"): `legal_name` nasce IGUAL a `display_name` no bootstrap
+ * (`scripts/bootstrap-owner.ts`, os dois recebem `ORG_NAME`), então o caso ruim
+ * aqui não é o campo vazio — é o nome fantasia impresso como razão social. Uma
+ * guarda "se vazio, use X" nunca dispararia; o que resolve é preencher a tela.
+ */
+
+import { Document, Page, StyleSheet, Text, View, renderToBuffer } from "@react-pdf/renderer";
+import React from "react";
+
+import { env } from "@/lib/env";
+import { mascaraCpf } from "@/lib/lgpd/mask";
+import {
+  COPIA_DO_NUMERO_3,
+  DIREITOS_DA_ALINEA_E,
+  naoInformadoPelo,
+} from "@/lib/legal/art15";
+import { PAIS_PADRAO, PERFIS_DO_PAIS } from "@/lib/legal/perfil-do-pais";
+
+import type { ExportPayload } from "./export-collector";
+
+/**
+ * O vocabulário legal do PAÍS que o produto chama de padrão (issue #2344).
+ *
+ * O payload que este renderizador desenha não traz o código do país: o Brasil
+ * é quem não declara nada (`foraDoBrasil`), e é o perfil dele que decide o
+ * rótulo de quem responde pelos dados e o da citação. Quem DESenha sem perfil
+ * — payload de teste, país sem registro — cai no mesmo padrão, que é o
+ * vocabulário brasileiro de sempre ("Controlador", "Encarregado (DPO)").
+ */
+const PADRAO = PERFIS_DO_PAIS[PAIS_PADRAO]!;
+
+/** O papel do responsável pelos dados: o do payload, ou o do perfil padrão. */
+function papelControlador(data: ExportPayload): string {
+  return data.papel_controlador ?? PADRAO.papel.controlador;
+}
+
+/** O papel de quem recebe os pedidos do titular: o do payload, ou o padrão. */
+function papelEncarregado(data: ExportPayload): string {
+  return data.papel_encarregado ?? PADRAO.papel.encarregado;
+}
+
+/**
+ * O que a alínea do art. 15.º em branco diz, no vocabulário do país.
+ *
+ * `naoInformadoPelo("Controlador")` é a constante brasileira de sempre, e o
+ * Brasil é o perfil padrão: no papel dele o texto continua byte a byte o mesmo.
+ * Fora dele a frase repete o nome que a lei do país dá ao papel — em Portugal
+ * a seção do art. 15.º falava em "controlador", palavra que o RGPD pt-PT não
+ * usa (issue #2344).
+ */
+function naoInformado(data: ExportPayload): string {
+  return naoInformadoPelo(papelControlador(data));
+}
+
+const styles = StyleSheet.create({
+  page: {
+    padding: 36,
+    fontSize: 10,
+    fontFamily: "Helvetica",
+    color: "#1f2937",
+  },
+  header: {
+    borderBottom: "1pt solid #d1d5db",
+    paddingBottom: 8,
+    marginBottom: 16,
+  },
+  title: { fontSize: 16, fontWeight: "bold", marginBottom: 4 },
+  subtitle: { fontSize: 10, color: "#6b7280" },
+  section: { marginTop: 14 },
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: "bold",
+    backgroundColor: "#f3f4f6",
+    padding: 4,
+    marginBottom: 6,
+  },
+  row: { flexDirection: "row", marginBottom: 2 },
+  label: { width: 110, color: "#6b7280" },
+  value: { flex: 1 },
+  small: { fontSize: 8, color: "#9ca3af" },
+  itemBlock: {
+    marginBottom: 4,
+    paddingBottom: 4,
+    borderBottom: "0.5pt dashed #e5e7eb",
+  },
+  warningBanner: {
+    marginTop: 14,
+    padding: 6,
+    border: "1pt solid #f59e0b",
+    backgroundColor: "#fffbeb",
+    fontSize: 9,
+    color: "#92400e",
+  },
+  footer: {
+    position: "absolute",
+    bottom: 24,
+    left: 36,
+    right: 36,
+    fontSize: 8,
+    color: "#9ca3af",
+    borderTop: "0.5pt solid #e5e7eb",
+    paddingTop: 4,
+  },
+});
+
+interface Props {
+  data: ExportPayload;
+  /** When true, appends an unsigned-PADES warning banner. */
+  unsignedWarning?: boolean;
+}
+
+/**
+ * Sem `fuso` (Brasil) a data sai como sempre saiu. Com `fuso` (organização
+ * fora do Brasil) sai no fuso DELA e com o nome do fuso escrito: um horário de
+ * São Paulo apresentado como local erra 3 a 4 h em Lisboa (doc 88).
+ */
+function formatarData(s: string | null | undefined, fuso?: string): string {
+  if (!s) return "—";
+  try {
+    if (!fuso) return new Date(s).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+    return new Date(s).toLocaleString("pt-PT", { timeZone: fuso, timeZoneName: "short" });
+  } catch {
+    return s;
+  }
+}
+
+function fmtMoney(cents: number | null | undefined, currency: string | null | undefined): string {
+  if (cents == null) return "—";
+  const v = cents / 100;
+  return `${currency ?? "BRL"} ${v.toFixed(2)}`;
+}
+
+/**
+ * A MESMA cadeia que `lib/lgpd/sla-alarm.ts:93` já usa
+ * (organização acima, instalação abaixo — resolvida pelo coletor). Reusar a ordem, e não
+ * inventar outra, é o que impede o documento e o alarme de apontarem para
+ * encarregados diferentes na mesma organização.
+ *
+ * O texto anterior era `DPO: contato via canal oficial do controlador` — um
+ * não-resposta num campo cuja função é dizer a quem o titular reclama.
+ */
+function encarregado(data: ExportPayload): string {
+  // O renderizador não consulta configuração: ele desenha o que recebeu. Quem
+  // resolve o encarregado (organização acima, instalação abaixo) é o coletor,
+  // que é assíncrono e já busca `dpo_email` da organização. Deixar a busca aqui
+  // obrigaria um componente de PDF a falar com o banco no meio do desenho.
+  // Sem DPO, o rodapé diz quem não informou com o nome que a lei do país dá
+  // ao papel — a mesma frase das alíneas do art. 15.º (`naoInformado`).
+  return data.dpo_email || naoInformado(data);
+}
+
+// Concluir o processamento do job não comprova envio: ele também pode terminar
+// com um bloqueio. O relatório conserva essa diferença, sem anunciar entrega.
+const deliveryStatus: Record<string, string> = {
+  pending: "Pendente",
+  running: "Em processamento",
+  done: "Processamento concluído",
+  failed: "Falha no processamento",
+  dead: "Tentativas encerradas",
+};
+const noticeStatus: Record<string, string> = {
+  open: "Aberto",
+  resolved: "Resolvido",
+  dismissed: "Dispensado",
+};
+
+/**
+ * O CPF que o titular informou na conversa, MASCARADO, para a linha do
+ * documento no relatório (issue #2341).
+ *
+ * Antes esta linha dizia "valor no arquivo de dados", mas o `data.json` ficava no
+ * Storage sem link no e-mail ao titular — o documento apontava para um
+ * arquivo que quem o lê não tinha. A saída escolhida (uma das duas da issue) foi
+ * imprimir o valor mascarado aqui mesmo. A outra — entregar o `data.json` junto
+ * — veio depois (doc 103, A), com o que é da equipe tirado do arquivo
+ * (`lib/lgpd/copia-do-titular.ts`); a linha mascarada ficou.
+ *
+ * QUAL chave: o coletor reconhece o CPF pelo TIPO da pergunta (`cpf`), mas a
+ * chave onde ela grava é o operador que escolhe, e este relatório só enxerga o
+ * nome da chave. Então: das chaves que contêm "cpf", valem as que trazem um
+ * CPF de verdade (`tem_cpf: "sim"` não conta). Com UMA, sai a máscara. Com
+ * duas ou mais valores diferentes (mesmo que uma se chame `cpf`, como
+ * `cpf_responsavel` numa clínica), não há como saber qual é do titular, e sai
+ * a frase sem dígito de ninguém. O conserto de verdade é o coletor expor a
+ * chave que reconheceu. Sem valor achado, a frase sai SEM ponteiro: nunca o
+ * texto antigo.
+ */
+function cpfMascarado(contact: ExportPayload["contact"]): string {
+  const campos = contact?.custom_fields ?? {};
+  const candidatos = new Set(
+    Object.entries(campos)
+      .filter(([chave]) => chave.toLowerCase().includes("cpf"))
+      .map(([, valor]) => (typeof valor === "number" ? String(valor) : valor))
+      .filter((valor): valor is string => typeof valor === "string" && mascaraCpf(valor) !== null)
+      .map((valor) => valor.replace(/\D/g, "")),
+  );
+  const [unico] = candidatos;
+  return (candidatos.size === 1 ? mascaraCpf(unico) : null) ?? "valor não disponível neste relatório";
+}
+
+export function LgpdExportPdf({ data, unsignedWarning }: Props): React.ReactElement {
+  const shortId = data.request_id.slice(0, 8);
+  // ponytail: o nome antigo, já preso ao fuso deste documento — as ~25 chamadas abaixo não mudam.
+  const fmtDate = (s: string | null | undefined) => formatarData(s, data.fuso);
+
+  return (
+    <Document>
+      <Page size="A4" style={styles.page}>
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.title}>Relatório de Acesso aos Dados</Text>
+          <Text style={styles.subtitle}>
+            {/* A lei vem do PERFIL do país da organização (issue #1033): país
+                sem citação revisada não cita lei nenhuma — citar a errada é
+                pior do que não citar artigo nenhum. */}
+            {`${data.lei_rotulo ?? PADRAO.lei?.rotuloNoDocumento ?? "Base legal"}: `}{data.lei_citada ?? "não declarada (país sem citação revisada)"} ·
+            Solicitação #{shortId}
+          </Text>
+        </View>
+
+        {/* Metadata */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Metadados da Solicitação</Text>
+          <View style={styles.row}>
+            <Text style={styles.label}>ID:</Text>
+            <Text style={styles.value}>{data.request_id}</Text>
+          </View>
+          {/* A razão social vem primeiro e o uuid vira "ID interno": o campo
+              existe para o TITULAR saber de quem são os dados, e um uuid cru
+              não responde isso a ninguém. O id continua no documento porque é
+              o que o suporte pede quando alguém liga citando o relatório. */}
+          <View style={styles.row}>
+            <Text style={styles.label}>Organização:</Text>
+            <Text style={styles.value}>{data.organization_legal_name || "—"}</Text>
+          </View>
+          <View style={styles.row}>
+            <Text style={styles.label}>ID interno:</Text>
+            <Text style={styles.value}>{data.organization_id}</Text>
+          </View>
+          <View style={styles.row}>
+            <Text style={styles.label}>Gerado em:</Text>
+            <Text style={styles.value}>{fmtDate(data.generated_at)}</Text>
+          </View>
+          {data.no_local_footprint ? (
+            <View style={styles.row}>
+              <Text style={styles.label}>Status:</Text>
+              <Text style={styles.value}>
+                Nenhum dado pessoal localizado nos sistemas internos.
+              </Text>
+            </View>
+          ) : null}
+        </View>
+
+        {/* Art. 15.º, n.º 1 — alínea a alínea (issue #2340, doc 88).
+            Sai SÓ quando o coletor emitiu `art15`: Brasil (documento da LGPD,
+            art. 18 II) e país sem autoridade revisada no perfil ficam byte a
+            byte — os fixtures em tests/fixtures/lgpd-brasil-antes-do-doc88/ é
+            que travam isto, não este comentário. */}
+        {data.art15 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>
+              Informações exigidas pelo art. 15.º, n.º 1
+            </Text>
+            <View style={styles.row}>
+              <Text style={styles.label}>a) Finalidades:</Text>
+              <Text style={styles.value}>
+                {data.art15.finalidades ?? naoInformado(data)}
+              </Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={styles.label}>c) Destinatários:</Text>
+              <Text style={styles.value}>
+                {data.art15.destinatarios ?? naoInformado(data)}
+              </Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={styles.label}>d) Conservação:</Text>
+              <Text style={styles.value}>
+                {data.art15.prazo_conservacao ?? naoInformado(data)}
+              </Text>
+            </View>
+            <View style={styles.itemBlock}>
+              <Text style={styles.small}>e) Direitos</Text>
+              <Text>{DIREITOS_DA_ALINEA_E}</Text>
+            </View>
+            <View style={styles.itemBlock}>
+              <Text style={styles.small}>f) Reclamação a uma autoridade de controlo</Text>
+              <Text>
+                {data.art15.autoridade.nome} · {data.art15.autoridade.site}
+              </Text>
+            </View>
+            <View style={styles.itemBlock}>
+              <Text style={styles.small}>h) Decisões automatizadas</Text>
+              <Text>{data.art15.decisoes_automatizadas}</Text>
+            </View>
+            <Text style={styles.small}>{COPIA_DO_NUMERO_3}</Text>
+          </View>
+        ) : null}
+
+        {/* Contact */}
+        {data.contact ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Dados Pessoais (Contato)</Text>
+            <View style={styles.row}>
+              <Text style={styles.label}>Nome:</Text>
+              <Text style={styles.value}>{data.contact.name ?? "—"}</Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={styles.label}>Email:</Text>
+              <Text style={styles.value}>{data.contact.email ?? "—"}</Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={styles.label}>Telefone:</Text>
+              <Text style={styles.value}>{data.contact.phone_number ?? "—"}</Text>
+            </View>
+            <View style={styles.row}>
+              {/* O valor "informado na conversa" vem só da pergunta de roteiro
+                  do tipo `cpf`, validada como CPF (`lib/lgpd/campos-personalizados.ts`):
+                  é sempre CPF, mesmo numa organização de fora do Brasil. */}
+              <Text style={styles.label}>
+                {data.contact.cpf_present || !data.contact.cpf_informado_na_conversa
+                  ? data.documento_rotulo
+                  : "CPF"}:
+              </Text>
+              <Text style={styles.value}>
+                {data.contact.cpf_present
+                  ? "Armazenado (criptografado)"
+                  : data.contact.cpf_informado_na_conversa
+                    ? `Informado na conversa (${cpfMascarado(data.contact)})`
+                    : "—"}
+              </Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={styles.label}>Origem:</Text>
+              <Text style={styles.value}>{data.contact.source ?? "—"}</Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={styles.label}>Criado em:</Text>
+              <Text style={styles.value}>{fmtDate(data.contact.created_at)}</Text>
+            </View>
+            <View style={styles.row}>
+              <Text style={styles.label}>Anonimizado:</Text>
+              <Text style={styles.value}>{data.contact.is_anonymized ? "Sim" : "Não"}</Text>
+            </View>
+          </View>
+        ) : null}
+
+        {/* Respostas e campos personalizados (roteiros de atendimento, etc.) */}
+        {data.contact && (data.contact.campos_legiveis ?? []).length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Respostas e campos personalizados</Text>
+            {/* A pergunta em linha própria: rótulo de roteiro é frase, e na coluna
+                de 110pt dos dados fixos ele quebrava no meio da palavra. */}
+            {data.contact.campos_legiveis.map((campo, i) => (
+              <View key={i} style={styles.itemBlock}>
+                <Text style={styles.small}>{campo.rotulo}</Text>
+                <Text>{campo.valor}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Consents */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Consentimentos</Text>
+          {data.consents.length === 0 ? (
+            <Text style={styles.small}>Nenhum consentimento registrado.</Text>
+          ) : (
+            data.consents.map((c, i) => (
+              <View key={i} style={styles.row}>
+                <Text style={styles.label}>{c.scope}:</Text>
+                <Text style={styles.value}>
+                  {c.granted ? "concedido" : "negado"}
+                  {c.granted_at ? ` em ${fmtDate(c.granted_at)}` : ""}
+                </Text>
+              </View>
+            ))
+          )}
+        </View>
+
+        {/* Conversations */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Histórico de Atendimento</Text>
+          <Text style={styles.small}>
+            Total de conversas: {data.conversations.length} · Total de mensagens:{" "}
+            {data.messages_count_total} · Amostra incluída neste relatório:{" "}
+            {data.messages_recent.length}
+          </Text>
+          {data.conversations.slice(0, 10).map((c) => (
+            <View key={c.id} style={styles.itemBlock}>
+              <Text>
+                Conversa #{c.id.slice(0, 8)} · {c.channel} · {c.status}
+              </Text>
+              <Text style={styles.small}>
+                Última mensagem: {fmtDate(c.last_message_at)} · Criada em{" "}
+                {fmtDate(c.created_at)}
+              </Text>
+            </View>
+          ))}
+        </View>
+
+        {/* Recent messages preview */}
+        {data.messages_recent.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Mensagens Recentes (amostra)</Text>
+            {data.messages_recent.slice(0, 25).map((m) => (
+              <View key={m.id} style={styles.itemBlock}>
+                <Text style={styles.small}>
+                  {fmtDate(m.created_at)} · {m.direction} · {m.type} · {m.status}
+                </Text>
+                <Text>{m.body ? m.body.slice(0, 280) : m.has_media ? "[mídia]" : "—"}</Text>
+                {m.media_derived_text ? (
+                  <Text style={styles.small}>
+                    transcrição/texto extraído da mídia: {m.media_derived_text.slice(0, 280)}
+                  </Text>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Mensagens em grupos de WhatsApp escritas pelo titular (migration 0482) */}
+        {data.group_messages_authored.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Mensagens em Grupos de WhatsApp</Text>
+            {data.group_messages_authored.slice(0, 25).map((m) => (
+              <View key={m.id} style={styles.itemBlock}>
+                <Text style={styles.small}>
+                  {fmtDate(m.created_at)} · {m.type}
+                </Text>
+                <Text>{m.body ? m.body.slice(0, 280) : m.has_media ? "[mídia]" : "—"}</Text>
+                {m.media_derived_text ? (
+                  <Text style={styles.small}>
+                    transcrição/texto extraído da mídia: {m.media_derived_text.slice(0, 280)}
+                  </Text>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Leads */}
+        {data.leads.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Atividade Comercial — Leads</Text>
+            {data.leads.map((l) => (
+              <View key={l.id} style={styles.itemBlock}>
+                <Text>
+                  {l.title ?? "(sem título)"} · {l.status} ·{" "}
+                  {fmtMoney(l.value_cents, l.currency)}
+                </Text>
+                <Text style={styles.small}>Criado em {fmtDate(l.created_at)}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Orders */}
+        {data.orders.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Pedidos</Text>
+            {data.orders.map((o) => (
+              <View key={o.id} style={styles.itemBlock}>
+                <Text>
+                  {o.external_provider ?? "—"} #{o.external_id ?? o.id.slice(0, 8)} ·{" "}
+                  {o.status} · {fmtMoney(o.total_cents, o.currency)}
+                </Text>
+                <Text style={styles.small}>Pedido em {fmtDate(o.ordered_at)}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Propostas — o documento comercial que a pessoa RECEBEU; sem esta
+            seção o relatório não mencionava proposta nenhuma. */}
+        {data.proposals?.length ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Propostas comerciais</Text>
+            {data.proposals.map((p) => (
+              <View key={p.id} style={styles.itemBlock}>
+                <Text>
+                  {p.numero != null && p.ano != null ? `Nº ${p.numero}/${p.ano} · ` : ""}
+                  {p.titulo} · {p.status} · {fmtMoney(p.total_cents, p.moeda)}
+                </Text>
+                <Text style={styles.small}>
+                  Criada em {fmtDate(p.created_at)}
+                  {p.sent_at ? ` · enviada em ${fmtDate(p.sent_at)}` : ""}
+                  {p.tem_pdf ? " · documento em PDF enviado" : ""}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Agenda — vai no PDF, e não só no JSON, porque é a substância legível
+            do Art. 18 II: "houve consulta no dia tal, sobre isto". `activities`
+            fica só no JSON de propósito (type/source_module é telemetria); um
+            compromisso, não. */}
+        {data.appointments.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Agenda — Compromissos</Text>
+            {data.appointments.map((c) => (
+              <View key={c.id} style={styles.itemBlock}>
+                <Text>
+                  {c.title ?? "(sem título)"} · {c.status}
+                  {c.location_details ? ` · ${c.location_details}` : ""}
+                </Text>
+                <Text style={styles.small}>
+                  {fmtDate(c.starts_at)} até {fmtDate(c.ends_at)} ({c.time_zone})
+                </Text>
+                {c.description ? <Text style={styles.small}>{c.description}</Text> : null}
+                {c.notes ? <Text style={styles.small}>Anotação: {c.notes}</Text> : null}
+                {c.meeting_url ? <Text style={styles.small}>Link da reunião: {c.meeting_url}</Text> : null}
+                {c.cancellation_reason ? (
+                  <Text style={styles.small}>Cancelado: {c.cancellation_reason}</Text>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {/* O fluxo entrega este PDF; armazenar as categorias só no JSON não
+            as disponibiliza ao titular. Consumir apenas a projeção do coletor. */}
+        {data.reply_drafts?.length ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Sugestões e respostas revisadas</Text>
+            {data.reply_drafts.map(reply=><View key={reply.id} style={styles.itemBlock}>
+              <Text>Estado: {reply.status}</Text>
+              {reply.original_body?<Text>Sugestão: {reply.original_body}</Text>:null}
+              {reply.edited_body&&reply.edited_body!==reply.original_body?<Text>Edição: {reply.edited_body}</Text>:null}
+              {reply.approved_body?<Text>Texto aprovado: {reply.approved_body}</Text>:null}
+              {reply.feedback?<Text>Revisão: {JSON.stringify(reply.feedback)}</Text>:null}
+              {Array.isArray(reply.proposals)&&reply.proposals.length?<Text>Propostas: {JSON.stringify(reply.proposals)}</Text>:null}
+              <Text style={styles.small}>Criado em {fmtDate(reply.created_at)}</Text>
+            </View>)}
+          </View>
+        ):null}
+
+        {data.meeting_deliveries?.length ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Entregas de links de reunião</Text>
+            {data.meeting_deliveries.map((delivery) => (
+              <View key={delivery.id} style={styles.itemBlock}>
+                <Text>{deliveryStatus[delivery.status] ?? delivery.status}</Text>
+                <Text style={styles.small}>Registro: {delivery.id}</Text>
+                <Text style={styles.small}>
+                  Compromisso: {delivery.appointment_id ?? "referência indisponível"}
+                </Text>
+                <Text style={styles.small}>
+                  Criado em {fmtDate(delivery.created_at)} · Programado para {fmtDate(delivery.run_after)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {data.appointment_notices?.length ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Avisos sobre compromissos</Text>
+            {data.appointment_notices.map((notice) => (
+              <View key={notice.id} style={styles.itemBlock}>
+                <Text>{notice.title} · {noticeStatus[notice.status] ?? notice.status}</Text>
+                {notice.body ? <Text>{notice.body}</Text> : null}
+                <Text style={styles.small}>Registro: {notice.id}</Text>
+                <Text style={styles.small}>
+                  Compromisso: {notice.ref_id ?? "referência indisponível"}
+                </Text>
+                <Text style={styles.small}>
+                  Criado em {fmtDate(notice.created_at)}
+                  {notice.resolved_at ? ` · Resolvido em ${fmtDate(notice.resolved_at)}` : ""}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Captação — de onde a pessoa veio. Entra no PDF porque `remote_ip`,
+            `user_agent` e `utm` são dados que a organização guarda A RESPEITO
+            dela e que ela raramente imagina que existem. */}
+        {data.webhook_captures.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Como seus dados chegaram até nós</Text>
+            {data.webhook_captures.map((c) => (
+              <View key={c.id} style={styles.itemBlock}>
+                <Text>
+                  {c.source_name ?? "(origem não identificada)"} · {c.outcome}
+                </Text>
+                <Text style={styles.small}>
+                  Recebido em {fmtDate(c.received_at)}
+                  {c.remote_ip ? ` · IP ${c.remote_ip}` : ""}
+                </Text>
+                {c.user_agent ? (
+                  <Text style={styles.small}>Navegador: {c.user_agent.slice(0, 160)}</Text>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Audit */}
+        {data.audit_log_extract.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Atividades de Auditoria</Text>
+            {data.audit_log_extract.slice(0, 50).map((a) => (
+              <View key={a.id} style={styles.row}>
+                <Text style={styles.label}>{fmtDate(a.created_at)}</Text>
+                <Text style={styles.value}>
+                  {a.action}
+                  {a.resource_type ? ` · ${a.resource_type}` : ""}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Unsigned warning */}
+        {unsignedWarning ? (
+          <View style={styles.warningBanner}>
+            {/* Fora do Brasil o titular não lê o nome de uma variável que cita a LGPD. */}
+            {data.fuso === undefined && data.lei_rotulo === undefined ? (
+              <Text>
+                ASSINATURA DIGITAL PAdES PENDENTE — chave LGPD_SIGNING_KEY não
+                configurada. A integridade do documento é garantida por hash SHA-256
+                registrado em log auditável.
+              </Text>
+            ) : (
+              <Text>
+                ASSINATURA DIGITAL PAdES PENDENTE — a chave de assinatura não está
+                configurada. A integridade do documento é garantida por hash SHA-256
+                registrado em log auditável.
+              </Text>
+            )}
+          </View>
+        ) : null}
+
+        {/* Footer */}
+        {/* O PAPEL do responsável pelos dados, nunca marca — e o nome do papel
+            é do PAÍS da organização (issue #2344): no RGPD em pt-PT os dois
+            são "responsável pelo tratamento" e "encarregado da proteção de
+            dados". Ver o cabeçalho deste arquivo sobre a marca. */}
+        <View style={styles.footer} fixed>
+          <Text>
+            {`${papelControlador(data)}: ${data.organization_legal_name || "—"} · Relatório de Acesso aos Dados${
+              data.lei_citada ? ` — ${data.lei_citada}` : ""
+            } · ${papelEncarregado(data)}: ${encarregado(data)} · Validade do link de download conforme e-mail recebido`}
+          </Text>
+        </View>
+      </Page>
+    </Document>
+  );
+}
+
+export async function renderLgpdPdf(
+  data: ExportPayload,
+  options: { unsignedWarning?: boolean } = {},
+): Promise<Buffer> {
+  const element = <LgpdExportPdf data={data} unsignedWarning={options.unsignedWarning} />;
+  const buf = await renderToBuffer(element);
+  return buf as Buffer;
+}

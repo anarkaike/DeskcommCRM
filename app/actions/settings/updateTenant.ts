@@ -1,0 +1,99 @@
+"use server";
+
+import { ipDoCliente } from "@/lib/http/ip-do-cliente";
+import { supportWriteError } from "@/lib/impersonate/support";
+import { headers } from "next/headers";
+import { revalidatePath } from "next/cache";
+
+import { createAdminClient } from "@/lib/supabase/admin";
+import { audit } from "@/lib/audit";
+import { tenantSchema, type TenantInput } from "@/lib/schemas/settings";
+import { loadAuthUser, resolveActiveOrg } from "@/lib/auth/server";
+import { podeAdministrarEmpresa } from "@/lib/auth/pode-administrar-empresa";
+import { gravarDadosCadastrais } from "@/lib/tenants/dados-cadastrais";
+
+export type UpdateTenantResult =
+  | { ok: true }
+  | { ok: false; error: string; details?: unknown };
+
+export async function updateTenant(input: TenantInput): Promise<UpdateTenantResult> {
+  const parsed = tenantSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "validation_failed", details: parsed.error.flatten() };
+  }
+
+  const authUser = await loadAuthUser();
+  if (!authUser) return { ok: false, error: "unauthenticated" };
+  if (supportWriteError(authUser.support)) return { ok: false, error: "forbidden" };
+  const activeOrg = await resolveActiveOrg(authUser);
+  if (!activeOrg) return { ok: false, error: "forbidden_tenant" };
+  if (!podeAdministrarEmpresa(authUser, activeOrg)) {
+    return { ok: false, error: "forbidden_role" };
+  }
+
+/**
+ * A ESCRITA EM `organizations` VAI PELO ADMIN CLIENT — e não é preguiça.
+ *
+ * A única policy de escrita da tabela é `orgs_write_platform_admin`, com
+ * `USING (fn_is_platform_admin())`. Pelo client de sessão, o UPDATE de quem não
+ * é super-admin de plataforma casa ZERO linhas — e o PostgREST devolve sucesso,
+ * porque "nenhuma linha casou o filtro" não é erro. Resultado: a tela dizia
+ * "salvo", nada era gravado, e recarregar mostrava o estado antigo.
+ *
+ * Medido em Postgres com o baseline aplicado (issue #144): sob `authenticated`
+ * com o JWT de um manager, `update organizations` devolve 0 linhas; sob
+ * postgres, 1. Ninguém tinha notado porque o dono do repo e o owner criado pelo
+ * `bootstrap-owner.ts` SÃO platform_admin — quem tropeça é o segundo admin
+ * convidado e qualquer manager.
+ *
+ * O gate continua sendo o de cima (papel resolvido de fonte confiável), e o
+ * filtro por `organization_id` é explícito, como a doutrina exige de todo
+ * handler que usa service role.
+ */
+  const supabase = createAdminClient();
+  const hdrs = await headers();
+  const requestId = hdrs.get("x-request-id");
+  const ip = ipDoCliente(hdrs);
+  const userAgent = hdrs.get("user-agent") ?? null;
+
+  // País revisado, CNPJ único e a lista de colunas: a gravação mora em
+  // `lib/tenants/dados-cadastrais.ts`, compartilhada com a gestão de tenants do
+  // admin da plataforma.
+  const gravado = await gravarDadosCadastrais(supabase, activeOrg.orgId, parsed.data);
+  if (!gravado.ok) {
+    if (gravado.erro === "cnpj_em_uso") {
+      return { ok: false, error: "Este CNPJ já pertence a outra organização." };
+    }
+    return { ok: false, error: gravado.erro };
+  }
+
+  await audit({
+    action: "org.updated",
+    actorUserId: authUser.id,
+    organizationId: activeOrg.orgId,
+    resourceType: "organization",
+    resourceId: activeOrg.orgId,
+    requestId,
+    ip,
+    userAgent,
+    metadata: {
+      fields_changed: Object.keys(parsed.data),
+    },
+  });
+
+  await supabase
+    .rpc("emit_event", {
+      p_event_type: "org.updated",
+      p_entity_kind: "organization",
+      p_entity_id: activeOrg.orgId,
+      p_payload: { organization_id: activeOrg.orgId },
+      p_metadata: { request_id: requestId },
+      p_organization_id: activeOrg.orgId,
+    })
+    .then(({ error: e }) => {
+      if (e) console.error("[updateTenant] emit_event failed", e.message);
+    });
+
+  revalidatePath("/app/settings/tenant");
+  return { ok: true };
+}

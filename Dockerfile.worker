@@ -1,0 +1,41 @@
+# Worker 24/7 do agent-engine (fusão Vendaval) — processo long-running fora do Next.
+# Roda TS direto via tsx (sem build): o worker é I/O-bound e o cold start não importa.
+# ponytail: imagem single-stage com devDeps (tsx precisa); multi-stage + prune é Fase 4.
+FROM node:22-alpine
+
+WORKDIR /app
+
+# Procedência (doutrina de packaging, invariante 2).
+LABEL org.opencontainers.image.source="https://github.com/melgarafael/DeskcommCRM" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.title="DeskcommCRM worker"
+
+# pnpm fixado na versão do lockfile do repo (pnpm 10 bloquearia build scripts).
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
+
+COPY package.json pnpm-lock.yaml ./
+COPY patches ./patches
+RUN pnpm install --frozen-lockfile
+
+COPY . .
+
+# A versão por ÚLTIMO. Declarada antes do `pnpm install`, como estava, a
+# instrução `ARG` entrava na chave de cache de tudo o que vem depois e a
+# instalação INTEIRA de dependências era refeita a cada release, só porque o
+# número mudou. Aqui ela só invalida o que não custa nada.
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
+
+# Healthz do worker (bind 0.0.0.0 dentro do container).
+EXPOSE 8787
+
+# O PID 1 é o NODE, não o pnpm (#2823). `pnpm exec` (execa 5) põe DUAS camadas
+# de processo entre o supervisor e o worker, e o execa tem forceKillAfterTimeout
+# de 5000 ms: num `docker stop` com envio em voo, o SIGTERM chega ao wrapper e o
+# tsx é morto à força ~5 s depois — ANTES de gravar o recibo. O job sai de lá
+# `running`/draft sending com o POST já feito. `node --import tsx` registra o
+# loader no PRÓPRIO processo: o sinal cai direto no handler do shutdown, que
+# drena os jobs em curso e sai 0. Não é conserto de prazo: nenhum timeout de
+# supervisor, healthcheck ou stop_grace_period mudou (a issue #2823 proíbe o
+# aumento de timeout como único remédio).
+CMD ["node", "--import", "tsx", "workers/agent-worker/main.ts"]

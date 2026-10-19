@@ -1,0 +1,300 @@
+"use client";
+import { useCallback, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useT } from "@/hooks/i18n/useT";
+import { useBoard } from "@/hooks/kanban/useBoard";
+
+function formatError(err: unknown, t: (texto: string) => string): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object") {
+    const obj = err as { message?: unknown; code?: unknown; details?: unknown; hint?: unknown };
+    if (typeof obj.message === "string") {
+      const code = typeof obj.code === "string" ? ` [${obj.code}]` : "";
+      return `${obj.message}${code}`;
+    }
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return t("Erro desconhecido");
+    }
+  }
+  return String(err);
+}
+import { KanbanBoard } from "@/components/kanban/KanbanBoard";
+import { CalendarioDoFunil } from "@/components/kanban/CalendarioDoFunil";
+import { FilterBar } from "@/components/kanban/FilterBar";
+import { BulkActionBar } from "@/components/kanban/BulkActionBar";
+import { NewLeadDialog } from "@/components/kanban/NewLeadDialog";
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Plus } from "@/lib/ui/icons";
+import type { LeadFilters } from "@/lib/kanban/filters";
+import { applyFilters, filtersFromParams, filtersToParams } from "@/lib/kanban/filters";
+import { categoriaDoMotivo } from "@/lib/leads/motivos-de-perda-do-funil";
+import { ROLE_RANK, type Role } from "@/lib/auth/types";
+import { cn } from "@/lib/utils";
+
+export function PipelinePageClient({
+  pipelineId,
+  initialName,
+  role,
+  funis,
+}: {
+  pipelineId: string;
+  initialName: string;
+  role: Role;
+  /**
+   * Os funis vivos da organização (`id` + `name`, na ordem da lista) — a MESMA
+   * partição da tela de Funis. É o que alimenta o seletor de troca rápida do
+   * cabeçalho; sem ele o quadro não sabe que existem outros funis.
+   */
+  funis: Array<{ id: string; name: string }>;
+}) {
+  const t = useT();
+  const { data, isLoading, error, pulses, realtimeStatus, seguranca } = useBoard(pipelineId);
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const filters = useMemo(() => filtersFromParams(searchParams), [searchParams]);
+  const setFilters = useCallback(
+    (next: LeadFilters) => {
+      const qs = filtersToParams(next);
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [router, pathname],
+  );
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [newOpen, setNewOpen] = useState(false);
+  /**
+   * A visão do funil (#2770). Quadro é o padrão — é o que todo mundo já
+   * conhece, e a aba nova não pode sequestrar a tela de quem só quer mover
+   * card. O estado é LOCAL e não vai na URL: diferente do filtro (que é
+   * compartilhável e sobrevive a um refresh), a vista é um olhar momentâneo —
+   * e o quadro de volta no mesmo lugar onde ficou é o que se espera ao voltar.
+   */
+  const [visao, setVisao] = useState<"quadro" | "calendario">("quadro");
+
+  /**
+   * Motivo e categoria da perda (#1537): a categoria NÃO vem no lead — ela é
+   * `settings.lost_reasons` do funil, que o payload do quadro já traz. O
+   * resolvedor é o MESMO que o relatório usa (`categoriaDoMotivo`), para o
+   * filtro e o relatório nunca dizerem coisas diferentes.
+   */
+  const categoriaDo = useMemo(() => {
+    const settings = data?.pipeline.settings;
+    return (motivo: string) => categoriaDoMotivo(motivo, settings);
+  }, [data?.pipeline.settings]);
+  const filteredLeads = data ? applyFilters(data.leads, filters, { categoriaDo }) : [];
+  // NÃO é a conta do FilterBar: o seletor de filtro lista as três caixas
+  // (`marcadoresDoCard`: negócio, contato e conversa), e esta lista, a da tag em
+  // lote, só `lead.tags` — é lá que a ação em lote grava (#852). O `useMemo` é o
+  // mesmo cuidado de lá: solta no corpo, a conta roda em toda renderização
+  // e devolve um array NOVO a cada vez. E esta página re-renderiza a cada tecla
+  // da busca (o debounce do FilterBar mexe na query string) e a cada mudança de
+  // seleção de card.
+  const tagsDoQuadro = useMemo(
+    () => [...new Set((data?.leads ?? []).flatMap((l) => l.tags))].sort(),
+    [data?.leads],
+  );
+  const nomeAtual = data?.pipeline.name ?? initialName;
+  // Um funil só = nada para trocar: o seletor seria ruído permanente.
+  const podeTrocar = funis.length > 1;
+
+  return (
+    <div
+      // O QUADRO CABE NA TELA. A página rolava com a janela: o quadro media o
+      // que media a coluna mais comprida, e a barra de rolagem horizontal ficava
+      // no pé dele — com uma etapa cheia, era preciso descer até o fim para
+      // conseguir andar para o lado, e no caminho o nome da etapa sumia do alto.
+      // Com a altura da área visível (100dvh menos a barra do topo, h-14, e o
+      // padding do <main>), quem rola é o quadro: a barra horizontal fica sempre
+      // no pé da tela e o cabeçalho de cada etapa fica preso em cima. O piso de
+      // 28rem é para tela baixa demais, onde a página volta a rolar.
+      //
+      // ⚠️ A PARCELA DE BAIXO VEM DO CONTRATO, e era um `3rem` literal.
+      //
+      // Aquele literal era a segunda metade do `p-6` do `<main>` escrita à mão,
+      // e ela não sabia de nenhuma peça fixa no rodapé. Com a barra de abas do
+      // celular (`components/shell/BarraInferior.tsx`, 56px mais a área segura),
+      // o quadro media 48px a mais do que tinha e o fim dele — justamente onde
+      // mora a barra de rolagem horizontal, a razão desta linha existir —
+      // passava a correr POR BAIXO das abas.
+      //
+      // `max(var(--space-6), var(--rodape-ocupado, 0px))` é a mesma fórmula do
+      // `components/inbox/InboxLayout.tsx`, e é o que o gate
+      // `tests/unit/altura-fixa-le-a-reserva-do-rodape.test.ts` cobra: altura
+      // fixa não desconta número próprio, lê a reserva.
+      className="flex h-[calc(100dvh-3.5rem-var(--space-6)-max(var(--space-6),var(--rodape-ocupado,0px)))] min-h-[28rem] flex-col gap-4"
+      // OBSERVÁVEL de propósito, e é a razão de existir desta linha: "a
+      // assinatura morreu" e "nada aconteceu" produzem o MESMO silêncio na
+      // tela, e sem este valor nem o produto nem o teste conseguem separar as
+      // duas famílias de causa. Com ele, quem investiga olha DURANTE a rodada
+      // que falha: `subscribed` manda procurar a montante (entrega, filtro, ou
+      // o evento nunca saiu); `channel_error`/`timed_out`/`closed` já é a
+      // resposta.
+      //
+      // Ainda NÃO religa — religar é desenho e merece bloco próprio. Isto aqui
+      // é só parar de descartar o que já era calculado.
+      data-realtime-status={realtimeStatus.toLowerCase()}
+      // A rede de segurança fica OBSERVÁVEL pelo mesmo motivo do status do
+      // canal: "a entrega morreu" e "nada aconteceu" têm a mesma aparência, que
+      // é silêncio. Aqui o número de divergências é a diferença entre os dois —
+      // e é o sinal que faltava para uma verificação poder APROVAR, e não só
+      // reprovar.
+      data-refetch-divergencias={seguranca.divergencias}
+      data-refetch-em={seguranca.ultimaVerificacao ?? ""}
+    >
+      {/* `flex-col` no mobile: nome de funil comprido (é texto livre, sem
+          limite curto) + botão na mesma linha sem quebra empurrava o botão pra
+          fora da viewport em telas estreitas. De `sm:` pra cima volta a ser
+          uma linha só, como sempre foi. */}
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        {/*
+          O TÍTULO É O SELETOR. Com um funil só, `h1` puro (nada para trocar);
+          com vários, o gatilho do `Select` veste o título e o `h1` real vai
+          para `sr-only` — botão dentro de `h1` é HTML inválido, e sem o `h1`
+          o leitor de tela perde o título da página. Trocar zera a query
+          string: filtro de um funil aplicado no outro é resultado fantasma.
+        */}
+        <h1
+          className={
+            podeTrocar
+              ? "sr-only"
+              : "min-w-0 truncate text-2xl font-semibold tracking-tight"
+          }
+        >
+          {nomeAtual}
+        </h1>
+        {podeTrocar && (
+          <Select
+            value={funis.some((f) => f.id === pipelineId) ? pipelineId : undefined}
+            onValueChange={(id) => {
+              if (id !== pipelineId) router.push(`/app/pipelines/${id}`);
+            }}
+          >
+            <SelectTrigger
+              aria-label={`${t("Trocar de funil")}: ${nomeAtual}`}
+              data-testid="trocar-funil"
+              className="h-auto w-auto min-w-0 max-w-full gap-1.5 border-0 bg-transparent p-0 text-2xl font-semibold tracking-tight shadow-none focus:ring-1 focus:ring-ring sm:max-w-[60%] [&>span]:truncate"
+            >
+              <SelectValue placeholder={nomeAtual} />
+            </SelectTrigger>
+            <SelectContent>
+              {funis.map((f) => (
+                <SelectItem
+                  key={f.id}
+                  value={f.id}
+                  data-testid={`trocar-funil-opcao-${f.id}`}
+                >
+                  {f.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        {/*
+          A TERCEIRA ABA DO FUNIL (#2770), ao lado do quadro. O seletor fica no
+          cabeçalho e não dentro do conteúdo: quem troca de visão está mudando
+          COMO olha o funil, e a pergunta é anterior a qualquer filtro ou card —
+          é a mesma lógica do interruptor Lista/Calendário da tela de Tarefas.
+        */}
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <div className="flex items-center gap-0.5 rounded-md border bg-muted p-0.5">
+            <button
+              type="button"
+              data-testid="visao-quadro"
+              aria-pressed={visao === "quadro"}
+              onClick={() => setVisao("quadro")}
+              className={cn(
+                "rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+                visao === "quadro"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {t("Quadro")}
+            </button>
+            <button
+              type="button"
+              data-testid="visao-calendario"
+              aria-pressed={visao === "calendario"}
+              onClick={() => setVisao("calendario")}
+              className={cn(
+                "rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+                visao === "calendario"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {t("Calendário")}
+            </button>
+          </div>
+          <Button onClick={() => setNewOpen(true)} disabled={!data} className="shrink-0">
+            <Plus size={16} className="mr-2" /> {t("Novo Lead")}
+          </Button>
+        </div>
+      </header>
+      {data && (
+        <NewLeadDialog
+          open={newOpen}
+          onOpenChange={setNewOpen}
+          pipelineId={pipelineId}
+          stages={data.stages}
+          // #1751: o quadro é a lista que o diálogo confere ANTES de criar —
+          // é ela que faz o aviso de negócio duplicado existir sem rede.
+          leads={data.leads}
+        />
+      )}
+      <FilterBar
+        filters={filters}
+        onChange={setFilters}
+        leads={data?.leads ?? []}
+        settings={data?.pipeline.settings}
+      />
+      {error ? (
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm">
+          {t("Não consegui carregar este funil:")} {formatError(error, t)}
+        </div>
+      ) : isLoading || !data ? (
+        <div className="flex flex-1 animate-pulse items-center justify-center text-muted-foreground">
+          {t("Carregando…")}
+        </div>
+      ) : visao === "calendario" ? (
+        // A MESMA lista filtrada do quadro: as duas abas olham o mesmo funil,
+        // e discordar sobre quem está nele seria pior do que não ter filtro.
+        <CalendarioDoFunil
+          pipelineId={pipelineId}
+          pipeline={data.pipeline}
+          stages={data.stages}
+          leads={filteredLeads}
+        />
+      ) : (
+        <KanbanBoard
+          pipelineId={pipelineId}
+          stages={data.stages}
+          leads={filteredLeads}
+          pulses={pulses}
+          pipeline={data.pipeline}
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
+          leadInicial={searchParams.get("lead")}
+          podeRenomearEtapa={ROLE_RANK[role] >= ROLE_RANK.manager}
+        />
+      )}
+      <BulkActionBar
+        selectedIds={selectedIds}
+        stages={data?.stages ?? []}
+        pipelineId={pipelineId}
+        vocabulary={data?.pipeline.vocabulary ?? null}
+        tagsExistentes={tagsDoQuadro}
+        onClear={() => setSelectedIds([])}
+      />
+    </div>
+  );
+}
