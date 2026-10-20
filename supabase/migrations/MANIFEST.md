@@ -537,3 +537,4 @@ To re-apply on a fresh Supabase project, replay the migrations in version order 
 | `20261024000000` | `0708_telegram_inbox_groups` | Descoberta de grupos observados e allowlist explícita; grupos fora do roteamento de IA. |
 | `20261024000001` | `0709_telegram_edit_active_bot` | Edição de grants preserva estado ativo e não interrompe o webhook. |
 | `20261024000002` | `0710_telegram_human_cases_operators` | Pareamento curto e de uso único entre Telegram e usuário ativo do tenant; comandos de caso revalidam identidade e auditam ações. |
+| `20261024000003` | `0711_telegram_selector_metadata_rls` | Leitura dos metadados mínimos de bots/capacidades pelos seletores autenticados, sob RLS por organização; token cifrado continua exclusivo da service_role. |
