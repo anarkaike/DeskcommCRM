@@ -74,6 +74,8 @@ const nextConfig: NextConfig = {
   },
   reactStrictMode: true,
   poweredByHeader: false,
+  // Next dev logs Server Function arguments by default; auth actions carry passwords.
+  logging: { serverFunctions: false },
   // typedRoutes moved out of experimental in Next 15.5+
   typedRoutes: true,
   experimental: {
