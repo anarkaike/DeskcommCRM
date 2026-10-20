@@ -1205,6 +1205,16 @@ export const AUDIT_ACTIONS = [
   "agenda.service_refresh",
   "agenda.service_resource",
   "agenda.service_unblock",
+  "telegram.bot_connected",
+  "telegram.case_operator_pairing_requested",
+  "telegram.case_operator_paired",
+  "telegram.case_operator_unpaired",
+  "telegram.case_replied",
+  "telegram.bot_settings_updated",
+  "telegram.bot_activated",
+  "telegram.bot_paused",
+  "telegram.bot_disconnected",
+  "telegram.bot_deleted",
 ] as const;
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */
