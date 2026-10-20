@@ -2,7 +2,7 @@ import type { ChannelConnectionDriver, ChannelConnectionHealth } from "../connec
 import { deleteTelegramWebhook, getTelegramWebhookInfo, validateTelegramBotToken } from "./bot-api";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { decryptWebhookSecret } from "@/lib/webhooks/secrets";
-import { basePublicaDaInstalacao } from "@/lib/webhooks/url-publica";
+import { basePublicaDoWebhookTelegram } from "@/lib/webhooks/url-publica";
 
 /** Protocol edge for the Telegram bot connection lifecycle. */
 export const telegramConnectionDriver: ChannelConnectionDriver<string> = {
@@ -63,7 +63,7 @@ export const telegramConnectionDriver: ChannelConnectionDriver<string> = {
       }
       const info = await getTelegramWebhookInfo(token);
       const expectedUrl = context.request && data.webhook_path_token
-        ? `${basePublicaDaInstalacao(context.request)}/api/v1/webhooks/telegram/${data.webhook_path_token}`
+        ? `${basePublicaDoWebhookTelegram(context.request)}/api/v1/webhooks/telegram/${data.webhook_path_token}`
         : null;
       const webhookMatches = Boolean(expectedUrl && info.url === expectedUrl);
       return {

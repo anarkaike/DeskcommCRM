@@ -13,6 +13,7 @@ function builder(result: unknown) {
     in: vi.fn(() => self),
     is: vi.fn(() => self),
     maybeSingle: vi.fn(async () => result),
+    then: (resolve: (value: unknown) => unknown) => Promise.resolve(result).then(resolve),
   };
   return self;
 }
@@ -30,7 +31,7 @@ describe("Telegram inbound Inbox adapter", () => {
       from: vi.fn((table: string) => table === "channel_sessions"
         ? session
         : table === "telegram_bot_surface_capabilities"
-          ? builder({ data: null, error: null })
+          ? builder({ data: [{ capability: "receive_messages" }], error: null })
           : {}),
       rpc: vi.fn(async (name: string) => name === "fn_upsert_telegram_contact"
         ? { data: "contact-1", error: null }
@@ -65,12 +66,27 @@ describe("Telegram inbound Inbox adapter", () => {
     }));
   });
 
+  it("ignora mensagens privadas quando receive_messages foi revogado", async () => {
+    const session = builder({ data: { id: "session-1", status: "WORKING" }, error: null });
+    const admin = {
+      from: vi.fn((table: string) => table === "channel_sessions" ? session : builder({ data: [], error: null })),
+      rpc: vi.fn(),
+    } as unknown as SupabaseClient;
+    const result = await ingestTelegramUpdate(admin, {
+      organizationId: "org-1", connectionId: "bot-1",
+      update: { update_id: 19, message: { message_id: 61, text: "Oi", chat: { id: 123, type: "private" }, from: { id: 123 } } },
+    });
+    expect(result).toBe("ignored");
+    expect(admin.rpc).not.toHaveBeenCalled();
+    expect(mocks.persistir).not.toHaveBeenCalled();
+  });
+
   it("retém mensagem na Inbox quando a capacidade de IA não está concedida", async () => {
     const session = builder({ data: { id: "session-1", status: "WORKING" }, error: null });
     const admin = {
       from: vi.fn((table: string) => table === "channel_sessions"
         ? session
-        : builder({ data: null, error: { message: "unavailable" } })),
+        : builder({ data: [{ capability: "receive_messages" }], error: null })),
       rpc: vi.fn(async (name: string) => name === "fn_upsert_telegram_contact"
         ? { data: "contact-1", error: null }
         : { data: "conversation-1", error: null }),
@@ -85,7 +101,7 @@ describe("Telegram inbound Inbox adapter", () => {
     const admin = {
       from: vi.fn((table: string) => table === "channel_sessions"
         ? session
-        : builder({ data: { id: "ai-capability" }, error: null })),
+        : builder({ data: [{ capability: "receive_messages" }, { capability: "ai_replies" }], error: null })),
       rpc: vi.fn(async (name: string) => name === "fn_upsert_telegram_contact"
         ? { data: "contact-1", error: null }
         : { data: "conversation-1", error: null }),
@@ -127,7 +143,7 @@ describe("Telegram inbound Inbox adapter", () => {
     const admin = {
       from: vi.fn((table: string) => table === "channel_sessions"
         ? session
-        : builder({ data: null, error: null })),
+         : builder({ data: [{ capability: "receive_messages" }], error: null })),
       rpc: vi.fn(async (name: string) => name === "fn_upsert_telegram_contact"
         ? { data: "contact-1", error: null }
         : { data: "conversation-1", error: null }),

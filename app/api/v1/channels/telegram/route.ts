@@ -13,16 +13,17 @@ import {
   setTelegramWebhook,
   validateTelegramBotToken,
 } from "@/lib/channels/telegram/bot-api";
-import { basePublicaDaInstalacao } from "@/lib/webhooks/url-publica";
+import { basePublicaDoWebhookTelegram } from "@/lib/webhooks/url-publica";
 import { atualizarEstadoDaSessaoTelegram, prepararSessaoTelegram } from "@/lib/channels/telegram/session";
 import { CHANNEL_CONNECTIONS, createConnectionLifecycle } from "@/lib/channels";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const surfaceNames = ["inbox"] as const;
+const surfaceNames = ["inbox", "human_cases"] as const;
 const capabilitiesBySurface = {
   inbox: ["receive_messages", "human_replies", "ai_replies", "group_messages"],
+  human_cases: ["read_cases", "reply_to_cases"],
 } as const;
 type Surface = keyof typeof capabilitiesBySurface;
 
@@ -242,9 +243,6 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     return fail("internal_error", "Não foi possível verificar o estado do bot.", 500, { requestId });
   if (!connection)
     return fail("not_found", "Esse bot não foi encontrado nesta organização.", 404, { requestId });
-  if (connection.status === "active")
-    return fail("state_conflict", "Pause o bot antes de alterar as configurações.", 409, { requestId });
-
   const payload = parsed.data.bindings.map((binding) => ({
     surface: binding.surface,
     capabilities: binding.capabilities,
@@ -368,7 +366,7 @@ async function manageLifecycle(input: {
     }))
       return fail("internal_error", "Não foi possível preparar a sessão da Inbox Telegram.", 500, { requestId: input.requestId });
 
-    const base = basePublicaDaInstalacao(input.req);
+    const base = basePublicaDoWebhookTelegram(input.req);
     const { error: updateError } = await admin
       .from("telegram_bot_connections")
       .update({

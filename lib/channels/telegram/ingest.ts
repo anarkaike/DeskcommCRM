@@ -50,32 +50,26 @@ export async function ingestTelegramUpdate(
   if (sessionError) throw new Error("telegram_session_lookup_failed");
   if (!session || session.status !== "WORKING") return "ignored";
 
-  // O binding ai_replies habilita o pipeline comum do CRM, que ainda aplica
-  // autorização do contato, gates e políticas antes de qualquer resposta.
-  // Erro de leitura falha fechado: conserva a mensagem na Inbox humana.
-  const { data: aiCapability, error: aiCapabilityError } = await admin
+  // Receiving is an explicit grant for both private chats and groups. Without
+  // this check, settings could disable reception while private updates kept
+  // creating CRM conversations.
+  const { data: inboxCapabilities, error: inboxCapabilitiesError } = await admin
     .from("telegram_bot_surface_capabilities")
-    .select("id")
+    .select("capability")
     .eq("organization_id", input.organizationId)
     .eq("connection_id", input.connectionId)
     .eq("surface", "inbox")
-    .eq("capability", "ai_replies")
-    .maybeSingle();
-  const aiRepliesEnabled = !aiCapabilityError && Boolean(aiCapability);
+    .in("capability", ["receive_messages", "ai_replies", "group_messages"]);
+  if (inboxCapabilitiesError) return "ignored";
+  const granted = new Set((inboxCapabilities ?? []).map((row: { capability: string }) => row.capability));
+  if (!granted.has("receive_messages")) return "ignored";
+  const aiRepliesEnabled = granted.has("ai_replies");
 
   const userId = String(from.id);
   const chatId = String(chat.id);
   const fullName = [from.first_name, from.last_name].filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ");
   if (group) {
-    const { data: groupCapability, error: groupCapabilityError } = await admin
-      .from("telegram_bot_surface_capabilities")
-      .select("capability")
-      .eq("organization_id", input.organizationId)
-      .eq("connection_id", input.connectionId)
-      .eq("surface", "inbox")
-      .in("capability", ["group_messages", "receive_messages"]);
-    const granted = new Set((groupCapability ?? []).map((row: { capability: string }) => row.capability));
-    if (groupCapabilityError || !granted.has("group_messages") || !granted.has("receive_messages")) return "ignored";
+    if (!granted.has("group_messages")) return "ignored";
     // Discovery is always disabled; preserve any manager's allowlist choice.
     const title = typeof chat.title === "string" ? chat.title.slice(0, 200) : null;
     const { error: discoveryError } = await admin.from("channel_session_groups").upsert({

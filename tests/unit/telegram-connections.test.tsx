@@ -148,7 +148,7 @@ describe("conexões Telegram", () => {
     expect(screen.queryByRole("checkbox", { name: /Avisos da equipe/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: /Ferramentas de agente/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: /Mini App/ })).not.toBeInTheDocument();
-    expect(screen.getByText(/Grupos são descobertos somente após o Telegram enviar um update/i)).toBeInTheDocument();
+    expect(screen.getByText(/Casos humanos exigem pareamento de cada operador/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Salvar configurações" }));
     await waitFor(() =>
@@ -218,10 +218,39 @@ describe("conexões Telegram", () => {
     expect(window.confirm).toHaveBeenCalledOnce();
   });
 
+  it("permite editar capacidades com o bot ativo e mantém o fluxo de salvamento", async () => {
+    const user = userEvent.setup();
+    api.get.mockResolvedValue({ data: { bots: [{
+      id: "connection-active", telegram_bot_id: "123456", bot_username: "clinica_bot",
+      display_name: "Atendimento", token_last4: "6789", status: "active",
+      created_at: "2026-10-17T12:00:00Z",
+      bindings: [{ surface: "inbox", capabilities: ["receive_messages", "human_replies"] }],
+    }] } });
+    api.patch.mockResolvedValue({ data: { status: "active" } });
+    render(<TelegramConnectionsClient />);
+
+    const configure = await screen.findByRole("button", { name: "Configurações do bot" });
+    expect(configure).toBeEnabled();
+    await user.click(configure);
+    await screen.findByRole("dialog");
+    const aiReplies = screen.getByRole("checkbox", { name: /Respostas automáticas de IA/ });
+    expect(aiReplies).not.toBeChecked();
+    await user.click(aiReplies);
+    await user.click(screen.getByRole("button", { name: "Salvar configurações" }));
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith(
+      "/api/v1/channels/telegram",
+      {
+        connection_id: "connection-active",
+        bindings: [{ surface: "inbox", capabilities: ["receive_messages", "human_replies", "ai_replies"] }],
+      },
+    ));
+  });
+
   it("consulta e mostra a saúde real do webhook do bot ativo", async () => {
     const user = userEvent.setup();
     api.get.mockImplementation(async (path: string) => path.endsWith("/health")
-      ? { data: { health: "healthy", pending_update_count: 3, last_error_at: null, webhook_matches: true, checked_at: "2026-10-19T12:00:00Z" } }
+      ? { data: { health: "healthy", pending_update_count: 0, app_pending_update_count: 2, last_error_at: null, webhook_matches: true, checked_at: "2026-10-19T12:00:00Z" } }
       : { data: { bots: [{
           id: "connection-1", telegram_bot_id: "123456", bot_username: "clinica_bot",
           display_name: "Atendimento", token_last4: "6789", status: "active",
@@ -230,7 +259,7 @@ describe("conexões Telegram", () => {
     render(<TelegramConnectionsClient />);
 
     await user.click(await screen.findByRole("button", { name: "Verificar webhook" }));
-    expect(await screen.findByText("Webhook confirmado · 3 updates pendentes")).toBeInTheDocument();
+    expect(await screen.findByText("Webhook confirmado · Telegram: 0 updates pendentes · CRM: 2 na fila")).toBeInTheDocument();
     expect(api.get).toHaveBeenCalledWith("/api/v1/channels/telegram/connection-1/health");
   });
 });

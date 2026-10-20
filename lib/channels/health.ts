@@ -31,6 +31,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { PROVIDERS_DE_MENSAGEM } from "./capabilities";
+import type { ProviderDeMensagem } from "./types";
 import { ehNomeDeSessaoE2E } from "./sessoes-e2e";
 
 /** Único estado em que mensagem entra e sai. Contrato do CRM (uppercase). */
@@ -160,6 +161,7 @@ export interface ConexaoCaida {
   id: string;
   apelido: string;
   status: string;
+  provider: ProviderDeMensagem;
 }
 
 /**
@@ -181,7 +183,7 @@ export async function listarConexoesCaidas(
 ): Promise<ConexaoCaida[]> {
   const { data } = await admin
     .from("channel_sessions")
-    .select("id, display_name, phone_number, status, waha_session_name")
+    .select("id, display_name, phone_number, status, waha_session_name, provider")
     .eq("organization_id", organizationId)
     .is("archived_at", null)
     // A faixa diz "nenhuma mensagem entra nem sai por esta conexão" e leva a
@@ -202,6 +204,7 @@ export async function listarConexoesCaidas(
     id: s.id as string,
     apelido: (s.display_name as string | null) ?? (s.phone_number as string | null) ?? "sem nome",
     status: (s.status as string | null) ?? "",
+    provider: s.provider as ProviderDeMensagem,
   }));
 }
 

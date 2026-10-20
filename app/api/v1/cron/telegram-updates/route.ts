@@ -6,6 +6,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getInboundDriver } from "@/lib/channels/inbound/registry";
 import { logger } from "@/lib/logger";
 import { STATUS_OPERANTE, ehOperante, statusDaOrgEmbutida } from "@/lib/organizacao/operante";
+import { handleTelegramHumanCaseUpdate } from "@/lib/channels/telegram/human-cases";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -77,13 +78,21 @@ export async function GET(req: NextRequest): Promise<Response> {
           .eq("id", row.id).eq("status", "processing");
         continue;
       }
+      const update = row.payload as Record<string, unknown>;
+      const handledAsHumanCase = connection?.status === "active"
+        ? await handleTelegramHumanCaseUpdate(admin, {
+            organizationId: row.organization_id, connectionId: row.connection_id, update,
+          })
+        : false;
       const result = !connection || connection.status !== "active"
         ? "ignored"
-        : await getInboundDriver("telegram").ingest(admin, {
-            organizationId: row.organization_id,
-            connectionId: row.connection_id,
-            update: row.payload as Record<string, unknown>,
-          });
+        : handledAsHumanCase
+          ? "ingested"
+          : await getInboundDriver("telegram").ingest(admin, {
+              organizationId: row.organization_id,
+              connectionId: row.connection_id,
+              update,
+            });
       const status = result === "ignored" ? "ignored" : "processed";
       const { error: finishError } = await admin.from("telegram_webhook_updates").update({
         status, processed_at: new Date().toISOString(), last_error: null, processing_at: null, payload: {},
@@ -99,4 +108,8 @@ export async function GET(req: NextRequest): Promise<Response> {
     }
   }
   return ok({ selected: updates?.length ?? 0, processed, ignored, failed }, { requestId });
+}
+
+export async function POST(req: NextRequest): Promise<Response> {
+  return GET(req);
 }

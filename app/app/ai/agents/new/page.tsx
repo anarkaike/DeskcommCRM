@@ -51,7 +51,7 @@ export default async function NewAgentPage() {
       .from("ai_provider_credentials_safe")
       .select(CREDENTIAL_COLUMNS)
       .eq("organization_id", activeOrg.orgId),
-    listSelectableChannels(supabase, activeOrg.orgId),
+    listSelectableChannels(supabase, activeOrg.orgId, { purpose: "agent_replies" }),
   ]);
 
   const credentials = (credentialsRes.data ?? []) as CredentialRow[];

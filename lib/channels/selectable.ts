@@ -90,11 +90,16 @@ function aceitaMensagemLivre(provider: string | null): boolean {
 export async function listSelectableChannels(
   db: SupabaseClient,
   organizationId: string,
+  options: { purpose?: "automated_outbound" | "agent_replies" } = {},
 ): Promise<SelectableChannel[]> {
+  const purpose = options.purpose ?? "automated_outbound";
+  const providers = purpose === "agent_replies"
+    ? [...PROVIDERS_DE_ENVIO_AUTOMATIZADO, "telegram"]
+    : [...PROVIDERS_DE_ENVIO_AUTOMATIZADO];
   const base = () =>
     db
       .from("channel_sessions")
-      .select(COLUNAS)
+      .select(`${COLUNAS}, telegram_bot_connection_id`)
       .eq("organization_id", organizationId)
       // Esta é a FONTE ÚNICA dos seletores de "Número conectado" — e alimenta
       // também `lib/ai/agents/first-publication.ts` (que amarra o primeiro
@@ -103,7 +108,7 @@ export async function listSelectableChannels(
       // Uma linha de chamada de voz (spec 18) aqui vira número escolhível,
       // agente preso a um canal mudo e "1 canal conectado" numa instalação com
       // zero canal de mensagem.
-      .in("provider", [...PROVIDERS_DE_ENVIO_AUTOMATIZADO]);
+      .in("provider", providers);
 
   const { data, error } = await queryTolerantToMissingArchived(
     () => base().is(ARCHIVED_AT, null).order("created_at", { ascending: true }),
@@ -111,7 +116,40 @@ export async function listSelectableChannels(
   );
   if (error) throw new Error(`channel_sessions_list_failed: ${error.message ?? "unknown"}`);
 
-  return ((data ?? []) as LinhaCanal[]).map((c) => ({
+  const rows = (data ?? []) as (LinhaCanal & { telegram_bot_connection_id?: string | null })[];
+  const telegramConnectionIds = purpose === "agent_replies"
+    ? rows.flatMap((row) => row.telegram_bot_connection_id ? [row.telegram_bot_connection_id] : [])
+    : [];
+  const enabledTelegramConnections = new Set<string>();
+  if (telegramConnectionIds.length) {
+    const [botResult, capabilityResult] = await Promise.all([
+      db.from("telegram_bot_connections").select("id")
+        .eq("organization_id", organizationId).eq("status", "active").is("deleted_at", null)
+        .in("id", telegramConnectionIds),
+      db.from("telegram_bot_surface_capabilities").select("connection_id, capability")
+        .eq("organization_id", organizationId).eq("surface", "inbox").in("capability", ["receive_messages", "ai_replies"])
+        .in("connection_id", telegramConnectionIds),
+    ]);
+    if (botResult.error) throw new Error(`telegram_bots_list_failed: ${botResult.error.message ?? "unknown"}`);
+    if (capabilityResult.error) throw new Error(`telegram_capabilities_list_failed: ${capabilityResult.error.message ?? "unknown"}`);
+    const active = new Set((botResult.data ?? []).map((row: { id: string }) => row.id));
+    const grantsByConnection = new Map<string, Set<string>>();
+    for (const row of capabilityResult.data ?? []) {
+      const capability = row as { connection_id: string; capability: string };
+      const grants = grantsByConnection.get(capability.connection_id) ?? new Set<string>();
+      grants.add(capability.capability);
+      grantsByConnection.set(capability.connection_id, grants);
+    }
+    for (const [id, grants] of grantsByConnection) {
+      if (active.has(id) && grants.has("receive_messages") && grants.has("ai_replies")) {
+        enabledTelegramConnections.add(id);
+      }
+    }
+  }
+  return rows.filter((row) => row.provider !== "telegram" || (
+    purpose === "agent_replies" && row.status === "WORKING"
+      && Boolean(row.telegram_bot_connection_id && enabledTelegramConnections.has(row.telegram_bot_connection_id))
+  )).map((c) => ({
     id: c.id,
     // ⚠️ `waha_session_name` SAIU DESTA CADEIA. Ele era o segundo degrau, e o
     // resultado aparecia na tela: um canal sem apelido virava a opção

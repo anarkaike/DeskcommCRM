@@ -37,11 +37,19 @@ export async function GET(
     }, { requestId });
   }
 
+  const { count: appPendingCount, error: appQueueError } = await admin.from("telegram_webhook_updates")
+    .select("id", { count: "exact", head: true })
+    .eq("organization_id", authz.org.orgId)
+    .eq("connection_id", id)
+    .in("status", ["pending", "error", "processing"]);
+  if (appQueueError) return fail("internal_error", "Não foi possível consultar a fila de atualizações Telegram.", 500, { requestId });
+
   const lifecycle = createConnectionLifecycle(CHANNEL_CONNECTIONS.get("telegram"));
   const health = await lifecycle.health({ organizationId: authz.org.orgId, connectionId: id, actorUserId: authz.user.id, request: req });
   return ok({
     health: health.healthy ? "healthy" : health.state === "disconnected" ? "not_active" : "degraded",
     pending_update_count: health.pendingCount ?? null,
+    app_pending_update_count: appPendingCount ?? 0,
     last_error_at: health.lastErrorAt ?? null,
     webhook_matches: health.webhookMatches ?? false,
     checked_at: health.checkedAt,

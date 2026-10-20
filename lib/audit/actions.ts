@@ -1166,6 +1166,10 @@ export const AUDIT_ACTIONS = [
   "template.media_added",
   /** Tenant administrator registered and validated an independent Telegram bot token. */
   "telegram.bot_connected",
+  "telegram.case_operator_pairing_requested",
+  "telegram.case_operator_paired",
+  "telegram.case_operator_unpaired",
+  "telegram.case_replied",
   /** Tenant administrator changed the surfaces/capabilities reserved for a Telegram bot. */
   "telegram.bot_settings_updated",
   "telegram.bot_activated",

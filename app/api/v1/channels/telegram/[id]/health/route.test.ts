@@ -15,18 +15,19 @@ const h = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: h.role }));
 vi.mock("@/lib/webhooks/secrets", () => ({ decryptWebhookSecret: h.decrypt }));
-vi.mock("@/lib/webhooks/url-publica", () => ({ basePublicaDaInstalacao: () => "https://crm.example" }));
+vi.mock("@/lib/webhooks/url-publica", () => ({ basePublicaDaInstalacao: () => "https://crm.example", basePublicaDoWebhookTelegram: () => "https://crm.example" }));
 vi.mock("@/lib/channels/telegram/bot-api", () => ({ getTelegramWebhookInfo: h.webhookInfo }));
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
-    from: () => {
+    from: (table: string) => {
       const q = {
         select: () => q,
         eq: () => q,
         is: () => q,
+        in: async () => ({ count: 2, error: null }),
         maybeSingle: async () => ({ data: h.connection, error: null }),
       };
-      return q;
+      return table === "telegram_webhook_updates" ? { select: () => q, eq: () => q, in: q.in } : q;
     },
   }),
 }));
@@ -59,7 +60,7 @@ describe("Telegram webhook health route", () => {
     );
     const body = await response.json();
     expect(response.status).toBe(200);
-    expect(body.data).toMatchObject({ health: "healthy", pending_update_count: 2, webhook_matches: true });
+    expect(body.data).toMatchObject({ health: "healthy", pending_update_count: 2, app_pending_update_count: 2, webhook_matches: true });
     expect(JSON.stringify(body)).not.toContain("path-secret");
   });
 

@@ -29,7 +29,7 @@ export default async function RoutersPage() {
       .eq("organization_id", activeOrg.orgId)
       .order("created_at", { ascending: false }),
     supabase.from("ai_router_members").select("router_id").eq("organization_id", activeOrg.orgId),
-    listSelectableChannels(supabase, activeOrg.orgId),
+    listSelectableChannels(supabase, activeOrg.orgId, { purpose: "agent_replies" }),
   ]);
 
   const counts = new Map<string, number>();
