@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useT } from "@/hooks/i18n/useT";
 import { apiClient } from "@/lib/api/client";
+import { ApiError } from "@/lib/api/types";
 import {
   ArrowsClockwise,
   ChatCircle,
@@ -119,8 +120,10 @@ function padraoInicial(): Selection {
 function selecaoDe(bindings: Binding[]): Selection {
   const selection = padraoInicial();
   for (const surface of SURFACES) {
-    selection[surface.key] =
-      bindings.find((binding) => binding.surface === surface.key)?.capabilities ?? [];
+    const editableCapabilities = new Set(surface.capabilities.map((capability) => capability.key));
+    selection[surface.key] = (
+      bindings.find((binding) => binding.surface === surface.key)?.capabilities ?? []
+    ).filter((capability) => editableCapabilities.has(capability));
   }
   return selection;
 }
@@ -254,8 +257,16 @@ export function TelegramConnectionsClient() {
       toast.success(t("Usos e capacidades salvos."));
       setSettingsOpen(false);
       await load(true);
-    } catch {
-      toast.error(t("Não foi possível salvar as configurações do bot."));
+    } catch (error) {
+      if (error instanceof ApiError) {
+        toast.error(error.message + " (" + error.code + "; ID: " + error.requestId + ")");
+      } else if (error instanceof Error && error.name === "TimeoutError") {
+        toast.error(t("A solicitação expirou antes de receber uma resposta. Atualize a tela antes de tentar novamente."));
+      } else if (error instanceof TypeError) {
+        toast.error(t("Não foi possível alcançar a API. Verifique a conexão e tente novamente."));
+      } else {
+        toast.error(t("Não foi possível salvar as configurações do bot."));
+      }
     } finally {
       setSavingSettings(false);
     }

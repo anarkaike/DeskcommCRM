@@ -6,6 +6,7 @@ import { fail, ok } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
 import { audit } from "@/lib/audit";
 import { requireSupportWrite } from "@/lib/impersonate/support";
+import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { decryptWebhookSecret, encryptWebhookSecret } from "@/lib/webhooks/secrets";
 import {
@@ -212,9 +213,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 export async function PATCH(req: NextRequest): Promise<NextResponse> {
   const requestId = randomUUID();
   const authz = await requireRole("admin", { requestId, resource: "telegram_bot_connections" });
-  if (!authz.ok) return authz.response;
+  if (!authz.ok) {
+    logger.warn("[telegram.settings] autorização recusada", {
+      requestId,
+      status: authz.response.status,
+    });
+    return authz.response;
+  }
   const supportDenied = await requireSupportWrite();
-  if (supportDenied) return supportDenied;
+  if (supportDenied) {
+    logger.warn("[telegram.settings] gravação recusada pela guarda de suporte", {
+      requestId,
+      status: supportDenied.status,
+    });
+    return supportDenied;
+  }
   const body = await req.json().catch(() => null);
   const lifecycle = lifecycleSchema.safeParse(body);
   if (lifecycle.success) {
@@ -228,8 +241,13 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
   }
 
   const parsed = settingsSchema.safeParse(body);
-  if (!parsed.success)
+  if (!parsed.success) {
+    logger.warn("[telegram.settings] payload recusado pela validação", {
+      requestId,
+      issues: parsed.error.issues.map((issue) => ({ code: issue.code, path: issue.path })),
+    });
     return fail("validation_error", "As opções de uso do bot são inválidas.", 422, { requestId });
+  }
 
   const admin = createAdminClient();
   const { data: connection, error: connectionError } = await admin
@@ -239,28 +257,88 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     .eq("id", parsed.data.connection_id)
     .is("deleted_at", null)
     .maybeSingle();
-  if (connectionError)
+  if (connectionError) {
+    logger.error("[telegram.settings] falha ao consultar a conexão", {
+      requestId,
+      code: connectionError.code,
+      message: connectionError.message,
+    });
     return fail("internal_error", "Não foi possível verificar o estado do bot.", 500, { requestId });
-  if (!connection)
+  }
+  if (!connection) {
+    logger.warn("[telegram.settings] conexão não encontrada na organização ativa", { requestId });
     return fail("not_found", "Esse bot não foi encontrado nesta organização.", 404, { requestId });
-  const payload = parsed.data.bindings.map((binding) => ({
-    surface: binding.surface,
-    capabilities: binding.capabilities,
-  }));
+  }
+  const { data: existingBindings, error: bindingsReadError } = await admin
+    .from("telegram_bot_bindings")
+    .select("surface")
+    .eq("organization_id", authz.org.orgId)
+    .eq("connection_id", parsed.data.connection_id);
+  const { data: existingCapabilities, error: capabilitiesReadError } = await admin
+    .from("telegram_bot_surface_capabilities")
+    .select("surface, capability")
+    .eq("organization_id", authz.org.orgId)
+    .eq("connection_id", parsed.data.connection_id);
+  if (bindingsReadError || capabilitiesReadError) {
+    const error = bindingsReadError ?? capabilitiesReadError;
+    logger.error("[telegram.settings] falha ao ler permissões existentes para preservação", {
+      requestId,
+      code: error?.code,
+    });
+    return fail("internal_error", "Não foi possível carregar as permissões atuais do bot.", 500, {
+      requestId,
+    });
+  }
+
+  const visibleSurfaces = new Set<string>(surfaceNames);
+  const visibleBindings = parsed.data.bindings.map((binding) => {
+    const allowed = capabilitiesBySurface[binding.surface] as readonly string[];
+    const preservedCapabilities = (existingCapabilities ?? [])
+      .filter((current) => current.surface === binding.surface && !allowed.includes(current.capability))
+      .map((current) => current.capability);
+    return {
+      surface: binding.surface,
+      capabilities: Array.from(new Set([...binding.capabilities, ...preservedCapabilities])),
+    };
+  });
+  const hiddenBindings = (existingBindings ?? [])
+    .filter((binding) => !visibleSurfaces.has(binding.surface))
+    .map((binding) => ({
+      surface: binding.surface,
+      capabilities: (existingCapabilities ?? [])
+        .filter((capability) => capability.surface === binding.surface)
+        .map((capability) => capability.capability),
+    }));
+  const payload = [...visibleBindings, ...hiddenBindings];
   const { data, error } = await admin.rpc("fn_telegram_bot_save_bindings", {
     p_organization_id: authz.org.orgId,
     p_connection_id: parsed.data.connection_id,
     p_bindings: payload,
     p_actor_user_id: authz.user.id,
   });
-  if (error?.code === "P0002")
+  if (error?.code === "P0002") {
+    logger.warn("[telegram.settings] RPC não encontrou a conexão", {
+      requestId,
+      code: error.code,
+      message: error.message,
+    });
     return fail("not_found", "Esse bot não foi encontrado nesta organização.", 404, { requestId });
-  if (error)
+  }
+  if (error) {
+    logger.error("[telegram.settings] RPC de gravação falhou", {
+      requestId,
+      code: error.code,
+      message: error.message,
+      hint: error.hint,
+    });
     return fail("internal_error", "Não foi possível salvar a configuração do bot.", 500, {
       requestId,
     });
-  if (!data)
+  }
+  if (!data) {
+    logger.error("[telegram.settings] RPC não confirmou a gravação", { requestId });
     return fail("internal_error", "A configuração do bot não foi confirmada.", 500, { requestId });
+  }
 
   await audit({
     action: "telegram.bot_settings_updated",
