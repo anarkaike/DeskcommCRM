@@ -224,7 +224,10 @@ describe("conexões Telegram", () => {
       id: "connection-active", telegram_bot_id: "123456", bot_username: "clinica_bot",
       display_name: "Atendimento", token_last4: "6789", status: "active",
       created_at: "2026-10-17T12:00:00Z",
-      bindings: [{ surface: "inbox", capabilities: ["receive_messages", "human_replies"] }],
+      bindings: [
+        { surface: "inbox", capabilities: ["receive_messages", "human_replies", "proactive_send"] },
+        { surface: "agent_tools", capabilities: ["tool_read"] },
+      ],
     }] } });
     api.patch.mockResolvedValue({ data: { status: "active" } });
     render(<TelegramConnectionsClient />);
