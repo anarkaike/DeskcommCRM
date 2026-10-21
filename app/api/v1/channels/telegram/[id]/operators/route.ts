@@ -22,6 +22,7 @@ export async function GET(req: NextRequest, context: Context) {
   const authz = await requireRole("admin", { requestId, resource: "telegram_case_operator" });
   if (!authz.ok) return authz.response;
   const id = z.uuid().safeParse((await context.params).id);
+  const connectionId = id.success ? id.data : null;
   if (!id.success) return fail("validation_error", "Bot inválido.", 422, { requestId });
   const rawChallenge = req.nextUrl.searchParams.get("challenge_id");
   const challenge = rawChallenge ? z.uuid().safeParse(rawChallenge) : null;
@@ -91,6 +92,7 @@ export async function DELETE(req: NextRequest, context: Context) {
   const denied = await requireSupportWrite();
   if (denied) return denied;
   const id = z.uuid().safeParse((await context.params).id);
+  const connectionId = id.success ? id.data : null;
   const parsed = selection.safeParse(await req.json().catch(() => null));
   if (!id.success || !parsed.success) return fail("validation_error", "Selecione o vínculo a remover.", 422, { requestId });
   const target = parsed.data;
@@ -119,7 +121,7 @@ export async function DELETE(req: NextRequest, context: Context) {
       if (result.rows[0]) cancelled = (await client.query("delete from telegram_case_pairing_challenges where organization_id=$1 and connection_id=$2 and user_id=$3 and consumed_at is null", [...args,result.rows[0].user_id])).rowCount ?? 0;
     }
     await client.query("commit");
-    if (revoked || cancelled) await audit({ action: "telegram.case_operator_unpaired", actorUserId: authz.user.id, organizationId: authz.org.orgId, resourceType: "telegram_bot_connection", resourceId: id.data, requestId, metadata: { target: target.target, target_id: target.target === "all" ? null : target.id, revoked, cancelled } });
+    if (revoked || cancelled) await audit({ action: "telegram.case_operator_unpaired", actorUserId: authz.user.id, organizationId: authz.org.orgId, resourceType: "telegram_bot_connection", resourceId: connectionId, requestId, metadata: { target: target.target, target_id: target.target === "all" ? null : target.id, revoked, cancelled } });
     return ok({ revoked, cancelled }, { requestId });
   } catch {
     if (client) await client.query("rollback").catch(() => undefined);

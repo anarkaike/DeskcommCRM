@@ -17,6 +17,7 @@ export async function POST(
   const { id: rawId } = await context.params;
   const parsedId = z.string().uuid().safeParse(rawId);
   if (!parsedId.success) return fail("validation_error", "Identificador de bot inválido.", 422, { requestId });
+  const connectionId = parsedId.data;
   const id = parsedId.data;
   const authz = await requireRole("agent", { requestId, resource: "telegram_case_operator" });
   if (!authz.ok) return authz.response;
@@ -67,6 +68,7 @@ export async function DELETE(
   const { id: rawId } = await context.params;
   const parsedId = z.string().uuid().safeParse(rawId);
   if (!parsedId.success) return fail("validation_error", "Identificador de bot inválido.", 422, { requestId });
+  const connectionId = parsedId.data;
   const authz = await requireRole("agent", { requestId, resource: "telegram_case_operator" });
   if (!authz.ok) return authz.response;
   const supportDenied = await requireSupportWrite();
@@ -82,7 +84,7 @@ export async function DELETE(
     await audit({
       action: "telegram.case_operator_unpaired", actorUserId: authz.user.id,
       organizationId: authz.org.orgId, resourceType: "telegram_bot_connection",
-      resourceId: parsedId.data, requestId,
+      resourceId: connectionId, requestId,
     });
   }
   return ok({ unpaired: Boolean(removed?.length) }, { requestId });

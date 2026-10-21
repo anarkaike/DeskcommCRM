@@ -179,7 +179,19 @@ export function TelegramOperatorLinks({ botId, botName, active }: Props) {
   const isPairingWaiting = action === "pair-waiting" || Boolean(pendingForMe && pairingStatus === "pending" && expiresAt && new Date(expiresAt).getTime() > now);
   const isPairingProcessing = action === "pair";
   const removalActionKey = removal?.target === "all" ? "revoke-all" : removal ? "revoke:" + removal.id : null;
-  const feedbackLabel = (key: string, normal: string, success: string, failure: string) => feedback?.key === key ? t(feedback.ok ? success : failure) : t(normal);
+  const feedbackLabel = (key: string, kind: "pair" | "all" | "refresh" | "operator" | "challenge") => {
+    if (feedback?.key !== key) {
+      if (kind === "pair") return t("Vincular meu Telegram");
+      if (kind === "all") return t("Desvincular todos");
+      if (kind === "refresh") return t("Atualizar");
+      if (kind === "operator") return t("Desvincular");
+      return t("Cancelar vínculo pendente");
+    }
+    if (kind === "pair") return t(feedback.ok ? "Telegram vinculado!" : "Falha ao vincular");
+    if (kind === "all" || kind === "operator") return t(feedback.ok ? "Desvinculado!" : "Falha ao desvincular");
+    if (kind === "refresh") return t(feedback.ok ? "Atualizado!" : "Falha ao atualizar");
+    return t(feedback.ok ? "Vínculo cancelado!" : "Falha ao cancelar");
+  };
   return <>
     <Button type="button" variant="outline" size="sm" onClick={() => { setNow(Date.now()); setOpen(true); void load(); }}>
       <UsersThree size={16} aria-hidden="true" />{t("Vínculos")}{count !== null ? ` · ${count}` : ""}
@@ -193,13 +205,13 @@ export function TelegramOperatorLinks({ botId, botName, active }: Props) {
         <div className="flex flex-wrap items-center gap-2">
           {active ? <Button type="button" disabled={busy || isPairingWaiting} className={isPairingWaiting ? "border-warning/60 bg-warning/10 text-warning-fg hover:bg-warning/15" : undefined} onClick={() => void pair()}>
             {isPairingWaiting && !isPairingProcessing ? <Clock size={16} aria-hidden="true" /> : actionIcon("pair", <PaperPlaneTilt size={16} aria-hidden="true" />)}
-            {isPairingWaiting || isPairingProcessing ? t("Vinculando Telegram…") : feedbackLabel("pair", "Vincular meu Telegram", "Telegram vinculado!", "Falha ao vincular")}
+            {isPairingWaiting || isPairingProcessing ? t("Vinculando Telegram…") : feedbackLabel("pair", "pair")}
           </Button> : null}
           {!error && data ? <Button type="button" variant="destructive" className="ml-auto" disabled={busy || (!data.operators.length && !pending.length)} onClick={() => setRemoval({ target: "all" })}>
-            {actionIcon("revoke-all", <Trash size={16} aria-hidden="true" />)}{feedbackLabel("revoke-all", "Desvincular todos", "Desvinculados!", "Falha ao desvincular")}
+            {actionIcon("revoke-all", <Trash size={16} aria-hidden="true" />)}{feedbackLabel("revoke-all", "all")}
           </Button> : null}
           <Button type="button" variant="outline" disabled={busy} onClick={() => void refresh()}>
-            {actionIcon("refresh", <ArrowsClockwise size={16} aria-hidden="true" />)}{action === "refresh" ? t("Atualizando…") : feedbackLabel("refresh", "Atualizar", "Atualizado!", "Falha ao atualizar")}
+            {actionIcon("refresh", <ArrowsClockwise size={16} aria-hidden="true" />)}{action === "refresh" ? t("Atualizando…") : feedbackLabel("refresh", "refresh")}
           </Button>
         </div>
         {!active ? <p className="text-sm text-text-muted">{t("Para vincular, ative o bot e habilite consulta e resposta de casos nas configurações.")}</p> : null}
@@ -238,7 +250,7 @@ export function TelegramOperatorLinks({ botId, botName, active }: Props) {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="break-words font-medium">{item.name} {item.user_id === data.current_user_id ? <Badge>{t("Você")}</Badge> : null}</p>
               <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => setRemoval({ target: "operator", id: item.id, name: item.name })}>
-                {actionIcon("revoke:" + item.id, <Trash size={16} aria-hidden="true" />)}{feedbackLabel("revoke:" + item.id, "Desvincular", "Desvinculado!", "Falha ao desvincular")}
+                {actionIcon("revoke:" + item.id, <Trash size={16} aria-hidden="true" />)}{feedbackLabel("revoke:" + item.id, "operator")}
               </Button>
             </div>
             <dl className="grid gap-1 break-words text-sm text-text-muted">
@@ -256,7 +268,7 @@ export function TelegramOperatorLinks({ botId, botName, active }: Props) {
           {pending.map(item => <article key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3 text-sm">
             <div className="min-w-0 break-words"><p className="font-medium">{item.name}</p><p>{item.email}</p><p>{t("Solicitado em")}: {date(item.created_at)}</p><p>{t("Expira em")}: {date(item.expires_at)}</p></div>
             <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => setRemoval({ target: "challenge", id: item.id, name: item.name })}>
-              {actionIcon("revoke:" + item.id, <Trash size={16} aria-hidden="true" />)}{feedbackLabel("revoke:" + item.id, "Cancelar vínculo pendente", "Vínculo cancelado!", "Falha ao cancelar")}
+              {actionIcon("revoke:" + item.id, <Trash size={16} aria-hidden="true" />)}{feedbackLabel("revoke:" + item.id, "challenge")}
             </Button>
           </article>)}
           {data.truncated ? <p role="status">{t("Exibindo os primeiros 200 registros de cada lista.")}</p> : null}

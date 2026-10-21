@@ -48,6 +48,7 @@ APP_ORIGIN="http://app:3000"
 # comentário, seria DADO — e crase em prosa dentro de aspas duplas o shell
 # EXECUTA. Foi o que quebrou o entrypoint na primeira tentativa desta linha.
 CRONS="
+* * * * *|45|api/v1/cron/telegram-updates
 * * * * *|240|api/v1/cron/prospecting
 * * * * *|25|api/v1/cron/agent-dispatcher
 * * * * *|25|api/v1/cron/followup-flow-worker
