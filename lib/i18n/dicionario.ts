@@ -39,10 +39,8 @@ import { TEXTOS_AGENDA_SERVICOS } from "./agenda-servicos";
 type Traducoes = Record<string, Partial<Record<Exclude<Idioma, "pt-BR">, string>>>;
 
 export const DICIONARIO: Traducoes = {
-<<<<<<< HEAD
   ...TEXTOS_AGENDA_SERVICOS,
   ...TEXTOS_AGENDA_CONFIGURACAO,
-=======
   "Copiar comando de pareamento": { es: "Copiar comando de vinculación" },
   "Não foi possível copiar. Selecione o comando e copie manualmente.": { es: "No se pudo copiar. Selecciona el comando y cópialo manualmente." },
   "Use o código que você já gerou. Se não o tiver, gere outro; o anterior será invalidado.": { es: "Usa el código que ya generaste. Si no lo tienes, genera otro; el anterior quedará invalidado." },
@@ -78,7 +76,6 @@ export const DICIONARIO: Traducoes = {
   "Remover este vínculo?": { es: "¿Eliminar este vínculo?" },
   "Todos os operadores deste bot perderão o acesso aos casos pelo Telegram e os códigos pendentes serão cancelados. O bot continuará conectado.": { es: "Todos los operadores de este bot perderán acceso a los casos por Telegram y se cancelarán los códigos pendientes. El bot seguirá conectado." },
   "O acesso deste vínculo será removido e será necessário gerar outro código para vincular novamente. Os outros operadores continuarão vinculados.": { es: "Se eliminará el acceso de este vínculo y será necesario generar otro código para volver a vincularlo. Los demás operadores seguirán vinculados." },
->>>>>>> cdc54edc8 (feat(telegram): gerencia vinculos de operadores)
   "Token validado e conexão registrada. Configure os usos deste bot.": { es: "Token validado y conexión registrada. Configura los usos de este bot." },
   "Usos e capacidades salvos.": { es: "Usos y capacidades guardados." },
   "Conecte bots independentes e escolha onde cada um poderá ser usado.": { es: "Conecta bots independientes y elige dónde se podrá usar cada uno." },
