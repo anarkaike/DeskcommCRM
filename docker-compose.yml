@@ -73,12 +73,16 @@ services:
     container_name: deskcomm-agent-worker
     restart: unless-stopped
     env_file:
-      - .env
-      - .env.local
+      - path: .env
+        required: false
+      - path: .env.local
+        required: true
     environment:
       # dentro do container, localhost é o próprio worker — o WAHA está na rede
       # do compose (serviço waha, porta interna 3000). Sobrepõe o .env.local.
       WAHA_API_BASE_URL: http://waha:3000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       # Só 127.0.0.1: /healthz e /metrics do worker não têm autenticação e o
       # /metrics conta filas, sessões e custo de todas as empresas. Sem endereço

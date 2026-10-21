@@ -32,6 +32,7 @@ import {
   Trash,
   UsersThree,
 } from "@/lib/ui/icons";
+import { TelegramOperatorLinks } from "@/components/connections/TelegramOperatorLinks";
 import { GruposSheet } from "@/components/connections/GruposSheet";
 
 type Surface = "inbox" | "team_alerts" | "human_cases" | "agent_tools" | "mini_app";
@@ -102,7 +103,7 @@ const SURFACES: SurfaceOption[] = [
     detail: "Operadores pareados podem consultar casos abertos e registrar respostas pelo Telegram.",
     icon: ChatCircle,
     capabilities: [
-      { key: "read_cases", title: "Consultar casos", detail: "Listar casos humanos da organização e ver seus detalhes." },
+      { key: "read_cases", title: "Consultar casos", detail: "Listar casos humanos da organização e ver seus detalhes.", defaultOn: true },
       { key: "reply_to_cases", title: "Responder casos", detail: "Registrar conclusão ou pedir informação ao cliente; o agente continua o fluxo." },
     ],
   },
@@ -144,7 +145,6 @@ export function TelegramConnectionsClient() {
   const [selection, setSelection] = useState<Selection>(padraoInicial);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [groupsBot, setGroupsBot] = useState<Bot | null>(null);
-  const [pairingCommands, setPairingCommands] = useState<Record<string, { command: string; expires_at: string }>>({});
 
   const fetchBots = useCallback(
     () => apiClient.get<ApiEnvelope<{ bots: Bot[] }>>("/api/v1/channels/telegram"),
@@ -289,27 +289,6 @@ export function TelegramConnectionsClient() {
       toast.error(t("Não foi possível alterar o estado do bot Telegram."));
     } finally {
       setLifecycleConnectionId(null);
-    }
-  }
-
-  async function generatePairing(bot: Bot) {
-    try {
-      const result = await apiClient.post<ApiEnvelope<{ command: string; expires_at: string }>>(
-        `/api/v1/channels/telegram/${bot.id}/pairing`, {},
-      );
-      setPairingCommands((current) => ({ ...current, [bot.id]: result.data }));
-      toast.success(t("Código de pareamento gerado. Ele expira em cinco minutos."));
-    } catch {
-      toast.error(t("Não foi possível gerar o código de pareamento."));
-    }
-  }
-
-  async function unpairOperator(bot: Bot) {
-    try {
-      await apiClient.delete(`/api/v1/channels/telegram/${bot.id}/pairing`);
-      toast.success(t("Pareamento do seu usuário removido."));
-    } catch {
-      toast.error(t("Não foi possível remover seu pareamento Telegram."));
     }
   }
 
@@ -487,24 +466,7 @@ export function TelegramConnectionsClient() {
                       <Gear size={16} aria-hidden="true" />
                       <span className="hidden sm:inline">{t("Configurar")}</span>
                     </Button>
-                    {bot.status === "active" && bot.bindings.some((binding) => binding.surface === "human_cases") ? (
-                      <div className="w-full">
-                        <div className="flex flex-wrap gap-2">
-                          <Button type="button" variant="outline" size="sm" onClick={() => void generatePairing(bot)}>
-                            <UsersThree size={16} aria-hidden="true" />
-                            {t("Parear operador")}
-                          </Button>
-                          <Button type="button" variant="outline" size="sm" onClick={() => void unpairOperator(bot)}>
-                            {t("Desvincular meu Telegram")}
-                          </Button>
-                        </div>
-                        {pairingCommands[bot.id] ? (
-                          <p className="mt-2 break-all text-xs text-text-muted" role="status">
-                            {t("Envie ao bot antes de")} {new Date(pairingCommands[bot.id]?.expires_at ?? "").toLocaleTimeString()}: <code>{pairingCommands[bot.id]?.command}</code>
-                          </p>
-                        ) : null}
-                      </div>
-                    ) : null}
+                    <TelegramOperatorLinks botId={bot.id} botName={bot.display_name} active={bot.status === "active" && bot.bindings.some((binding) => binding.surface === "human_cases" && binding.capabilities.includes("read_cases") && binding.capabilities.includes("reply_to_cases"))} />
                     {bot.status === "active" && bot.channel_session_id && bot.bindings.some((binding) => binding.capabilities.includes("group_messages")) ? (
                       <Button
                         type="button"

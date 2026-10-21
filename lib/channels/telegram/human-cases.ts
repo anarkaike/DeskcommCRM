@@ -7,7 +7,7 @@ import { enqueueJob } from "@/lib/agent-engine/queue/queue";
 import { decryptWebhookSecret } from "@/lib/webhooks/secrets";
 import { sendTelegramText } from "./bot-api";
 
-type TelegramMessage = { text?: unknown; chat?: { id?: unknown; type?: unknown }; from?: { id?: unknown; is_bot?: unknown } };
+type TelegramMessage = { text?: unknown; chat?: { id?: unknown; type?: unknown }; from?: { id?: unknown; is_bot?: unknown; first_name?: unknown; last_name?: unknown; username?: unknown } };
 const OPEN_CASE_STATES = ["awaiting_human", "awaiting_lead"] as const;
 
 function clean(value: unknown, max = 2000): string {
@@ -68,14 +68,14 @@ export async function handleTelegramHumanCaseUpdate(
     await audit({
       action: "telegram.case_operator_paired", actorUserId: String(userId),
       organizationId: input.organizationId, resourceType: "telegram_bot_connection",
-      resourceId: input.connectionId, metadata: {},
+      resourceId: input.connectionId, metadata: { telegram_user_id: telegramUserId, telegram_name: [clean(from.first_name, 80), clean(from.last_name, 80)].filter(Boolean).join(" "), telegram_username: clean(from.username, 64) },
     });
     await reply("Conta pareada. Use /casos para listar os casos humanos abertos.");
     return true;
   }
 
   const { data: operator, error: operatorError } = await admin.from("telegram_case_operators")
-    .select("user_id").eq("organization_id", input.organizationId).eq("connection_id", input.connectionId)
+    .select("id, user_id").eq("organization_id", input.organizationId).eq("connection_id", input.connectionId)
     .eq("telegram_user_id", telegramUserId).is("revoked_at", null).maybeSingle();
   const membership = operator ? await admin.from("user_organizations").select("role")
     .eq("organization_id", input.organizationId).eq("user_id", operator.user_id).is("revoked_at", null)
@@ -85,6 +85,12 @@ export async function handleTelegramHumanCaseUpdate(
     await reply("Este Telegram não está pareado a um atendente autorizado. Gere um código no CRM e use /parear.");
     return true;
   }
+
+  await audit({
+    action: "telegram.case_operator_used", actorUserId: String(operator.user_id),
+    organizationId: input.organizationId, resourceType: "telegram_bot_connection",
+    resourceId: input.connectionId, metadata: { operator_id: operator.id, command, telegram_user_id: telegramUserId, telegram_name: [clean(from.first_name, 80), clean(from.last_name, 80)].filter(Boolean).join(" "), telegram_username: clean(from.username, 64) },
+  });
 
   if (command === "/casos") {
     const { rows } = await getRequestPool().query<{ id: string; title: string; status: string }>(

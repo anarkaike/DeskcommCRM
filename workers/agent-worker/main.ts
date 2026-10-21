@@ -208,7 +208,7 @@ export async function startWorker(
   handlers: Map<JobKind, JobHandler>,
   log: Logger = createLogger(),
 ): Promise<void> {
-  const pool = createPool(env.SUPABASE_DB_URL, (err) =>
+  const pool = createPool(env.SUPABASE_DB_URL_WORKER ?? env.SUPABASE_DB_URL, (err) =>
     log.error("pool: conexão caiu — recria no próximo uso", { error: errMsg(err) }),
   );
   const workerId = `agent-engine-${hostname()}-${process.pid}`;

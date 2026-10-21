@@ -37,6 +37,7 @@ export async function POST(
     return fail("forbidden", "Habilite leitura e resposta de casos nas configurações do bot.", 403, { requestId });
   }
 
+  const challengeId = randomUUID();
   const code = randomBytes(18).toString("base64url");
   const codeHash = createHash("sha256").update(code).digest("hex");
   const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
@@ -45,7 +46,7 @@ export async function POST(
   if (clearError) return fail("internal_error", "Não foi possível substituir um código anterior.", 500, { requestId });
   const { error: insertError } = await admin.from("telegram_case_pairing_challenges").insert({
     organization_id: authz.org.orgId, connection_id: id, user_id: authz.user.id, code_hash: codeHash,
-    expires_at: expiresAt,
+    id: challengeId, expires_at: expiresAt,
   });
   if (insertError) return fail("internal_error", "Não foi possível gerar o código de pareamento.", 500, { requestId });
   await audit({
@@ -53,7 +54,7 @@ export async function POST(
     organizationId: authz.org.orgId, resourceType: "telegram_bot_connection", resourceId: id, requestId,
   });
   return ok({
-    code, expires_at: expiresAt,
+    code, challenge_id: challengeId, expires_at: expiresAt,
     command: `/parear ${code}`, bot_username: connection.bot_username,
   }, { requestId });
 }

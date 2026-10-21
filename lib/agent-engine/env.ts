@@ -17,6 +17,12 @@ const envSchema = z.object({
   // Postgres do Supabase (connection string — Settings → Database). O motor usa
   // `pg` direto: FOR UPDATE SKIP LOCKED, advisory locks, FTS.
   SUPABASE_DB_URL: z.string().url(),
+  // DSN alternativo apenas para o worker em container quando o app usa localhost
+  // no host (ex.: Supabase local da WSL). Vazio/ausente mantém o DSN comum.
+  SUPABASE_DB_URL_WORKER: z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().url().optional(),
+  ),
   // Supabase API — os handlers do app (sendMessageHandler) exigem o client
   // service-role. Mesmos valores do .env.local do app.
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
