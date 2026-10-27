@@ -10410,6 +10410,74 @@ export type Database = {
           },
         ];
       };
+      mcp_artwork_transfers: {
+        Row: {
+          blog_id: number;
+          consumed_at: string | null;
+          contact_id: string;
+          conversation_id: string;
+          created_at: string;
+          expires_at: string;
+          id: string;
+          message_id: string;
+          organization_id: string;
+          token_hash: string;
+        };
+        Insert: {
+          blog_id: number;
+          consumed_at?: string | null;
+          contact_id: string;
+          conversation_id: string;
+          created_at?: string;
+          expires_at: string;
+          id?: string;
+          message_id: string;
+          organization_id: string;
+          token_hash: string;
+        };
+        Update: {
+          blog_id?: number;
+          consumed_at?: string | null;
+          contact_id?: string;
+          conversation_id?: string;
+          created_at?: string;
+          expires_at?: string;
+          id?: string;
+          message_id?: string;
+          organization_id?: string;
+          token_hash?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "mcp_artwork_transfers_contact_id_fkey";
+            columns: ["contact_id"];
+            isOneToOne: false;
+            referencedRelation: "contacts";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "mcp_artwork_transfers_conversation_id_fkey";
+            columns: ["conversation_id"];
+            isOneToOne: false;
+            referencedRelation: "conversations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "mcp_artwork_transfers_message_id_fkey";
+            columns: ["message_id"];
+            isOneToOne: false;
+            referencedRelation: "messages";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "mcp_artwork_transfers_organization_id_fkey";
+            columns: ["organization_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       messages: {
         Row: {
           ack: number | null;
@@ -11411,6 +11479,15 @@ export type Database = {
           mcp_externo_chave_iv: string | null;
           mcp_externo_chave_last4: string | null;
           mcp_externo_chave_tag: string | null;
+          mcp_externo_aprovacao_encrypted: string | null;
+          mcp_externo_aprovacao_iv: string | null;
+          mcp_externo_aprovacao_last4: string | null;
+          mcp_externo_aprovacao_tag: string | null;
+          mcp_externo_artwork_encrypted: string | null;
+          mcp_externo_artwork_iv: string | null;
+          mcp_externo_artwork_last4: string | null;
+          mcp_externo_artwork_tag: string | null;
+          mcp_externo_artwork_blog_id: number | null;
           media_retention_days: number;
           media_retention_enforced: boolean;
           meta_lead_birth_enabled_at: string | null;
@@ -11448,6 +11525,15 @@ export type Database = {
           mcp_externo_chave_iv?: string | null;
           mcp_externo_chave_last4?: string | null;
           mcp_externo_chave_tag?: string | null;
+          mcp_externo_aprovacao_encrypted?: string | null;
+          mcp_externo_aprovacao_iv?: string | null;
+          mcp_externo_aprovacao_last4?: string | null;
+          mcp_externo_aprovacao_tag?: string | null;
+          mcp_externo_artwork_encrypted?: string | null;
+          mcp_externo_artwork_iv?: string | null;
+          mcp_externo_artwork_last4?: string | null;
+          mcp_externo_artwork_tag?: string | null;
+          mcp_externo_artwork_blog_id?: number | null;
           media_retention_days?: number;
           media_retention_enforced?: boolean;
           meta_lead_birth_enabled_at?: string | null;
@@ -11484,6 +11570,15 @@ export type Database = {
           mcp_externo_chave_iv?: string | null;
           mcp_externo_chave_last4?: string | null;
           mcp_externo_chave_tag?: string | null;
+          mcp_externo_aprovacao_encrypted?: string | null;
+          mcp_externo_aprovacao_iv?: string | null;
+          mcp_externo_aprovacao_last4?: string | null;
+          mcp_externo_aprovacao_tag?: string | null;
+          mcp_externo_artwork_encrypted?: string | null;
+          mcp_externo_artwork_iv?: string | null;
+          mcp_externo_artwork_last4?: string | null;
+          mcp_externo_artwork_tag?: string | null;
+          mcp_externo_artwork_blog_id?: number | null;
           media_retention_days?: number;
           media_retention_enforced?: boolean;
           meta_lead_birth_enabled_at?: string | null;

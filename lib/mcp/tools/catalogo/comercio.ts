@@ -28,6 +28,15 @@ export const TOOLS_COMERCIO = declararTools([
     pacotes: ["vender", "atender"],
   },
   {
+    name: "crm_create_artwork_transfer",
+    category: "write",
+    rotulo: "Preparar arte recebida para o pedido",
+    explicacao: "Importa com segurança um arquivo recebido nesta conversa para que ele possa ser associado ao item do pedido, preservando a privacidade do cliente.",
+    oQueToca: "Arquivos de personalização",
+    risco: "atencao",
+    pacotes: ["vender"],
+  },
+  {
     name: "crm_draft_proposal",
     category: "write",
     rotulo: "Rascunhar proposta comercial",

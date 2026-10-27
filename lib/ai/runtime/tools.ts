@@ -86,6 +86,8 @@ export interface PickToolsInput {
    * do turno à mão, esse id é traduzido para o negócio aberto dele.
    */
   contatoDoTurno?: string;
+  /** Trusted conversation identifier for operations bound to the active turn. */
+  conversaDoTurno?: string;
   /**
    * Servidor MCP externo REGISTRADO pela instalação, já com as ferramentas que
    * ele anunciou (#2147).
@@ -428,7 +430,13 @@ function wrapMcpTool(
             if (def.category === "write") await guardServiceEffect();
             return def.handler(
               argsRecord as never,
-              input.contatoDoTurno ? { ...input.ctx, contatoDoTurno: input.contatoDoTurno } : input.ctx,
+              input.contatoDoTurno || input.conversaDoTurno
+                ? {
+                    ...input.ctx,
+                    ...(input.contatoDoTurno ? { contatoDoTurno: input.contatoDoTurno } : {}),
+                    ...(input.conversaDoTurno ? { conversaDoTurno: input.conversaDoTurno } : {}),
+                  }
+                : input.ctx,
             );
           },
         );
@@ -667,7 +675,7 @@ export function pickToolsFromMcp(input: PickToolsInput): Record<string, Tool> {
       // Com contato, a auditoria da remota leva o `contact_id` da conversa
       // (`metadata.contact_id`, em `auditMcpToolCall`).
       const entradaDaRemota = input.contatoDoTurno
-        ? { ...input, ctx: { ...input.ctx, contatoDoTurno: input.contatoDoTurno } }
+        ? { ...input, ctx: { ...input.ctx, contatoDoTurno: input.contatoDoTurno, ...(input.conversaDoTurno ? { conversaDoTurno: input.conversaDoTurno } : {}) } }
         : input;
       for (const def of remotas) {
         // ESCOLHA (b), item 8, em dois níveis. O primeiro é

@@ -39,6 +39,8 @@ export interface McpContext {
    * saem do turno.
    */
   contatoDoTurno?: string;
+  /** Conversation id injected only by a trusted in-process turn runtime. */
+  conversaDoTurno?: string;
   organizationId: string;
   role: Role;
   actor: Actor;

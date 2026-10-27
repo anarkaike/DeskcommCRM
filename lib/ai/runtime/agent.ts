@@ -654,6 +654,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
       handoffSignal,
       ...(servidorExterno ? { servidorMcpExterno: servidorExterno } : {}),
       ...(contatoDoTurno ? { contatoDoTurno } : {}),
+      ...(run.conversation_id ? { conversaDoTurno: run.conversation_id } : {}),
     });
 
     // 8) Load history with budget.

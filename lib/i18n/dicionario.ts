@@ -15685,6 +15685,33 @@ export const DICIONARIO: Traducoes = {
   "Endereço recusado por segurança: informe um servidor público em https, sem rede interna, sem localhost e sem segredo colado no endereço.": {
     es: "Dirección rechazada por seguridad: indica un servidor público en https, sin red interna, sin localhost y sin secreto pegado en la dirección.",
   },
+  "Chave HMAC de aprovação de gravações (opcional)": { es: "Clave HMAC de aprobación de escrituras (opcional)" },
+  "Use a mesma chave configurada no WordPress como SERVINDER_AGENT_APPROVAL_KEY. Ela é cifrada separadamente do token MCP. Deixe em branco para preservar a atual; sem ela, ferramentas de gravação falham fechadas.": {
+    es: "Usa la misma clave configurada en WordPress como SERVINDER_AGENT_APPROVAL_KEY. Se cifra por separado del token MCP. Déjala en blanco para conservar la actual; sin ella, las herramientas de escritura se bloquean de forma segura.",
+  },
+  "ID do blog WordPress autorizado para o bridge de artes": { es: "ID del sitio de WordPress autorizado para el puente de archivos" },
+  "ID do subsite WordPress": { es: "ID del subsitio de WordPress" },
+  "Informe o ID do subsite WordPress que poderá consumir tickets de arte. A rota do CRM é fixa e usa HTTPS.": {
+    es: "Indica el ID del subsitio de WordPress que podrá consumir los tickets de archivos. La ruta del CRM es fija y usa HTTPS.",
+  },
+  "Chave HMAC do bridge de artes (opcional)": { es: "Clave HMAC del puente de archivos (opcional)" },
+  "Chave independente, cifrada no CRM. Configure o mesmo valor no WordPress como SERVINDER_AGENT_ARTWORK_BRIDGE_KEY. Em branco preserva a chave atual; sem chave e blog ID, o bridge falha fechado.": {
+    es: "Clave independiente, cifrada en el CRM. Configura el mismo valor en WordPress como SERVINDER_AGENT_ARTWORK_BRIDGE_KEY. En blanco conserva la clave actual; sin clave e ID del sitio, el puente se bloquea de forma segura.",
+  },
+  "Configuração salva, incluindo a chave HMAC do bridge privado de artes.": {
+    es: "Configuración guardada, incluida la clave HMAC del puente privado de archivos.",
+  },
+  "Configuração salva, incluindo a chave de aprovação assinada.": {
+    es: "Configuración guardada, incluida la clave de aprobación firmada.",
+  },
+  "Configuração salva. Leituras e cotações podem ser usadas; gravações continuam bloqueadas até configurar a chave de aprovação.": {
+    es: "Configuración guardada. Se pueden usar consultas y cotizaciones; las escrituras siguen bloqueadas hasta configurar la clave de aprobación.",
+  },
+  "A chave de aprovação deve ter pelo menos 32 caracteres.": { es: "La clave de aprobación debe tener al menos 32 caracteres." },
+  "A chave HMAC do bridge deve ter pelo menos 32 caracteres.": { es: "La clave HMAC del puente debe tener al menos 32 caracteres." },
+  "Informe um ID de blog válido e configure a chave HMAC junto com o servidor MCP.": {
+    es: "Indica un ID de sitio válido y configura la clave HMAC junto con el servidor MCP.",
+  },
   "Não foi possível salvar. Tente de novo em instantes.": {
     es: "No fue posible guardar. Inténtalo de nuevo en unos momentos.",
   },

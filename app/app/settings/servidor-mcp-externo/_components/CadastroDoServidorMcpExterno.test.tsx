@@ -57,7 +57,15 @@ const valorDoCampoDaChave = () => (screen.getByTestId("chave") as HTMLInputEleme
 
 beforeEach(() => {
   cadastro().mockReset();
-  cadastro().mockResolvedValue({ ok: true, chaveUltimos4: "abcd" });
+  cadastro().mockResolvedValue({
+    ok: true,
+    chaveUltimos4: "abcd",
+    aprovacaoConfigurada: false,
+    aprovacaoUltimos4: null,
+    artworkConfigurado: false,
+    artworkUltimos4: null,
+    artworkBlogId: null,
+  });
   listagem().mockReset();
   listagem().mockResolvedValue({ ok: true, host: "erp.loja", ferramentas: [] });
   vi.mocked(irAoDesafioDeMfa).mockReset();
@@ -73,7 +81,7 @@ describe("cadastro: a chave só aparece na criação", () => {
     digitar(ENDERECO);
     fireEvent.click(screen.getByTestId("salvar"));
 
-    await waitFor(() => expect(cadastro()).toHaveBeenCalledWith({ endpoint: ENDERECO, chave: CHAVE }));
+    await waitFor(() => expect(cadastro()).toHaveBeenCalledWith({ endpoint: ENDERECO, chave: CHAVE, chaveAprovacao: "", chaveArtwork: "", artworkBlogId: "" }));
     await waitFor(() => expect(screen.getByTestId("chave-criada")).toBeInTheDocument());
     expect(screen.getByTestId("chave-criada").textContent).toContain("abcd");
     // A chave sai da tela junto com a revelação: deixá-la no campo faria o
@@ -94,7 +102,7 @@ describe("recusa do anti-SSRF: a tela diz o motivo, e nada mais", () => {
     // O endereço vai como foi digitado: quem recusa é o guard da action, não
     // uma regra paralela escrita nesta tela.
     await waitFor(() =>
-      expect(cadastro()).toHaveBeenCalledWith({ endpoint: ENDERECO_INSEGURO, chave: CHAVE }),
+      expect(cadastro()).toHaveBeenCalledWith({ endpoint: ENDERECO_INSEGURO, chave: CHAVE, chaveAprovacao: "", chaveArtwork: "", artworkBlogId: "" }),
     );
     await waitFor(() => expect(screen.getByTestId("erro")).toBeInTheDocument());
     expect(screen.getByRole("alert").textContent).toContain("recusado por segurança");
@@ -170,7 +178,7 @@ describe("remoção: a mesma action, com o contrato de apagar", () => {
     digitar(ENDERECO);
     fireEvent.click(screen.getByTestId("remover"));
 
-    await waitFor(() => expect(cadastro()).toHaveBeenCalledWith({ endpoint: "", chave: "" }));
+    await waitFor(() => expect(cadastro()).toHaveBeenCalledWith({ endpoint: "", chave: "", chaveAprovacao: "", chaveArtwork: "", artworkBlogId: "" }));
     await waitFor(() => expect(screen.getByTestId("aviso").textContent).toContain("removido"));
     // A revelação é da CRIAÇÃO: remover não tem chave nenhuma para mostrar.
     expect(screen.queryByTestId("chave-criada")).toBeNull();
