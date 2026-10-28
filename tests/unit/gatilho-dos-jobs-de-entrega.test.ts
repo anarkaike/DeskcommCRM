@@ -64,6 +64,13 @@ const DIR = join(process.cwd(), ".github/workflows");
  * que desliga um job de entrega fica visível em code review.
  */
 const GATILHO_ESPERADO: Record<string, { condicao: string | null; efeito: string }> = {
+  "fork-release-check.yml::release-safety": {
+    condicao: "github.repository != 'melgarafael/DeskcommCRM'",
+    efeito:
+      "Valida a exportação imutável das releases próprias do fork. " +
+      "O oficial não usa esse fluxo; no fork o job protege origem, revisão, " +
+      "checkout limpo e exclusão de arquivos de ambiente.",
+  },
   // --- a cadeia que leva o conserto até a VPS ---------------------------------
   "release.yml::abrir-pr-de-release": {
     condicao: "github.event_name == 'workflow_dispatch'",
