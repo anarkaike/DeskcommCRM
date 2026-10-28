@@ -175,8 +175,6 @@ async function handle(req: NextRequest): Promise<Response> {
         { id: s.id, organization_id: s.organization_id, status: statusFinal },
         saude,
         apelido,
-        "varredura",
-        s.provider === "telegram" ? "Telegram" : "WhatsApp",
       );
       desfechos[desfecho] = (desfechos[desfecho] ?? 0) + 1;
     } catch (err) {

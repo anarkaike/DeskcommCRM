@@ -215,11 +215,6 @@ const MARCA_CONGELADA: Record<string, EntradaDeMarca> = {
       "`agent_name_hint` identifica o aplicativo auto-hospedado durante a autorização SIWC da OpenAI; não é o nome apresentado nas telas do CRM. O fluxo de login depende deste identificador de produto.",
     marcas: ["deskcommcrm"],
   },
-  "lib/escalacao/telegram-case-alert.handler.ts": {
-    categoria: "PROTOCOLO",
-    motivo: "Nome do produto em um link de navegação legado enviado em notificações de caso; o destino é mantido por compatibilidade.",
-    marcas: ["deskcommcrm"],
-  },
   "lib/webhooks/assinatura.ts": {
     categoria: "PROTOCOLO",
     motivo:
@@ -861,11 +856,6 @@ type CategoriaDeHost =
 type EntradaDeHost = { categoria: CategoriaDeHost; motivo: string };
 
 const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
-  "api.telegram.org": {
-    categoria: "FORNECEDOR",
-    motivo:
-      "Bot API oficial do Telegram usada pelo transporte do canal para validar bots, consultar webhook e enviar mensagens; o token pertence à organização e o domínio é controlado pelo Telegram.",
-  },
   "chatgpt.com": {
     categoria: "CONSOLE",
     motivo:

@@ -43,7 +43,7 @@ function channelLabel(
   t: (texto: string) => string = (texto) => texto,
 ): string {
   const s = sessions.find((c) => c.id === id);
-  if (!s) return t("Canal removido");
+  if (!s) return t("Número removido");
   return s.phone_number ? `${s.display_name} · ${s.phone_number}` : s.display_name;
 }
 
@@ -156,7 +156,7 @@ function CreateRouterDialog({
           <DialogTitle>{t("Novo roteador")}</DialogTitle>
           <DialogDescription>
             {t(
-              "Escolha o canal de atendimento que ele vai atender. Depois de criado, você define as intenções e para qual agente cada uma vai.",
+              "Escolha o número de WhatsApp que ele vai atender. Depois de criado, você define as intenções e para qual agente cada uma vai.",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -174,10 +174,10 @@ function CreateRouterDialog({
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="router-channel">{t("Canal de atendimento")}</Label>
+            <Label htmlFor="router-channel">{t("Número de WhatsApp")}</Label>
             <Select value={channelSessionId || undefined} onValueChange={setChannelSessionId}>
               <SelectTrigger id="router-channel">
-                <SelectValue placeholder={t("Selecione um canal")} />
+                <SelectValue placeholder={t("Selecione um número")} />
               </SelectTrigger>
               <SelectContent>
                 {channelSessions.map((s) => (
@@ -197,7 +197,7 @@ function CreateRouterDialog({
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              {t("Só é possível ter um roteador ativo por canal.")}
+              {t("Só é possível ter um roteador ativo por número.")}
             </p>
           </div>
           <DialogFooter>

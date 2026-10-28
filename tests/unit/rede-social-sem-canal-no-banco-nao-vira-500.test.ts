@@ -63,16 +63,12 @@ describe("o vocabulário do canal é derivado, não copiado", () => {
   });
 
   it("nenhuma rede SEM inbox entrou na lista", () => {
-    for (const rede of SOCIAL_NETWORKS.filter((r) => !r.inbox && r.id !== "telegram")) {
+    for (const rede of SOCIAL_NETWORKS.filter((r) => !r.inbox)) {
       expect(
         (CANAIS_DE_CONVERSA as readonly string[]).includes(rede.id),
         `${rede.id} não tem inbox e mesmo assim é canal de conversa`,
       ).toBe(false);
     }
-  });
-
-  it("Telegram tem Inbox própria mesmo sem ser uma rede de Inbox do Zernio", () => {
-    expect(CANAIS_DE_CONVERSA).toContain("telegram");
   });
 
   it("`whatsapp` está lá — é o membro que não vem do catálogo social", () => {

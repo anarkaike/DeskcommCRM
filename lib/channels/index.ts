@@ -7,7 +7,6 @@ import { metaCloudAdapter } from "./adapters/meta-cloud";
 import { wahaAdapter } from "./adapters/waha";
 import { socialAdapter } from "./social/adapter";
 import { zernioAdapter } from "./adapters/zernio";
-import { telegramAdapter } from "./adapters/telegram";
 import type { ChannelAdapter, ChannelProvider, ProviderDeMensagem } from "./types";
 
 /**
@@ -20,7 +19,6 @@ const ADAPTERS: Record<ProviderDeMensagem, ChannelAdapter | null> = {
   zernio: zernioAdapter,
   zernio_social: socialAdapter,
   datafy: datafyAdapter,
-  telegram: telegramAdapter,
 };
 
 /**
@@ -38,22 +36,11 @@ export {
   CHANNEL_CAPABILITIES,
   DEFAULT_CHANNEL_PROVIDER,
   PROVIDERS_DE_MENSAGEM,
-  PROVIDERS_DE_ENVIO_AUTOMATIZADO,
   PROVIDERS_SEM_MENSAGEM,
   canalConhecidoSemMensagem,
   transportaMensagem,
 } from "./capabilities";
 export { CHANNEL_SESSION_REF_COLUMNS, resolveSessionRef } from "./session-ref";
-export { CHANNEL_CONNECTIONS, ChannelConnectionRegistry } from "./connection-registry";
-export { createConnectionLifecycle, decideConnectionLifecycle } from "./connection-lifecycle";
-export type {
-  ChannelConnectionContext,
-  ChannelConnectionDriver,
-  ChannelConnectionHealth,
-  ChannelConnectionIdentity,
-  ChannelConnectionRecord,
-  ChannelConnectionStatus,
-} from "./connection-types";
 export type { ChannelSessionRef } from "./session-ref";
 export type {
   ChannelAdapter,

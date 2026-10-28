@@ -30,7 +30,6 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     groups: "full",
     costPerMessage: false,
     alteraMensagemEnviada: true,
-    automatedOutbound: true,
     // É a linha que conversa com um APARELHO pareado: a agenda salva no
     // celular está lá dentro, e o `contacts/all` a devolve paginada (#2736).
     phonebook: true,
@@ -48,7 +47,6 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     groups: "limited",
     costPerMessage: true,
     alteraMensagemEnviada: false,
-    automatedOutbound: true,
     // Nenhuma destas linhas conversa com um aparelho pareado — não existe
     // agenda de celular a ler, e dizer `true` aqui seria um botão que só falha.
     phonebook: false,
@@ -86,7 +84,6 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     groups: "none",
     costPerMessage: true,
     alteraMensagemEnviada: false,
-    automatedOutbound: true,
     // Nenhuma destas linhas conversa com um aparelho pareado — não existe
     // agenda de celular a ler, e dizer `true` aqui seria um botão que só falha.
     phonebook: false,
@@ -101,7 +98,6 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     groups: "limited",
     costPerMessage: true,
     alteraMensagemEnviada: false,
-    automatedOutbound: true,
     // Nenhuma destas linhas conversa com um aparelho pareado — não existe
     // agenda de celular a ler, e dizer `true` aqui seria um botão que só falha.
     phonebook: false,
@@ -125,22 +121,8 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     groups: "limited",
     costPerMessage: true,
     alteraMensagemEnviada: false,
-    automatedOutbound: true,
     // Nenhuma destas linhas conversa com um aparelho pareado — não existe
     // agenda de celular a ler, e dizer `true` aqui seria um botão que só falha.
-    phonebook: false,
-  },
-  telegram: {
-    freeformOutsideWindow: true,
-    requiresTemplates: false,
-    canManageTemplates: false,
-    banRisk: false,
-    minIntervalMs: null,
-    voiceNote: "server-convert",
-    groups: "limited",
-    costPerMessage: false,
-    alteraMensagemEnviada: false,
-    automatedOutbound: false,
     phonebook: false,
   },
 };
@@ -170,19 +152,6 @@ export const CHANNEL_PROVIDER_DATAFY: ChannelProvider = "datafy";
 /** Chamada de voz WhatsApp (spec 18). Não transporta mensagem — ver abaixo. */
 export const CHANNEL_PROVIDER_WACALLS: ChannelProvider = "wacalls";
 
-/** Providers de WhatsApp — Telegram fica fora dos seletores de número. */
-const PROVIDERS_DE_WHATSAPP = new Set<string>([
-  "waha",
-  "meta_cloud",
-  "zernio",
-  "datafy",
-]);
-
-export function isWhatsAppChannel(provider: string | null | undefined): boolean {
-  return provider != null && PROVIDERS_DE_WHATSAPP.has(provider);
-}
-
-
 /**
  * Os providers por onde MENSAGEM entra e sai — a única lista que responde
  * "este canal serve para conversar?".
@@ -204,12 +173,7 @@ export const PROVIDERS_DE_MENSAGEM = [
   "zernio",
   "zernio_social",
   "datafy",
-  "telegram",
 ] as const satisfies readonly ProviderDeMensagem[];
-
-export const PROVIDERS_DE_ENVIO_AUTOMATIZADO = PROVIDERS_DE_MENSAGEM.filter(
-  (provider) => CHANNEL_CAPABILITIES[provider].automatedOutbound,
-);
 
 /**
  * Os providers que alcançam um APARELHO: o endereço é o TELEFONE.

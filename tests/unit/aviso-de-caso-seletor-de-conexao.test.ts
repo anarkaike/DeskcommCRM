@@ -20,7 +20,7 @@ import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { DbErrorLike } from "@/lib/channels/archived";
-import { PROVIDERS_DE_ENVIO_AUTOMATIZADO, capabilitiesOf } from "@/lib/channels/capabilities";
+import { PROVIDERS_DE_MENSAGEM, capabilitiesOf } from "@/lib/channels/capabilities";
 import { listSelectableChannels } from "@/lib/channels/selectable";
 
 type Resposta = { data: Record<string, unknown>[] | null; error: DbErrorLike | null };
@@ -59,7 +59,7 @@ function fakeDb(resposta: Resposta) {
 }
 
 /** Uma linha por provedor de mensagem — a lista vem do módulo, não daqui. */
-const LINHAS = PROVIDERS_DE_ENVIO_AUTOMATIZADO.map((provider, i) => ({
+const LINHAS = PROVIDERS_DE_MENSAGEM.map((provider, i) => ({
   id: `00000000-0000-4000-8000-00000000000${i}`,
   display_name: `Canal ${i}`,
   status: "WORKING",
@@ -74,7 +74,7 @@ describe("listSelectableChannels — a capacidade de mandar texto livre", () => 
     const canais = await listSelectableChannels(db, "org-1");
 
     expect(canais).toHaveLength(LINHAS.length);
-    for (const [i, provider] of PROVIDERS_DE_ENVIO_AUTOMATIZADO.entries()) {
+    for (const [i, provider] of PROVIDERS_DE_MENSAGEM.entries()) {
       expect(canais[i]?.aceitaMensagemLivre).toBe(capabilitiesOf(provider).freeformOutsideWindow);
     }
     // A matriz precisa DISTINGUIR: se todos respondessem igual, o teste acima

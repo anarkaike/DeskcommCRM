@@ -32,7 +32,6 @@ import Link from "next/link";
 import { useAuth } from "@/hooks/auth/AuthProvider";
 import { useT } from "@/hooks/i18n/useT";
 import { ROLE_RANK } from "@/lib/auth/types";
-import { isWhatsAppChannel } from "@/lib/channels/capabilities";
 import type { ConexaoCaida } from "@/lib/channels/health";
 
 /**
@@ -50,8 +49,6 @@ export function ConexaoCaidaBanner({ caidas }: { caidas: ConexaoCaida[] }) {
     || (activeOrg !== null && ROLE_RANK[activeOrg.role] >= ROLE_RANK.admin);
   const uma = caidas.length === 1 ? caidas[0] : null;
   const precisaEscanear = caidas.some((c) => c.status === "SCAN_QR_CODE");
-  const provedores = new Set(caidas.map((conexao) => isWhatsAppChannel(conexao.provider) ? "WhatsApp" : "Telegram"));
-  const rotuloDoCanal = provedores.size === 1 ? [...provedores][0] : "canais";
 
   return (
     <div
@@ -64,7 +61,7 @@ export function ConexaoCaidaBanner({ caidas }: { caidas: ConexaoCaida[] }) {
         <span>
           {uma ? (
             <>
-              {isWhatsAppChannel(uma.provider) ? "WhatsApp" : "Telegram"} <strong className="font-semibold">{uma.apelido}</strong>{" "}
+              WhatsApp <strong className="font-semibold">{uma.apelido}</strong>{" "}
               {t("está desconectado")}
             </>
           ) : (
@@ -72,11 +69,7 @@ export function ConexaoCaidaBanner({ caidas }: { caidas: ConexaoCaida[] }) {
               <strong className="font-semibold">
                 {caidas.length} {t("conexões")}
               </strong>{" "}
-              {rotuloDoCanal === "canais"
-                ? t("de canais de mensagem estão desconectados")
-                : rotuloDoCanal === "Telegram"
-                  ? t("de Telegram estão desconectadas")
-                  : t("de WhatsApp estão desconectadas")}
+              {t("de WhatsApp estão desconectadas")}
             </>
           )}
           {` — ${t("nenhuma mensagem entra nem sai.")}`}

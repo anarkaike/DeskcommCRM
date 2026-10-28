@@ -71,7 +71,7 @@ function canal(over: Partial<ChannelSession> = {}): ChannelSession {
   };
 }
 
-const SELETOR = "Filtrar por canal de atendimento";
+const SELETOR = "Filtrar por número de WhatsApp";
 
 beforeEach(() => {
   setOrg("agent", "own_and_unassigned");
@@ -198,7 +198,7 @@ describe("InboxFilters — seletor de número e o filtro órfão", () => {
   /**
    * ⭐ O caso que o canal excluído criou: sobrou UM número, o filtro aponta para
    * o que sumiu. Pela regra dos "2+" o seletor sumiria levando junto o único
-   * jeito de voltar para "Todos os canais" — e o inbox seguiria filtrado,
+   * jeito de voltar para "Todos os números" — e o inbox seguiria filtrado,
    * possivelmente vazio, sem nada na tela explicando.
    */
   it("filtro aponta para número que saiu da lista: o seletor FICA e nomeia o número removido", () => {
@@ -209,7 +209,7 @@ describe("InboxFilters — seletor de número e o filtro órfão", () => {
     );
     const seletor = screen.getByLabelText(SELETOR);
     expect(seletor).toBeInTheDocument();
-    expect(seletor).toHaveTextContent("Canal removido");
+    expect(seletor).toHaveTextContent("Número removido");
   });
 
   /**
@@ -264,13 +264,13 @@ describe("InboxFilters — seletor de número e o filtro órfão", () => {
     expect(screen.queryByLabelText("Filtrar por tag")).not.toBeInTheDocument();
   });
 
-  it("filtro que casa com a lista: nada de 'Canal removido'", () => {
+  it("filtro que casa com a lista: nada de 'Número removido'", () => {
     setOrg("manager", "all");
     canaisRef.current = [canal(), canal({ id: "canal-2", display_name: "Suporte" })];
     render(<InboxFilters value={{ ...VALUE, channel_session_id: "canal-2" }} onChange={() => {}} />);
     const seletor = screen.getByLabelText(SELETOR);
     expect(seletor).toHaveTextContent("Suporte");
-    expect(seletor).not.toHaveTextContent("Canal removido");
+    expect(seletor).not.toHaveTextContent("Número removido");
   });
 
   /**
@@ -285,6 +285,6 @@ describe("InboxFilters — seletor de número e o filtro órfão", () => {
     render(
       <InboxFilters value={{ ...VALUE, channel_session_id: "canal-1" }} onChange={() => {}} />,
     );
-    expect(screen.queryByText("Canal removido")).not.toBeInTheDocument();
+    expect(screen.queryByText("Número removido")).not.toBeInTheDocument();
   });
 });

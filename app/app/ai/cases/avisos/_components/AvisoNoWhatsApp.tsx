@@ -66,7 +66,6 @@ import { CheckCircle, PaperPlaneTilt, WarningOctagon } from "@/lib/ui/icons";
 
 import { AlertasDoAviso } from "./AlertasDoAviso";
 import { EntregasDoAviso } from "./EntregasDoAviso";
-import { TelegramCaseAlertDestination } from "@/components/ai/TelegramCaseAlertDestination";
 
 /**
  * As duas recusas do teste que NÃO são código de entrega.
@@ -80,11 +79,7 @@ const FRASE_EXTRA_DO_TESTE = {
 } as const;
 
 const RASCUNHO_VAZIO = {
-  canal: "",
-  telefone: "",
-  rotulo: "",
-  ligado: false,
-  respostaWhatsappHabilitada: false,
+  canal: "", telefone: "", rotulo: "", ligado: false, respostaWhatsappHabilitada: false,
 };
 type Rascunho = typeof RASCUNHO_VAZIO;
 
@@ -127,13 +122,6 @@ export function AvisoNoWhatsApp() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="text-2xl font-semibold">{t("Avisos de casos")}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("Escolha um destino ativo para avisar a equipe quando um caso humano for aberto.")}
-        </p>
-      </div>
-      <TelegramCaseAlertDestination />
       <AlertasDoAviso avisos={estado.avisos} />
 
       {/* ⚠️ `key` e não `useEffect`: o formulário é CONTROLADO, e preenchê-lo de
@@ -328,9 +316,7 @@ function FormularioDoAviso({ estado }: { estado: EstadoDoAviso }) {
             {t("Responder casos por este WhatsApp")}
           </Label>
           <p className="text-xs text-muted-foreground">
-            {t(
-              "Permite usar RESPONDER ou PERGUNTAR no número que recebe os avisos. Desligado por padrão.",
-            )}
+            {t("Permite usar RESPONDER ou PERGUNTAR no número que recebe os avisos. Desligado por padrão.")}
           </p>
         </div>
       </div>

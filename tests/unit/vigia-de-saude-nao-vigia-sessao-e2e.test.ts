@@ -205,7 +205,7 @@ describe("o vigia de saúde ignora a sessão de seed (#1032)", () => {
     const conexoes = await listarConexoesCaidas(duble.admin as never, "org-1");
 
     expect(conexoes).toEqual([
-      { id: "sess-real", apelido: "Comercial", status: "STOPPED", provider: "waha" },
+      { id: "sess-real", apelido: "Comercial", status: "STOPPED" },
     ]);
   });
 });

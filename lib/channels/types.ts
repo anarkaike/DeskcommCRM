@@ -15,7 +15,7 @@ import type { ContatoDoAparelho } from "@/lib/waha/client";
 // e o lint de canal reprovaria o caminho.
 export type { OutboundMedia, ContatoDoAparelho };
 
-export type ChannelProvider = "waha" | "meta_cloud" | "zernio" | "zernio_social" | "wacalls" | "datafy" | "telegram";
+export type ChannelProvider = "waha" | "meta_cloud" | "zernio" | "zernio_social" | "wacalls" | "datafy";
 
 /**
  * Os providers que transportam MENSAGEM — o subconjunto sobre o qual a matriz
@@ -62,8 +62,6 @@ export interface ChannelCapabilities {
   costPerMessage: boolean;
   /** O atendente pode editar e apagar para todos uma mensagem já enviada. */
   alteraMensagemEnviada: boolean;
-  /** Este provider já tem consumidores seguros para disparos automatizados? */
-  automatedOutbound: boolean;
   /**
    * O canal deixa LER, em bloco e paginado, a AGENDA DE CONTATOS do aparelho
    * pareado — o que o número da empresa salvou no celular?
@@ -103,8 +101,6 @@ export interface RecipientInput {
    * `waIdentity.startsWith("lid:")` — justo o caso que a regra protege.
    */
   waLid?: string | null | undefined;
-  /** Endereço da conversa fornecido pelo canal, quando aplicável. */
-  providerConversationId?: string | null;
 }
 
 /** Contato compartilhado (vcard) — só `kind: "contact"`. */
@@ -145,8 +141,6 @@ export interface ChannelTenantScope {
 }
 
 export interface OutboundEnvelope extends ChannelTenantScope {
-  /** Autor do envio; canais podem reservar recursos por superfície. */
-  actorType?: string;
   /** Callback interno: revalida a origem depois do preparo assíncrono e antes do transporte. */
   beforeSend?: () => Promise<void>;
   /** Identificador da sessão/número no provider (WAHA: nome da sessão). */

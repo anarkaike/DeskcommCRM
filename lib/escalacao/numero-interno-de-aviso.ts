@@ -74,7 +74,6 @@ export interface NumeroInternoDeAviso {
   respostaWhatsappHabilitada?: boolean;
   /** `config_aviso_de_caso.channel_session_id` — a conexão que envia os avisos. */
   sessaoId?: string | null;
-  tipoDestino?: "whatsapp" | "telegram" | null;
 }
 
 /**
@@ -159,12 +158,8 @@ export function ehOChatDoAviso(parsed: ChatIdentidade, cfg: NumeroInternoDeAviso
   // `_data.key.remoteJidAlt` do payload — e é por ele que o número cadastrado
   // é reconhecido, porque o transporte resolve o destino por telefone
   // (`<tel>@c.us`) e o `destino_jid` nunca termina em `@lid`.
-  if (
-    (parsed.kind === "phone" || parsed.kind === "lid") &&
-    parsed.phone &&
-    cfg.destino &&
-    phoneLookupVariants(cfg.destino).includes(parsed.phone)
-  ) {
+  if ((parsed.kind === "phone" || parsed.kind === "lid") && parsed.phone && cfg.destino &&
+      phoneLookupVariants(cfg.destino).includes(parsed.phone)) {
     return true;
   }
 
@@ -198,9 +193,7 @@ export async function lerNumeroInternoDeAviso(
   try {
     const r = await db
       .from("config_aviso_de_caso")
-      .select(
-        "telefone_destino, destino_jid, resposta_whatsapp_habilitada, channel_session_id, destino_tipo",
-      )
+      .select("telefone_destino, destino_jid, resposta_whatsapp_habilitada, channel_session_id")
       .eq("organization_id", organizationId)
       .maybeSingle();
     if (r.error) throw new Error(r.error.message);
@@ -221,15 +214,12 @@ export async function lerNumeroInternoDeAviso(
     destino_jid?: string | null;
     resposta_whatsapp_habilitada?: boolean | null;
     channel_session_id?: string | null;
-    destino_tipo?: "whatsapp" | "telegram" | null;
   } | null;
   const valor: NumeroInternoDeAviso = {
-    destino: linha?.destino_tipo === "telegram" ? null : (linha?.telefone_destino ?? null),
-    jid: linha?.destino_tipo === "telegram" ? null : (linha?.destino_jid ?? null),
-    respostaWhatsappHabilitada:
-      linha?.destino_tipo !== "telegram" && linha?.resposta_whatsapp_habilitada === true,
+    destino: linha?.telefone_destino ?? null,
+    jid: linha?.destino_jid ?? null,
+    respostaWhatsappHabilitada: linha?.resposta_whatsapp_habilitada === true,
     sessaoId: linha?.channel_session_id ?? null,
-    tipoDestino: linha?.destino_tipo ?? null,
   };
   _cache.set(organizationId, { at: agora, valor });
   return valor;
@@ -327,12 +317,9 @@ export async function registrarMensagemIgnorada(
     sessionId: contexto.sessionId,
   });
   try {
-    const { error } = await db.rpc(
-      "fn_contar_mensagem_ignorada" as never,
-      {
-        p_org: organizationId,
-      } as never,
-    );
+    const { error } = await db.rpc("fn_contar_mensagem_ignorada" as never, {
+      p_org: organizationId,
+    } as never);
     if (error) {
       logger.warn("[aviso-interno] contador de mensagens ignoradas não avançou", {
         organizationId,

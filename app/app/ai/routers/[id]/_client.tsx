@@ -332,15 +332,15 @@ export function RouterEditorClient({
               />
             </div>
             <div className="space-y-1">
-              <Label>{t("Canal de atendimento")}</Label>
+              <Label>{t("Número de WhatsApp")}</Label>
               <p className="rounded-md border border-border/60 px-3 py-2 text-sm text-muted-foreground">
                 {channel
                   ? `${channel.display_name}${channel.phone_number ? ` · ${channel.phone_number}` : ""}`
-                  : t("Canal removido")}
+                  : t("Número removido")}
               </p>
               <p className="text-xs text-muted-foreground">
                 {t(
-                  "O canal não pode ser trocado depois de criado — crie outro roteador para um canal diferente.",
+                  "O número não pode ser trocado depois de criado — crie outro roteador para um número diferente.",
                 )}
               </p>
             </div>
@@ -353,7 +353,7 @@ export function RouterEditorClient({
               />
               <Label htmlFor="router-active">
                 {isActive
-                  ? t("Ativo — está roteando as conversas deste canal")
+                  ? t("Ativo — está roteando as conversas deste número")
                   : t("Inativo — não roteia nada")}
               </Label>
             </div>

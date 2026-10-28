@@ -21,7 +21,7 @@ const support: NonNullable<AuthUser["support"]> = {
   previous_organization_id: null, expires_at: "2030-01-01T00:00:00Z", name: "Organização",
   locale: "pt-BR", access_mode: "support_readonly", status: "active",
 };
-function view(role: Role, locale: "pt-BR" | "es", who = baseUser, caidas: ConexaoCaida[] = [{ id: "channel", apelido: "Vendas", status: "SCAN_QR_CODE", provider: "waha" }]) {
+function view(role: Role, locale: "pt-BR" | "es", who = baseUser, caidas: ConexaoCaida[] = [{ id: "channel", apelido: "Vendas", status: "SCAN_QR_CODE" }]) {
   return <AuthProvider user={who} activeOrg={{ orgId: "org", name: "Organização", role }}>
     <IdiomaProvider locale={locale}><ConexaoCaidaBanner caidas={caidas} /></IdiomaProvider>
   </AuthProvider>;
@@ -42,7 +42,7 @@ describe.each(["pt-BR", "es"] as const)("alerta de conexão em %s", locale => {
     expect(alert).toHaveTextContent("Vendas");
     expect(within(alert).getByRole("link", { name: copy[locale].qr })).toHaveAttribute("href", "/app/connections");
     expect(within(alert).queryByText(copy[locale].help)).toBeNull();
-    mounted.rerender(view(role, locale, who, [{ id: "channel", apelido: "Vendas", status: "FAILED", provider: "waha" }]));
+    mounted.rerender(view(role, locale, who, [{ id: "channel", apelido: "Vendas", status: "FAILED" }]));
     expect(within(screen.getByRole("alert")).getByRole("link", { name: copy[locale].connections })).toHaveAttribute("href", "/app/connections");
   });
 
@@ -65,21 +65,5 @@ describe.each(["pt-BR", "es"] as const)("alerta de conexão em %s", locale => {
     expect(screen.getByRole("alert")).toBeVisible();
     mounted.rerender(view("agent", locale, baseUser, []));
     expect(screen.queryByRole("alert")).toBeNull();
-  });
-
-  it("identifica Telegram pelo provider e mantém WhatsApp para sessões WAHA", () => {
-    const telegram = { id: "telegram", apelido: "DiskUniformesVendasDev_bot", status: "STOPPED", provider: "telegram" } as ConexaoCaida;
-    const whatsapp = { id: "waha", apelido: "Vendas", status: "SCAN_QR_CODE", provider: "waha" } as ConexaoCaida;
-    const { rerender } = render(view("admin", locale, baseUser, [telegram]));
-    expect(screen.getByRole("alert")).toHaveTextContent("Telegram DiskUniformesVendasDev_bot está desconectado");
-
-    rerender(view("admin", locale, baseUser, [whatsapp]));
-    expect(screen.getByRole("alert")).toHaveTextContent("WhatsApp Vendas está desconectado");
-
-    rerender(view("admin", locale, baseUser, [telegram, { ...telegram, id: "telegram-2" }]));
-    expect(screen.getByRole("alert")).toHaveTextContent(locale === "es" ? "2 conexiones de Telegram están desconectadas" : "2 conexões de Telegram estão desconectadas");
-
-    rerender(view("admin", locale, baseUser, [telegram, whatsapp]));
-    expect(screen.getByRole("alert")).toHaveTextContent(locale === "es" ? "2 conexiones de canales de mensajería están desconectados" : "2 conexões de canais de mensagem estão desconectados");
   });
 });

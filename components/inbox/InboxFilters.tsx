@@ -464,14 +464,14 @@ export function InboxFilters({ value, onChange }: Props) {
                     "h-8 min-w-0 flex-1 rounded-full border-transparent bg-surface-elevated px-3 text-xs shadow-none",
                     value.channel_session_id != null && "border-accent bg-accent-soft text-accent",
                   )}
-                  aria-label={t("Filtrar por canal de atendimento")}
+                  aria-label={t("Filtrar por número de WhatsApp")}
                 >
-                  <SelectValue placeholder={t("Todos os canais")} />
+                  <SelectValue placeholder={t("Todos os números")} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">{t("Todos os canais")}</SelectItem>
+                  <SelectItem value="all">{t("Todos os números")}</SelectItem>
                   {filtroForaDaLista && value.channel_session_id != null && (
-                    <SelectItem value={value.channel_session_id}>{t("Canal removido")}</SelectItem>
+                    <SelectItem value={value.channel_session_id}>{t("Número removido")}</SelectItem>
                   )}
                   {channels?.map((c) => (
                     <SelectItem key={c.id} value={c.id}>

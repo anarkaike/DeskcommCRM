@@ -124,8 +124,6 @@ export interface EntradaDeMensagem {
    * nascia com `source = 'whatsapp'`.
    */
   canal?: string;
-  /** Persist Inbox-only Telegram updates without dispatching automation or AI. */
-  apenasInbox?: boolean;
 }
 
 /**
@@ -172,7 +170,6 @@ export async function aplicarEfeitosPosEntrada(
   }
   await guardarOrigemDaPagina(admin, entrada);
   await abrirDemanda(admin, entrada);
-  if (entrada.apenasInbox) return;
   await avaliarCampanha(admin, entrada);
   const sinal = {
     organizationId: entrada.organizationId,

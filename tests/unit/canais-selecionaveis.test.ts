@@ -174,39 +174,6 @@ describe("listSelectableChannels", () => {
     expect(consulta).not.toContain("wacalls");
   });
 
-  it("oferece Telegram para agente conversacional apenas quando sessão e grants estão ativos", async () => {
-    const telegram = {
-      ...LINHA, id: "telegram-session", display_name: "Atendimento Telegram",
-      status: "WORKING", provider: "telegram", telegram_bot_connection_id: "bot-1",
-      phone_number: null, waha_session_name: null,
-    };
-    const { db, chamadas } = fakeDb([
-      { data: [telegram], error: null },
-      { data: [{ id: "bot-1" }], error: null },
-      { data: [
-        { connection_id: "bot-1", capability: "receive_messages" },
-        { connection_id: "bot-1", capability: "ai_replies" },
-      ], error: null },
-    ]);
-    const canais = await listSelectableChannels(db, "org-1", { purpose: "agent_replies" });
-    expect(canais.map((canal) => canal.id)).toEqual(["telegram-session"]);
-    expect(chamadas[0]?.join(" ")).toContain("telegram");
-  });
-
-  it("mantém Telegram fora do seletor de disparos e exige receive_messages para agente", async () => {
-    const telegram = {
-      ...LINHA, id: "telegram-session", display_name: "Atendimento Telegram",
-      status: "WORKING", provider: "telegram", telegram_bot_connection_id: "bot-1",
-      phone_number: null, waha_session_name: null,
-    };
-    const { db } = fakeDb([
-      { data: [telegram], error: null },
-      { data: [{ id: "bot-1" }], error: null },
-      { data: [{ connection_id: "bot-1", capability: "ai_replies" }], error: null },
-    ]);
-    expect(await listSelectableChannels(db, "org-1", { purpose: "agent_replies" })).toEqual([]);
-  });
-
   it("o apelido continua vencendo tudo", async () => {
     const { db } = fakeDb([
       {

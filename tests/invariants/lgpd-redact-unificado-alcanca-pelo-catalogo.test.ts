@@ -146,10 +146,6 @@ type Decisao =
  * existe mais também reprova (dívida morta cobre o futuro por acidente).
  */
 const DECISOES: Record<string, Decisao> = {
-  mcp_artwork_transfers: {
-    decidida: "manter",
-    razao: "Ticket temporário guarda apenas hash e IDs de escopo por até 15 minutos; mensagem e ponteiro de mídia são redigidos pela cascata, impedindo consumo após anonimização, e FK remove a linha se o contato for apagado.",
-  },
   // ── redigir na função única ───────────────────────────────────────────────
   contacts: {
     decidida: "redigir",

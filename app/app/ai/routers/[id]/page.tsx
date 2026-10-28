@@ -49,7 +49,7 @@ export default async function RouterEditorPage({ params }: { params: Promise<{ i
         .eq("organization_id", activeOrg.orgId)
         .is("archived_at", null)
         .order("name", { ascending: true }),
-      listSelectableChannels(supabase, activeOrg.orgId, { purpose: "agent_replies" }),
+      listSelectableChannels(supabase, activeOrg.orgId),
     ]);
 
   if (!routerRow) notFound();

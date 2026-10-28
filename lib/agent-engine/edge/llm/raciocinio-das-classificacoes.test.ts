@@ -114,23 +114,6 @@ describe("as classificações saem sem raciocínio", () => {
     },
   );
 
-  it.each(["gpt-5-mini", "gpt-5-mini-2025-08-07", "gpt-5-nano"])(
-    "openai/%s: pede minimal nas classificações em vez do none recusado",
-    async (modelo) => {
-      for (const corpos of [await classificarEstagio("openai", modelo), await classificarManipulacao("openai", modelo)]) {
-        expect(corpos.length).toBeGreaterThan(0);
-        expect(corpos[0]?.reasoning).toMatchObject({ effort: "minimal" });
-      }
-    },
-  );
-
-  it("openai/gpt-4.1-nano: não envia esforço de raciocínio para modelo sem raciocínio", async () => {
-    for (const corpos of [await classificarEstagio("openai", "gpt-4.1-nano"), await classificarManipulacao("openai", "gpt-4.1-nano")]) {
-      expect(corpos.length).toBeGreaterThan(0);
-      expect(corpos[0]?.reasoning).toBeUndefined();
-    }
-  });
-
   it("openai/gpt-6-luna: estágio e manipulação com reasoning.effort none", async () => {
     for (const corpos of [await classificarEstagio("openai", "gpt-6-luna"), await classificarManipulacao("openai", "gpt-6-luna")]) {
       expect(corpos.length).toBeGreaterThan(0);

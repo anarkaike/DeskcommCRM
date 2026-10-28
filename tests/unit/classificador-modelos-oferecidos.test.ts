@@ -56,21 +56,6 @@ describe("listClassifierModels", () => {
     ]);
   });
 
-  it("não oferece modelo de embeddings como classificador de intenções", async () => {
-    const out = await listClassifierModels(
-      db({
-        creds: { data: [{ provider: "openai" }] },
-        models: { data: [
-          { provider: "openai", model_id: "gpt-5-mini", supports_embedding: false },
-          { provider: "openai", model_id: "text-embedding-3-small", supports_embedding: true },
-        ] },
-      }),
-      "org1",
-      SEM_PLATAFORMA,
-    );
-    expect(out.map((m) => m.model_id)).toEqual(["gpt-5-mini"]);
-  });
-
   it("a chave da instalação também conta — quem hospeda configurou o .env, não a tela", async () => {
     let pedidos: unknown = null;
     await listClassifierModels(

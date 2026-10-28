@@ -75,7 +75,6 @@ interface Excecao {
  * linhas da OUTRA organização, não uma leitura como superusuário.
  */
 const PROVA_PROPRIA: readonly Excecao[] = [
-  { tabela: "mcp_artwork_transfers", razao: "tests/invariants/mcp-artwork-transfers-acl.test.ts — tickets exclusivos do servidor: RLS habilitada, nenhuma policy cliente, privilégios SELECT/INSERT/UPDATE/DELETE negados a anon e authenticated e leitura real recusada sob ambos os papéis; service_role pode consultar." },
   ...["calendar_resources", "calendar_service_schedule", "calendar_service_professionals", "calendar_service_resources", "calendar_service_calendar_sources", "calendar_service_occurrences", "calendar_service_occurrence_resources", "calendar_service_blocks"].map(tabela => ({ tabela, razao: "tests/invariants/agenda-servicos.test.ts — oito tabelas com linhas positivas no tenant próprio, JWT authenticated de duas organizações e contagem zero do vizinho; INSERT/UPDATE/DELETE diretos recusados mesmo para manager. As RPCs mantêm ator, revisão e FKs compostas." })),
   { tabela: "jev_router_decisions", razao: "tests/invariants/jev-roteador-decisoes.test.ts — dois tenants por JWT: leitura local, zero do vizinho; anon sem leitura, authenticated sem escrita; poda com piso no banco." },
   { tabela: "golden_candidates", razao: "tests/invariants/golden-candidates.test.ts — dois tenants reais por JWT (agent): leitura positiva local e ZERO do vizinho nos dois sentidos, a tabela inteira sem filtro igual à própria, anon recusado, e insert/update/delete de authenticated sem efeito (só o servidor grava)." },
@@ -99,21 +98,6 @@ const PROVA_PROPRIA: readonly Excecao[] = [
   { tabela: "appointment_recovery_receipts", razao: "tests/invariants/agenda-presenca-acl.test.ts — leitura/escrita direta anon/authenticated negadas, escrita service_role negada e RPC service-only valida a tupla org/evento nos dois sentidos A/B" },
   { tabela: "event_service_origins", razao: "tests/invariants/service-event-origin.test.ts — recibo server-only, authenticated sem leitura/escrita, RPC rejeita tenant B real" },
   { tabela: "platform_support_sessions", razao: "tests/invariants/suporte-temporario.test.ts — grant por sessão, readonly e nenhuma escrita direta authenticated" },
-  ...[
-    "telegram_bot_bindings",
-    "telegram_bot_connections",
-    "telegram_bot_surface_capabilities",
-    "telegram_case_alert_deliveries",
-    "telegram_case_interactions",
-    "telegram_case_operators",
-    "telegram_case_pairing_challenges",
-    "telegram_team_group_members",
-    "telegram_team_group_settings",
-    "telegram_webhook_updates",
-  ].map(tabela => ({
-    tabela,
-    razao: "tests/invariants/telegram-team-group-server-only.test.ts — tabela Telegram server-only: RLS habilitada, anon/authenticated sem privilégios efetivos e SELECT barrado com permission denied; service_role retém acesso.",
-  })),
   {
     tabela: "crm_proposal_counters",
     razao:

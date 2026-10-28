@@ -74,7 +74,7 @@ export async function listClassifierModels(
 
   const { data: models, error: modelErr } = await db
     .from("ai_models")
-    .select("provider, model_id, display_name, is_default_for_provider, deprecated_at, supports_embedding")
+    .select("provider, model_id, display_name, is_default_for_provider, deprecated_at")
     .in("provider", [...origemPorProvider.keys()])
     .is("deprecated_at", null)
     .order("provider", { ascending: true })
@@ -82,7 +82,7 @@ export async function listClassifierModels(
     .order("display_name", { ascending: true });
   if (modelErr) throw new Error(`classifier_models_catalog_failed: ${modelErr.message}`);
 
-  const fromCatalog = ((models ?? []) as Array<{ provider: string; model_id: string; display_name: string | null; supports_embedding?: boolean }>).filter((m) => !m.supports_embedding).map(
+  const fromCatalog = ((models ?? []) as Array<{ provider: string; model_id: string; display_name: string | null }>).map(
     (m) => ({
       provider: m.provider,
       model_id: m.model_id,

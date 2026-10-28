@@ -32,12 +32,6 @@ vi.mock("@/hooks/ai/useAvisoDeCaso", () => ({
   useTestarAvisoDeCaso: () => ({ mutateAsync: vi.fn(), isPending: false, data: undefined }),
 }));
 
-// Este teste verifica a tela WhatsApp legada; a consulta do seletor Telegram
-// tem suíte própria e não deve iniciar uma chamada real durante estes renders.
-vi.mock("@/components/ai/TelegramCaseAlertDestination", () => ({
-  TelegramCaseAlertDestination: () => null,
-}));
-
 import { AvisoNoWhatsApp } from "@/app/app/ai/cases/avisos/_components/AvisoNoWhatsApp";
 
 const CANAL_QR = "11111111-1111-4111-8111-111111111111";
@@ -60,20 +54,8 @@ function estado(patch: Partial<EstadoDoAviso> = {}): EstadoDoAviso {
       atualizado_em: "2026-09-18T12:00:00.000Z",
     },
     conexoes: [
-      {
-        id: CANAL_QR,
-        nome: "Plantão",
-        status: "WORKING",
-        aceitaMensagemLivre: true,
-        atendeClientes: false,
-      },
-      {
-        id: CANAL_OFICIAL,
-        nome: "Oficial",
-        status: "WORKING",
-        aceitaMensagemLivre: false,
-        atendeClientes: true,
-      },
+      { id: CANAL_QR, nome: "Plantão", status: "WORKING", aceitaMensagemLivre: true, atendeClientes: false },
+      { id: CANAL_OFICIAL, nome: "Oficial", status: "WORKING", aceitaMensagemLivre: false, atendeClientes: true },
     ],
     avisos: [],
     pode_ligar: true,
@@ -83,15 +65,8 @@ function estado(patch: Partial<EstadoDoAviso> = {}): EstadoDoAviso {
   };
 }
 
-function montar(
-  dados: EstadoDoAviso | undefined,
-  extra: { isLoading?: boolean; error?: unknown } = {},
-) {
-  consulta.mockReturnValue({
-    data: dados,
-    isLoading: extra.isLoading ?? false,
-    error: extra.error ?? null,
-  });
+function montar(dados: EstadoDoAviso | undefined, extra: { isLoading?: boolean; error?: unknown } = {}) {
+  consulta.mockReturnValue({ data: dados, isLoading: extra.isLoading ?? false, error: extra.error ?? null });
   return render(
     <QueryClientProvider client={new QueryClient()}>
       <AvisoNoWhatsApp />
@@ -111,13 +86,7 @@ describe("o seletor de conexão", () => {
     montar(
       estado({
         conexoes: [
-          {
-            id: CANAL_OFICIAL,
-            nome: "Oficial",
-            status: "WORKING",
-            aceitaMensagemLivre: false,
-            atendeClientes: true,
-          },
+          { id: CANAL_OFICIAL, nome: "Oficial", status: "WORKING", aceitaMensagemLivre: false, atendeClientes: true },
         ],
         config: null,
       }),
@@ -199,9 +168,7 @@ describe("os avisos de estado viram frase", () => {
     expect(screen.getByTestId("alerta-descarte_acontecendo").textContent).toContain(
       "não chega ao CRM",
     );
-    expect(screen.getByTestId("alerta-descarte_acontecendo").textContent).not.toContain(
-      "RESPONDER",
-    );
+    expect(screen.getByTestId("alerta-descarte_acontecendo").textContent).not.toContain("RESPONDER");
     unmount();
     montar(descarte(1));
     expect(screen.getByTestId("alerta-descarte_acontecendo").textContent).toContain("RESPONDER");
