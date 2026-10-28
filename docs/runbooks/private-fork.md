@@ -4,10 +4,32 @@ A branch `main` do fork é a integração compartilhada e a origem de releases p
 O repositório oficial é uma fonte de leitura. A autorização para publicar no fork não
 inclui publicação, PR, comentário ou release no oficial.
 
+## Branches de trabalho
+
+- `main`: base oficial atualizada mais correções operacionais comuns do fork.
+  Os experimentos Telegram e MCP não ficam ativos nesta branch.
+- `codex/telegram`: `main` atualizada mais a integração Telegram. É a branch ativa
+  do checkout WSL compartilhado até terminar esse trabalho.
+- `codex/mcp-externo-review`: `main` atualizada mais o experimento MCP, congelado
+  para revisão posterior. Código específico WordPress/Servinder não está aceito;
+  o objetivo de produto continua sendo conexão MCP genérica por URL/autenticação.
+
+Quando chegar código oficial: fazer fetch do remote de leitura, integrar em
+`main` sem reescrever histórico e então fazer merge de `main` em **ambas** as
+branches de trabalho. Não integrar uma feature na outra. Concluir retornando o
+checkout compartilhado a `codex/telegram`. Não atualizar silenciosamente branches
+por reset/rebase, nem descartar um experimento ao atualizar sua base.
+
+O trabalho congelado fica no worktree MCP identificado e bloqueado. Todas as
+sessões de desenvolvimento corrente usam o mesmo checkout Telegram e banco local.
+A entrada de uma feature em `main` e sua ativação na VPS dependem de aceite próprio.
+A antiga release acumulada `cbdd43a69e` foi substituída por essa separação e não deve
+ser ativada. Os históricos anteriores permanecem recuperáveis.
+
 ## Desenvolvimento
 
 1. Confirmar checkout, `git status`, remotes, branch, stashes e worktrees.
-2. Trabalhar no checkout WSL compartilhado, em `main`, com banco local e hot reload.
+2. Trabalhar no checkout WSL compartilhado, na branch ativa `codex/telegram`, com banco local e hot reload.
 3. Antes de reconciliar: salvar bundle de todas as refs, patches do índice e do
    working tree, arquivos não rastreados e inventário dos worktrees. Guardar fora
    do checkout, com acesso restrito. Arquivos de ambiente permanecem no seu host.
