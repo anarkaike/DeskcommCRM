@@ -62054,7 +62054,7 @@ alter table public.system_update_runs
 comment on column public.system_update_runs.force_requested is
   'Pedido restrito de reaplicar a atualização pelo agente do host; ausência ou false preserva o caminho normal.';
 
--- Reconciled Servinder source: supabase/migrations/20261021072100_9009_telegram_bot_connections.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072100_9700_telegram_bot_connections.sql
 -- manifest: **Registro isolado de bots Telegram por tenant.** Guarda tokens cifrados e bindings de produto em domínio próprio; conexão validada ainda não ativa webhook nem concede papel ou acesso a dados.
 
 create table if not exists public.telegram_bot_connections (
@@ -62219,7 +62219,7 @@ $$;
 revoke execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) from public, anon, authenticated;
 grant execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072200_9010_telegram_webhook_lifecycle.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072200_9701_telegram_webhook_lifecycle.sql
 -- manifest: **Ciclo de vida do webhook por bot Telegram.** Persiste apenas o token de caminho opaco e o segredo de verificação cifrado; ativa/pausa/desconecta sem descartar updates pendentes.
 
 alter table public.telegram_bot_connections
@@ -62247,7 +62247,7 @@ comment on column public.telegram_bot_connections.webhook_path_token is
 comment on column public.telegram_bot_connections.webhook_secret_encrypted is
   'secret_token do header X-Telegram-Bot-Api-Secret-Token cifrado com fn_encrypt_oauth.';
 
--- Reconciled Servinder source: supabase/migrations/20261021072300_9011_telegram_webhook_updates.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072300_9702_telegram_webhook_updates.sql
 -- manifest: **Entrada autenticada e idempotente de updates Telegram.** Persiste o payload para consumo/reprocessamento antes de responder 200 ao Telegram.
 
 create table if not exists public.telegram_webhook_updates (
@@ -62283,7 +62283,7 @@ grant select, insert, update, delete on public.telegram_webhook_updates to servi
 comment on table public.telegram_webhook_updates is
   'Fila durável e idempotente dos updates aceitos pelo webhook Telegram. Payload tem dados pessoais e só é acessível via service_role; consumidores devem apagar/reter conforme política LGPD.';
 
--- Reconciled Servinder source: supabase/migrations/20261021072400_9012_telegram_inbox_runtime.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072400_9703_telegram_inbox_runtime.sql
 -- manifest: **Canal Telegram no ledger compartilhado da Inbox.** Cria sessão
 -- sem número/engine WAHA, identidade opaca de contato e conversa `telegram`;
 -- não habilita grupos, IA nem envio proativo.
@@ -62348,7 +62348,7 @@ end; $$;
 revoke all on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid) from public, anon, authenticated;
 grant execute on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072500_9013_telegram_conversation_destination.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072500_9704_telegram_conversation_destination.sql
 -- manifest: **O destino de resposta Telegram fica na conversa.** A Inbox monta o adapter a partir de conversations.provider_conversation_id; sem persistir o chat_id ali, toda resposta humana era recusada como destinatário ausente.
 
 drop function if exists public.fn_upsert_telegram_conversation(uuid, uuid, uuid);
@@ -62377,7 +62377,7 @@ end; $$;
 revoke all on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text) from public, anon, authenticated;
 grant execute on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072600_9014_telegram_inbox_groups.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072600_9705_telegram_inbox_groups.sql
 -- manifest: **Grupos Telegram entram na Inbox por allowlist explícita.** IDs e títulos descobertos vêm de updates reais; conversas permanecem humanas e não acionam IA.
 
 alter table public.channel_session_groups
@@ -62448,7 +62448,7 @@ $$;
 revoke all on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text) from public, anon, authenticated;
 grant execute on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072700_9015_telegram_edit_active_bot.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072700_9706_telegram_edit_active_bot.sql
 -- manifest: Mantém o bot Telegram ativo ao salvar alterações de bindings e capacidades; edição não interrompe webhook nem sessão.
 create or replace function public.fn_telegram_bot_save_bindings(
   p_organization_id uuid,
@@ -62509,7 +62509,7 @@ $$;
 revoke execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) from public, anon, authenticated;
 grant execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072800_9016_telegram_human_cases_operators.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072800_9707_telegram_human_cases_operators.sql
 -- manifest: Pareia operadores Telegram a usuários ativos do tenant para consulta e resposta auditável de casos humanos.
 create table if not exists public.telegram_case_pairing_challenges (
   id uuid primary key default gen_random_uuid(),
@@ -62595,7 +62595,7 @@ $$;
 revoke execute on function public.fn_telegram_case_operator_pair(uuid,uuid,text,text) from public, anon, authenticated;
 grant execute on function public.fn_telegram_case_operator_pair(uuid,uuid,text,text) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072900_9017_telegram_selector_metadata_rls.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072900_9708_telegram_selector_metadata_rls.sql
 -- manifest: Metadados mínimos dos bots Telegram ficam legíveis para membros do tenant via RLS, sem expor tokens cifrados.
 
 -- O seletor de canais usa o cliente autenticado. A tabela de bots continua sem
@@ -62623,7 +62623,7 @@ create policy telegram_bot_surface_capabilities_select_tenant
   for select to authenticated
   using (organization_id in (select public.fn_user_org_ids()));
 
--- Reconciled Servinder source: supabase/migrations/20261026220000_9018_telegram_team_groups.sql
+-- Reconciled Servinder source: supabase/migrations/20261026220000_9709_telegram_team_groups.sql
 -- manifest: Configura capacidades internas independentes por grupo Telegram sem alterar a allowlist da Inbox.
 create unique index if not exists channel_session_groups_org_id_uidx
   on public.channel_session_groups (organization_id, id);
@@ -62714,7 +62714,7 @@ comment on table public.telegram_team_group_settings is
 comment on column public.telegram_team_group_settings.membership_state is
   'Security state. AI and case writes require healthy; Telegram Bot API does not provide a complete member inventory.';
 
--- Reconciled Servinder source: supabase/migrations/20261026220100_9019_telegram_team_cases_runtime.sql
+-- Reconciled Servinder source: supabase/migrations/20261026220100_9710_telegram_team_cases_runtime.sql
 -- manifest: Telegram team cases runtime.
 
 alter table public.telegram_team_group_settings
@@ -62796,7 +62796,7 @@ comment on table public.telegram_case_alert_deliveries is
 comment on table public.telegram_case_interactions is
   'Idempotent Telegram group action/callback correlation; no message body retained.';
 
--- Reconciled Servinder source: supabase/migrations/20261026220200_9020_shared_case_alert_destination.sql
+-- Reconciled Servinder source: supabase/migrations/20261026220200_9711_shared_case_alert_destination.sql
 -- manifest: use one canonical case-alert destination for WhatsApp or a Telegram team group.
 alter table public.config_aviso_de_caso
   add column if not exists destino_tipo text not null default 'whatsapp',
@@ -62949,7 +62949,7 @@ comment on column public.config_aviso_de_caso.destino_tipo is
 comment on column public.config_aviso_de_caso.telegram_group_setting_id is
   'Selected Telegram team group when destino_tipo=telegram; group capabilities remain on telegram_team_group_settings.';
 
--- Reconciled Servinder source: supabase/migrations/20261026220300_9021_mcp_externo_chave_aprovacao.sql
+-- Reconciled Servinder source: supabase/migrations/20261026220300_9712_mcp_externo_chave_aprovacao.sql
 -- manifest: Servinder WooCommerce MCP uses a separate encrypted secret to sign customer-confirmed writes. Bearer credential and approval authority remain independent.
 alter table public.organizations
   add column if not exists mcp_externo_aprovacao_encrypted bytea,
@@ -62968,7 +62968,7 @@ comment on column public.organizations.mcp_externo_aprovacao_last4 is
 
 notify pgrst, 'reload schema';
 
--- Reconciled Servinder source: supabase/migrations/20261026220400_9022_telegram_group_case_read_grant.sql
+-- Reconciled Servinder source: supabase/migrations/20261026220400_9713_telegram_group_case_read_grant.sql
 -- manifest: Separe consulta de casos das permissões de resposta para permitir operadores observadores em grupos Telegram.
 alter table public.telegram_team_group_members
   add column if not exists can_read_cases boolean not null default false;
@@ -62994,12 +62994,12 @@ end $$;
 comment on column public.telegram_team_group_members.can_read_cases is
   'Allows a paired, reviewed operator to list and inspect cases in this group without permission to act on them.';
 
--- Reconciled Servinder source: supabase/migrations/20261026220500_9023_telegram_numeric_group_ids.sql
+-- Reconciled Servinder source: supabase/migrations/20261026220500_9714_telegram_numeric_group_ids.sql
 -- manifest: Permite IDs numéricos de grupos Telegram na tabela compartilhada de grupos de sessão.
 
 -- channel_session_groups_group_chat_id_check is consolidated in its first final definition.
 
--- Reconciled Servinder source: supabase/migrations/20261026220600_9024_telegram_team_assistant_runtime.sql
+-- Reconciled Servinder source: supabase/migrations/20261026220600_9715_telegram_team_assistant_runtime.sql
 -- manifest: Enable the isolated, read-only Telegram team case assistant.
 alter table public.telegram_case_interactions
   drop constraint if exists telegram_case_interactions_action_check;
@@ -63011,7 +63011,7 @@ alter table public.telegram_case_interactions
 comment on column public.telegram_team_group_settings.team_assistant_enabled is
   'Opt-in read-only assistant for verified members replying to case cards in this Telegram group; it cannot mutate cases or message customers.';
 
--- Reconciled Servinder source: supabase/migrations/20261027090000_9025_telegram_member_review_callbacks.sql
+-- Reconciled Servinder source: supabase/migrations/20261027090000_9716_telegram_member_review_callbacks.sql
 -- manifest: Registra aprovação segura de participantes Telegram como observadores e correlaciona callbacks de aprovação.
 alter table public.telegram_team_group_members
   add column if not exists approval_state text not null default 'pending';
@@ -63046,7 +63046,7 @@ comment on column public.telegram_team_group_members.approval_state is
 comment on column public.telegram_case_interactions.target_telegram_user_id is
   'Observed Telegram participant targeted by a short-lived approve/deny membership callback.';
 
--- Reconciled Servinder source: supabase/migrations/20261027090100_9026_mcp_artwork_transfers.sql
+-- Reconciled Servinder source: supabase/migrations/20261027090100_9717_mcp_artwork_transfers.sql
 -- manifest: Short-lived signed transfers of private inbound message media to commercial integrations.
 alter table public.organizations
   add column if not exists mcp_externo_artwork_encrypted bytea,

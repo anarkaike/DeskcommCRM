@@ -127,9 +127,6 @@ const ESCRITA_QUE_E_TRABALHO_DE_ATENDENTE: ReadonlyArray<string> = [
   // grava uma linha que uma PESSOA precisa revisar e enviar (`consumed_at` só
   // depois do clique); ela não envia nada ao cliente, então não muda a casa.
   "crm_create_conversation_draft",
-  // Preparação do anexo inbound: requer contato/conversa confiáveis do turno,
-  // dono da mensagem e bridge HMAC configurado; não configura o CRM nem envia o arquivo.
-  "crm_create_artwork_transfer",
 ];
 
 function alcancavelPeloAgente(requiresRole: Role): boolean {

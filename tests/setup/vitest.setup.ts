@@ -23,8 +23,9 @@ function stripQuotes(value: string): string {
   return value;
 }
 
-// Load .env and .env.local before importing any app code that validates env vars
-for (const envFile of [".env", ".env.local"]) {
+// Local credentials are opt-in. The default unit run uses the placeholders below,
+// preventing real Redis/Supabase access and environment-dependent test results.
+for (const envFile of process.env.DESKCOMM_UNIT_USE_LOCAL_ENV === "1" ? [".env", ".env.local"] : []) {
   try {
     const path = resolve(process.cwd(), envFile);
     const content = readFileSync(path, "utf-8");
@@ -55,8 +56,8 @@ for (const envFile of [".env", ".env.local"]) {
  * ("semeia placeholders pras vars que faltam e revalida"), aqui restrito ao
  * setup de teste — a lógica de produção não é tocada.
  *
- * `??=` de propósito: valor real de `.env`/`.env.local` SEMPRE vence, então
- * localmente nada muda. E o host `.invalid` é reservado por RFC 2606: se algum
+ * `??=` preserva valores definidos explicitamente pelo próprio teste.
+ * O host `.invalid` é reservado por RFC 2606: se algum
  * teste tentar usar isto como URL de verdade, a chamada falha alto em vez de
  * bater em algum lugar existente.
  */
