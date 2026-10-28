@@ -15,6 +15,10 @@
  *
  * O dublê recebe o pedido e a spec confere o que chegou: o nome e o idioma do
  * modelo, a lista de valores na ordem do contrato e a imagem do cabeçalho.
+ *
+ * ENVIO RÁPIDO (migration 0711): o número oficial oferece "Rápido" no ritmo; a
+ * confirmação diz em quantos minutos sai; e — com o dublê — UMA rodada do cron
+ * manda a lista inteira, cada um com o próprio nome, e conclui a campanha.
  */
 import * as fs from "node:fs";
 import * as http from "node:http";
@@ -41,6 +45,8 @@ interface Creds {
 
 const SUFIXO = String(Date.now()).slice(-7);
 const ETIQUETA = `e2e-campanha-modelo-${SUFIXO}`;
+const ETIQUETA_RAPIDA = `e2e-campanha-rapida-${SUFIXO}`;
+const NOMES_DA_RAPIDA = ["Ana", "Bea", "Carla"];
 const MODELO = "oferta_e2e_campanha";
 const PAUSADO = "pausado_e2e_campanha";
 const IMAGEM_SALVA = "https://example.com/e2e/cafeteira.jpg";
@@ -64,7 +70,13 @@ function dubleDoProvedor(): http.Server {
       const url = new URL(req.url ?? "/", URL_DO_DUBLE);
       recebidos.push({ metodo: req.method ?? "", caminho: url.pathname, corpo: bruto ? JSON.parse(bruto) : null });
       res.writeHead(201, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ success: true, data: { messageId: `wamid.E2E${SUFIXO}`, conversationId: "6a3580f68fcd5b3a5b946bf8" } }));
+      // wamid único por envio: `(organization_id, external_id)` é único em messages.
+      res.end(
+        JSON.stringify({
+          success: true,
+          data: { messageId: `wamid.E2E${SUFIXO}-${recebidos.length}`, conversationId: "6a3580f68fcd5b3a5b946bf8" },
+        }),
+      );
     });
   });
 }
@@ -87,6 +99,7 @@ test.describe("Campanhas — número oficial manda modelo aprovado", () => {
   let creds: Creds;
   let sessaoId = "";
   let campanhaId = "";
+  let campanhaRapidaId = "";
 
   test.beforeAll(async () => {
     creds = JSON.parse(fs.readFileSync(CREDS_PATH, "utf8")) as Creds;
@@ -110,6 +123,15 @@ test.describe("Campanhas — número oficial manda modelo aprovado", () => {
       .single();
     if (erroSessao) throw new Error(`sessão oficial: ${erroSessao.message}`);
     sessaoId = (sessao as { id: string }).id;
+    // A janela do número cobre o dia inteiro: a spec não pode reprovar por rodar à noite.
+    const { error: erroKnobs } = await admin.from("channel_knobs").insert({
+      organization_id: creds.org_id,
+      channel_session_id: sessaoId,
+      window_start_hour: 0,
+      window_end_hour: 24,
+      allow_sunday: true,
+    });
+    if (erroKnobs) throw new Error(`janela do número: ${erroKnobs.message}`);
 
     const { error: erroModelos } = await admin.from("meta_templates").insert([
       {
@@ -158,19 +180,31 @@ test.describe("Campanhas — número oficial manda modelo aprovado", () => {
       },
     ]);
     if (erroContatos) throw new Error(`contatos: ${erroContatos.message}`);
+
+    const { error: erroRapida } = await admin.from("contacts").insert(
+      NOMES_DA_RAPIDA.map((nome, i) => ({
+        organization_id: creds.org_id,
+        display_name: `${nome} E2E ${SUFIXO}`,
+        phone_number: `+55118${SUFIXO}${i}`,
+        tags: [ETIQUETA_RAPIDA],
+      })),
+    );
+    if (erroRapida) throw new Error(`contatos da rápida: ${erroRapida.message}`);
   });
 
   test.afterAll(async () => {
-    if (campanhaId) {
-      await admin.from("campaign_recipients").delete().eq("campaign_id", campanhaId);
-      await admin.from("campaigns").delete().eq("id", campanhaId);
+    for (const id of [campanhaId, campanhaRapidaId].filter(Boolean)) {
+      await admin.from("campaign_recipients").delete().eq("campaign_id", id);
+      await admin.from("campaigns").delete().eq("id", id);
     }
-    const { data } = await admin.from("contacts").select("id").contains("tags", [ETIQUETA]);
-    const ids = ((data as Array<{ id: string }> | null) ?? []).map((c) => c.id);
-    if (ids.length) {
-      await admin.from("messages").delete().in("contact_id", ids);
-      await admin.from("conversations").delete().in("contact_id", ids);
-      await admin.from("contacts").delete().in("id", ids);
+    for (const etiqueta of [ETIQUETA, ETIQUETA_RAPIDA]) {
+      const { data } = await admin.from("contacts").select("id").contains("tags", [etiqueta]);
+      const ids = ((data as Array<{ id: string }> | null) ?? []).map((c) => c.id);
+      if (ids.length) {
+        await admin.from("messages").delete().in("contact_id", ids);
+        await admin.from("conversations").delete().in("contact_id", ids);
+        await admin.from("contacts").delete().in("id", ids);
+      }
     }
     if (sessaoId) {
       await admin.from("meta_templates").delete().eq("channel_session_id", sessaoId);
@@ -306,4 +340,151 @@ test.describe("Campanhas — número oficial manda modelo aprovado", () => {
     });
     await page.screenshot({ path: path.join(EVIDENCIA, "05-teste-enviado.png"), fullPage: true });
   });
+
+  test("o número oficial oferece o envio rápido, e a confirmação diz em quanto tempo sai", async ({ page }) => {
+    await login(page, creds.users.manager!.email, creds.password);
+    await page.goto(`/app/campaigns/${campanhaId}`);
+
+    const velocidade = page.getByTestId("velocidade-da-campanha");
+    await expect(velocidade).toBeVisible({ timeout: 30_000 });
+    // Campanha que já existia é gradual: a rápida é escolha, nunca padrão.
+    await expect(velocidade.getByRole("radio", { name: "Gradual" })).toBeChecked();
+    await velocidade.getByRole("radio", { name: "Rápido" }).check();
+    // Na rápida o intervalo não vale, e a tela não o oferece.
+    await expect(page.locator("#r-intervalo")).toHaveCount(0);
+    await page.getByRole("button", { name: "Salvar ritmo" }).click();
+    await expect(page.getByText("Ritmo salvo.")).toBeVisible({ timeout: 30_000 });
+
+    const { data: salva } = await admin.from("campaigns").select("velocidade").eq("id", campanhaId).single();
+    expect((salva as { velocidade: string }).velocidade).toBe("rapida");
+
+    await page.getByRole("button", { name: "Iniciar envio" }).click();
+    await expect(page.getByText(/Envio rápido: sai tudo em cerca de 1 min\./)).toBeVisible();
+    await page.screenshot({ path: path.join(EVIDENCIA, "06-envio-rapido-escolhido.png"), fullPage: true });
+    await page.getByRole("button", { name: "Voltar" }).click();
+  });
+
+  test("⭐ envio rápido: uma rodada manda a lista inteira, cada um com o seu nome", async ({ page }) => {
+    test.skip(!TEM_DUBLE, `precisa do dublê do provedor: ZERNIO_API_BASE_URL=${URL_DO_DUBLE} ZERNIO_ACCOUNT_ID=${CONTA}`);
+    await login(page, creds.users.manager!.email, creds.password);
+    await page.goto("/app/campaigns/new");
+
+    await page.locator("#nome").fill(`Rápida E2E ${SUFIXO}`);
+    await page.locator("#canal").selectOption(sessaoId);
+    await expect(page.getByTestId("modelo-da-campanha")).toBeVisible({ timeout: 30_000 });
+    await page.locator("#modelo").selectOption(`${MODELO}|pt_BR`);
+    await page.getByLabel("Origem: {{1}}", { exact: true }).selectOption("contact_first_name");
+    await page.getByLabel("Origem: {{2}}", { exact: true }).selectOption("fixed");
+    await page.getByLabel("Texto fixo: {{2}}", { exact: true }).fill("Cafeteira Elétrica");
+    await page.getByLabel("Com alguma destas etiquetas").fill(ETIQUETA_RAPIDA);
+    await page.getByTestId("velocidade-da-campanha").getByRole("radio", { name: "Rápido" }).check();
+    await page.getByRole("button", { name: "Salvar rascunho" }).click();
+    await page.waitForURL(/\/app\/campaigns\/[0-9a-f-]{36}$/, { timeout: 60_000 });
+    campanhaRapidaId = page.url().split("/").pop()!;
+
+    await page.getByRole("button", { name: "Preparar lista" }).click();
+    await expect(page.getByRole("button", { name: "Iniciar envio" })).toBeVisible({ timeout: 60_000 });
+    await page.getByRole("button", { name: "Iniciar envio" }).click();
+    await expect(page.getByText(/Envio rápido: sai tudo em cerca de 1 min\./)).toBeVisible();
+    await page.getByRole("button", { name: "Confirmar" }).click();
+    await expect
+      .poll(async () => {
+        const { data } = await admin.from("campaigns").select("status").eq("id", campanhaRapidaId).single();
+        return (data as { status: string } | null)?.status;
+      }, { timeout: 30_000 })
+      .toBe("running");
+
+    // UMA rodada do cron — no gradual sairia uma pessoa; na rápida, todas.
+    const antes = recebidos.length;
+    const tick = await page.request.post("/api/v1/cron/campaign-worker", {
+      headers: { authorization: `Bearer ${process.env.INTERNAL_SECRET ?? "e2e-placeholder-nao-e-segredo"}` },
+    });
+    expect(tick.ok(), `rodada: ${tick.status()} ${await tick.text()}`).toBe(true);
+
+    const enviados = recebidos.slice(antes).filter((r) => r.caminho === "/v1/inbox/conversations");
+    expect(enviados).toHaveLength(NOMES_DA_RAPIDA.length);
+    const primeiros = enviados.map((r) => (r.corpo!.templateParams as string[])[0]).sort();
+    expect(primeiros).toEqual([...NOMES_DA_RAPIDA].sort());
+
+    const { data: destinatarios } = await admin
+      .from("campaign_recipients")
+      .select("status")
+      .eq("campaign_id", campanhaRapidaId);
+    expect(((destinatarios ?? []) as Array<{ status: string }>).map((d) => d.status)).toEqual(
+      NOMES_DA_RAPIDA.map(() => "sent"),
+    );
+    const { data: depois } = await admin.from("campaigns").select("status").eq("id", campanhaRapidaId).single();
+    expect((depois as { status: string }).status).toBe("completed");
+
+    // Pela tela: os contadores mostram a lista inteira enviada.
+    await page.reload();
+    await expect(page.getByText("Enviadas", { exact: true }).locator("xpath=following-sibling::p[1]")).toHaveText(
+      String(NOMES_DA_RAPIDA.length),
+      { timeout: 30_000 },
+    );
+    await page.screenshot({ path: path.join(EVIDENCIA, "07-rapida-lista-inteira-numa-rodada.png"), fullPage: true });
+  });
+});
+
+
+test("campanha de texto prepara a reserva e o dado preenchido pelo mesmo fluxo da tela", async ({ page }) => {
+  test.setTimeout(150_000);
+  const { randomUUID } = await import("node:crypto");
+  const { credenciaisSupabaseDeTeste } = await import("../../scripts/lib/env-de-teste");
+  const { loginComoAdmin, lerCreds } = await import("./helpers/login-admin");
+  const ambiente = credenciaisSupabaseDeTeste();
+  expect(["127.0.0.1", "localhost"]).toContain(new URL(ambiente.url).hostname);
+  const db = createClient(ambiente.url, ambiente.serviceRole, { auth: { persistSession: false } });
+  const cc = JSON.parse(fs.readFileSync(CREDS_PATH, "utf8")) as Creds;
+  const sufixo = randomUUID().slice(0, 8);
+  const nome = `Reserva campanha ${sufixo}`;
+  const etiqueta = `reserva-${sufixo}`;
+  let canal = "";
+  let campanha = "";
+  const contatos: string[] = [];
+  try {
+    const sessao = await db.from("channel_sessions").insert({ organization_id: cc.org_id, display_name: nome, waha_session_name: `reserva-${sufixo}`, status: "WORKING", webhook_secret_encrypted: "\\x00" }).select("id").single();
+    expect(sessao.error).toBeNull();
+    canal = sessao.data!.id as string;
+    for (const [i, pessoa] of ["Carla Souza", null].entries()) {
+      const contato = await db.from("contacts").insert({ organization_id: cc.org_id, name: pessoa, display_name: null, phone_number: `+551197${Date.now().toString().slice(-6)}${i}`, tags: [etiqueta] }).select("id").single();
+      expect(contato.error).toBeNull();
+      contatos.push(contato.data!.id as string);
+    }
+    await loginComoAdmin(page, lerCreds());
+    // Uma organização no seed: o seletor é oculto por contrato. Canal,
+    // público e snapshot abaixo conferem a empresa real da sessão.
+    await page.goto("/app/campaigns/new");
+    await page.locator("#nome").fill(nome);
+    await page.locator("#canal").selectOption(canal);
+    await expect(page.getByText('Para não depender do dado, ponha um texto de reserva: {{primeiro_nome|"aluno"}}.')).toBeVisible();
+    await page.getByRole("textbox", { name: "Texto da mensagem" }).fill('Oi {{primeiro_nome|"aluno"}}!');
+    await page.getByLabel("Com alguma destas etiquetas").fill(etiqueta);
+    await page.getByRole("button", { name: "Ver quantas pessoas" }).click();
+    await expect(page.getByText(/2\s*podem receber/)).toBeVisible();
+    await page.getByRole("button", { name: "Salvar rascunho" }).click();
+    await page.waitForURL(/\/app\/campaigns\/[0-9a-f-]{36}$/);
+    campanha = page.url().split("/").pop()!;
+    await page.getByRole("button", { name: "Preparar lista" }).click();
+    await expect(page.getByRole("button", { name: "Enviar teste" })).toBeVisible();
+    const snapshot = await db.from("campaign_recipients").select("rendered_body, status").eq("organization_id", cc.org_id).eq("campaign_id", campanha);
+    expect(snapshot.error).toBeNull();
+    expect(snapshot.data?.map((r) => r.rendered_body).sort()).toEqual(["Oi Carla!", "Oi aluno!"]);
+    expect(snapshot.data?.map((r) => r.status)).toEqual(["pending", "pending"]);
+    fs.mkdirSync("evidence/antigos-core-3405", { recursive: true });
+    await page.screenshot({ path: "evidence/antigos-core-3405/campanha-preparada.png", fullPage: true });
+  } finally {
+    const erros: boolean[] = [];
+    for (const [tabela, coluna, valor] of [
+      ["campaign_recipients", "campaign_id", campanha], ["campaigns", "name", nome],
+      ...contatos.map((id) => ["contacts", "id", id]), ["channel_sessions", "id", canal],
+    ]) {
+      if (!valor) continue;
+      try {
+        const { error } = await db.from(tabela!).delete().eq("organization_id", cc.org_id).eq(coluna!, valor!);
+        erros.push(error !== null);
+      } catch { erros.push(true); }
+    }
+    expect(erros.every((erro) => !erro), "limpeza da fixture da campanha").toBe(true);
+  }
 });
