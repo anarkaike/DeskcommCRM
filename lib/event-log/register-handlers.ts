@@ -31,6 +31,7 @@ import { avisoDeEtapaHandler } from "@/lib/leads/aviso-de-etapa.handler";
 import { avisoAoDonoDaCarteira } from "@/lib/carteira/aviso-ao-dono";
 import { comandaDoGanhoHandler } from "@/lib/financeiro/comanda-do-ganho.handler";
 import { avisoDeCasoAoSuporteHandler } from "@/lib/escalacao/aviso-ao-suporte.handler";
+import { telegramCaseAlertHandler } from "@/lib/escalacao/telegram-case-alert.handler";
 import { avisoDePropostaNoWhatsAppHandler } from "@/lib/propostas/aviso-no-whatsapp.handler";
 import { cobrancaSinalHandler } from "@/lib/cobranca/sinal.handler";
 import { registerHandler } from "@/lib/event-log/dispatcher";
@@ -90,6 +91,7 @@ export function ensureHandlersRegistered(): void {
   // e cuja falha custa um follow-up perdido. Ele também é o único handler que
   // adia a si mesmo quando o dreno está rodando dentro de uma requisição.
   registerHandler(avisoDeCasoAoSuporteHandler);
+  registerHandler(telegramCaseAlertHandler);
   // Mesmo critério do de cima: sai por rede de terceiro, depois de quem só
   // escreve no banco. Consome o MESMO evento que a notificação do navegador.
   registerHandler(avisoDePropostaNoWhatsAppHandler);

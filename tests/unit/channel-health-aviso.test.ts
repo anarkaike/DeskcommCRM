@@ -50,6 +50,16 @@ describe("quando avisar", () => {
     expect(a?.title).toMatch(/QR/);
   });
 
+  it("identifica Telegram como Telegram nos avisos de saúde", () => {
+    const aviso = avisoDaConexao(
+      { reachable: true, status: "FAILED", detail: null },
+      "Bot de vendas",
+      "Telegram",
+    );
+    expect(aviso?.title).toContain('Telegram "Bot de vendas"');
+    expect(aviso?.title).not.toContain("WhatsApp");
+  });
+
   it("FAILED e STOPPED são críticos — nada entra nem sai", () => {
     for (const s of ["FAILED", "STOPPED"]) {
       const a = avisoDaConexao({ reachable: true, status: s, detail: null }, "Vendas");

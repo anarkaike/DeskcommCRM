@@ -36,6 +36,7 @@
  * estaria trocando a implementação de um nada.
  */
 import { z } from "zod";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
   chamarFerramentaRemota,
@@ -46,6 +47,74 @@ import type { EscolhaRemota } from "@/lib/mcp/servidor-externo/ids";
 import { hostDoEndpoint, type ServidorMcpExterno } from "@/lib/mcp/servidor-externo/registro";
 import type { McpToolDefinition } from "@/lib/mcp/types";
 import { logger } from "@/lib/logger";
+import { assinarAprovacaoServinder, criarDesafioMutacaoServinder, validarConfirmacaoCotacaoNoHistorico, validarDesafioMutacaoNoHistorico } from "@/lib/mcp/servidor-externo/aprovacao";
+
+
+const TOOLS_DE_COTACAO_COM_CONFIRMANTE = new Set([
+  "servinder_woocommerce_orders_create",
+  "servinder_woocommerce_order_items_add",
+  "servinder_woocommerce_order_items_update",
+  "servinder_woocommerce_order_items_remove",
+]);
+const TOOLS_COM_APROVACAO_DE_MUTACAO = new Set([
+  "servinder_woocommerce_customers_create",
+  "servinder_woocommerce_customers_update",
+  "servinder_woocommerce_orders_update",
+  "servinder_woocommerce_orders_archive",
+  "servinder_woocommerce_orders_restore",
+]);
+interface OpcoesRemotasSeguras extends OpcoesDeChamada {
+  supabase?: SupabaseClient; organizationId?: string; contatoDoTurno?: string;
+  conversaDoTurno?: string; chaveAprovacao?: string; servidorInterno?: ServidorMcpExterno;
+}
+function hashSeguro(value: unknown): value is string { return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value); }
+async function autorizarMutacaoGenerica(nome: string, args: Record<string, unknown>, opcoes: OpcoesRemotasSeguras | undefined): Promise<{ assinatura?: string; argumentosRemotos?: Record<string, unknown>; desafio?: { codigo: string; expiraEm: string; textoConfirmacao: string } } | null> {
+  if (!TOOLS_COM_APROVACAO_DE_MUTACAO.has(nome)) return null;
+  const { supabase, organizationId, contatoDoTurno, conversaDoTurno, chaveAprovacao } = opcoes ?? {};
+  if (!supabase || !organizationId || !contatoDoTurno || !conversaDoTurno || !chaveAprovacao) throw new Error("customer_confirmation_unavailable");
+  if (typeof args.idempotency_key !== "string" || args.idempotency_key.trim().length < 16) throw new Error("idempotency_key_required");
+
+  const expiraEm = typeof args.approval_expires_at === "string" ? args.approval_expires_at : undefined;
+  const desafio = criarDesafioMutacaoServinder({ chave: chaveAprovacao, organizationId, contatoId: contatoDoTurno, conversaId: conversaDoTurno, acao: nome, payload: args, ...(expiraEm ? { expiraEm } : {}) });
+  if (args.confirm !== true || args.confirmed_by !== "customer" || typeof args.approval_code !== "string" || !expiraEm) {
+    return { desafio };
+  }
+  if (args.approval_code.toUpperCase() !== desafio.codigo) throw new Error("mutation_approval_payload_mismatch");
+
+  const { data: conversa, error: conversaError } = await supabase.from("conversations").select("id").eq("organization_id", organizationId).eq("id", conversaDoTurno).eq("contact_id", contatoDoTurno).maybeSingle();
+  if (conversaError || !conversa) throw new Error("customer_confirmation_conversation_unavailable");
+  const { data: rows, error: historyError } = await supabase.from("messages").select("direction,sent_via,body,sent_at,created_at").eq("organization_id", organizationId).eq("conversation_id", conversaDoTurno).eq("contact_id", contatoDoTurno).order("sent_at", { ascending: false, nullsFirst: false }).order("created_at", { ascending: false }).limit(500);
+  if (historyError || !rows) throw new Error("customer_confirmation_history_unavailable");
+  const validation = validarDesafioMutacaoNoHistorico({ chave: chaveAprovacao, organizationId, contatoId: contatoDoTurno, conversaId: conversaDoTurno, acao: nome, payload: args, expiraEm, codigo: args.approval_code, mensagens: [...rows].reverse().map((row) => ({ direction: String(row.direction), sent_via: typeof row.sent_via === "string" ? row.sent_via : null, body: typeof row.body === "string" ? row.body : null, created_at: String(row.sent_at ?? row.created_at ?? "") })) });
+  if (!validation.ok) throw new Error(validation.motivo);
+  const argumentosRemotos = { ...args };
+  delete argumentosRemotos.approval_code;
+  delete argumentosRemotos.approval_expires_at;
+  if (nome === "servinder_woocommerce_customers_create" || nome === "servinder_woocommerce_customers_update") {
+    delete argumentosRemotos.confirm;
+    delete argumentosRemotos.confirmed_by;
+  }
+  return { argumentosRemotos, assinatura: assinarAprovacaoServinder({ chave: chaveAprovacao, contatoId: contatoDoTurno, acao: nome, payload: argumentosRemotos }) };
+}
+
+async function autorizarMutacaoDeCotacao(nome: string, args: Record<string, unknown>, opcoes: OpcoesRemotasSeguras | undefined): Promise<string | null> {
+  if (!TOOLS_DE_COTACAO_COM_CONFIRMANTE.has(nome)) return null;
+  const { supabase, organizationId, contatoDoTurno, conversaDoTurno, chaveAprovacao, servidorInterno } = opcoes ?? {};
+  const quoteId = args.quote_id, code = args.confirmation_code, quoteHash = args.confirmation_hash;
+  if (args.confirm !== true || args.confirmed_by !== "customer" || typeof args.idempotency_key !== "string" || args.idempotency_key.trim().length < 16) throw new Error("customer_confirmation_fields_invalid");
+  if (!supabase || !organizationId || !contatoDoTurno || !conversaDoTurno || !chaveAprovacao || !servidorInterno) throw new Error("customer_confirmation_unavailable");
+  if (typeof quoteId !== "string" || !/^[0-9a-f-]{36}$/i.test(quoteId) || typeof code !== "string" || !/^[A-F0-9]{8}$/i.test(code) || !hashSeguro(quoteHash) || code.toUpperCase() !== quoteHash.slice(0, 8).toUpperCase()) throw new Error("quote_confirmation_fields_invalid");
+  const { data: conversa, error: conversaError } = await supabase.from("conversations").select("id").eq("organization_id", organizationId).eq("id", conversaDoTurno).eq("contact_id", contatoDoTurno).maybeSingle();
+  if (conversaError || !conversa) throw new Error("customer_confirmation_conversation_unavailable");
+  const quoteResult = await chamarFerramentaRemota(servidorInterno, "servinder_woocommerce_quote_get", { quote_id: quoteId }, { ...(opcoes?.fetch ? { fetch: opcoes.fetch } : {}), ...(opcoes?.cabecalhos ? { cabecalhos: opcoes.cabecalhos } : {}) });
+  const quote = (quoteResult.dados && typeof quoteResult.dados === "object" ? quoteResult.dados : JSON.parse(quoteResult.texto || "{}")) as Record<string, unknown>;
+  if (quote.status !== "quoted" || !hashSeguro(quote.confirmation_hash) || quote.confirmation_hash.toLowerCase() !== quoteHash.toLowerCase() || quote.confirmation_code !== code.toUpperCase() || typeof quote.expires_at !== "string" || Date.parse(quote.expires_at) <= Date.now()) throw new Error("quote_not_active_or_confirmation_mismatch");
+  const { data: rows, error: historyError } = await supabase.from("messages").select("direction,sent_via,body,sent_at,created_at").eq("organization_id", organizationId).eq("conversation_id", conversaDoTurno).eq("contact_id", contatoDoTurno).order("sent_at", { ascending: false, nullsFirst: false }).order("created_at", { ascending: false }).limit(500);
+  if (historyError || !rows) throw new Error("customer_confirmation_history_unavailable");
+  const validation = validarConfirmacaoCotacaoNoHistorico([...rows].reverse().map((row) => ({ direction: String(row.direction), sent_via: typeof row.sent_via === "string" ? row.sent_via : null, body: typeof row.body === "string" ? row.body : null, created_at: String(row.sent_at ?? row.created_at ?? "") })), code, quote);
+  if (!validation.ok) throw new Error(validation.motivo);
+  return assinarAprovacaoServinder({ chave: chaveAprovacao, contatoId: contatoDoTurno, acao: nome, payload: args });
+}
 
 /**
  * O esqueleto do JSON Schema que o MCP exige (`type: object`) em Zod.
@@ -113,7 +182,7 @@ export function definirFerramentasRemotas(
   // JUNTA DE TESTE, mesmo sentido do `fetchImpl` de `allowlistedFetch`: o stub
   // do ERP mora em `127.0.0.1`, faixa que o guard anti-SSRF recusa. Quem chama
   // em produção NÃO passa isto, e a saída é `fetchDeSaida` (item 4).
-  opcoes?: OpcoesDeChamada,
+  opcoes?: OpcoesRemotasSeguras,
 ): McpToolDefinition[] {
   const definicoes: McpToolDefinition[] = [];
   const anunciadas = new Map(ferramentas.map((f) => [f.name, f]));
@@ -149,12 +218,19 @@ export function definirFerramentasRemotas(
       requiresRole: "agent",
       requiresScope: ehLeitura ? "mcp:read" : "mcp:write",
       handler: async (input) => {
-        const resultado = await chamarFerramentaRemota(
-          servidor,
-          ferramenta.name,
-          (input ?? {}) as Record<string, unknown>,
-          opcoes,
-        );
+        const argumentos = (input ?? {}) as Record<string, unknown>;
+        const autorizacaoGenerica = await autorizarMutacaoGenerica(ferramenta.name, argumentos, opcoes);
+        if (autorizacaoGenerica?.desafio) return {
+          texto: `Nenhuma alteração foi feita. Mostre literalmente este bloco ao cliente e só chame a mesma ferramenta novamente depois que a última mensagem dele for CONFIRMO ${autorizacaoGenerica.desafio.codigo}:\n${autorizacaoGenerica.desafio.textoConfirmacao}`,
+          dados: { status: "customer_confirmation_required", ...autorizacaoGenerica.desafio },
+        };
+        const assinaturaCotacao = await autorizarMutacaoDeCotacao(ferramenta.name, argumentos, { ...opcoes, servidorInterno: servidor });
+        const assinatura = autorizacaoGenerica?.assinatura ?? assinaturaCotacao;
+        const argumentosRemotos = autorizacaoGenerica?.argumentosRemotos ?? argumentos;
+        const resultado = await chamarFerramentaRemota(servidor, ferramenta.name, argumentosRemotos, {
+          ...opcoes,
+          ...(assinatura ? { aprovacaoDaChamada: { ferramenta: ferramenta.name, cabecalho: assinatura } } : {}),
+        });
         return resultado.dados === undefined
           ? { texto: resultado.texto }
           : { texto: resultado.texto, dados: resultado.dados };

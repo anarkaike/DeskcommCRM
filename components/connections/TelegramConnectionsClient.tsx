@@ -17,6 +17,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useT } from "@/hooks/i18n/useT";
+import { usePacingKnobs } from "@/hooks/channels/usePacingKnobs";
+import { AntiBanSheet } from "@/components/connections/AntiBanSheet";
 import { apiClient } from "@/lib/api/client";
 import { ApiError } from "@/lib/api/types";
 import {
@@ -29,11 +31,12 @@ import {
   Play,
   Plus,
   Robot,
+  ShieldCheck,
   Trash,
   UsersThree,
 } from "@/lib/ui/icons";
 import { TelegramOperatorLinks } from "@/components/connections/TelegramOperatorLinks";
-import { GruposSheet } from "@/components/connections/GruposSheet";
+import { TelegramGroupsSheet } from "@/components/connections/TelegramGroupsSheet";
 
 type Surface = "inbox" | "team_alerts" | "human_cases" | "agent_tools" | "mini_app";
 type Binding = { surface: Surface; capabilities: string[] };
@@ -54,6 +57,10 @@ type Health = {
   app_pending_update_count: number | null;
   last_error_at: string | null;
   webhook_matches: boolean;
+  webhook_target_host: string | null;
+  allowed_updates: string[];
+  webhook_delivery_error_code: string | null;
+  missing_webhook_updates: string[];
   checked_at: string;
 };
 type ApiEnvelope<T> = { data: T };
@@ -93,18 +100,43 @@ const SURFACES: SurfaceOption[] = [
       {
         key: "group_messages",
         title: "Mensagens de grupos",
-        detail: "Permite descobrir grupos por updates; cada grupo continua bloqueado até habilitação explícita.",
+        detail:
+          "Permite descobrir grupos por updates; cada grupo continua bloqueado até habilitação explícita.",
+      },
+    ],
+  },
+  {
+    key: "team_alerts",
+    title: "Avisos de casos",
+    detail: "Permite enviar avisos de casos humanos a grupos configurados.",
+    icon: PaperPlaneTilt,
+    capabilities: [
+      {
+        key: "send_alerts",
+        title: "Enviar avisos de casos",
+        detail: "Os avisos só são enviados para grupos autorizados em Conexões.",
+        defaultOn: true,
       },
     ],
   },
   {
     key: "human_cases",
     title: "Casos humanos",
-    detail: "Operadores pareados podem consultar casos abertos e registrar respostas pelo Telegram.",
+    detail:
+      "Operadores pareados podem consultar casos abertos e registrar respostas pelo Telegram.",
     icon: ChatCircle,
     capabilities: [
-      { key: "read_cases", title: "Consultar casos", detail: "Listar casos humanos da organização e ver seus detalhes.", defaultOn: true },
-      { key: "reply_to_cases", title: "Responder casos", detail: "Registrar conclusão ou pedir informação ao cliente; o agente continua o fluxo." },
+      {
+        key: "read_cases",
+        title: "Consultar casos",
+        detail: "Listar casos humanos da organização e ver seus detalhes.",
+        defaultOn: true,
+      },
+      {
+        key: "reply_to_cases",
+        title: "Responder casos",
+        detail: "Registrar conclusão ou pedir informação ao cliente; o agente continua o fluxo.",
+      },
     ],
   },
 ];
@@ -114,7 +146,10 @@ type Selection = Record<Surface, string[]>;
 function padraoInicial(): Selection {
   return {
     inbox: ["receive_messages", "human_replies"],
-    team_alerts: [], human_cases: [], agent_tools: [], mini_app: [],
+    team_alerts: [],
+    human_cases: [],
+    agent_tools: [],
+    mini_app: [],
   };
 }
 
@@ -145,6 +180,8 @@ export function TelegramConnectionsClient() {
   const [selection, setSelection] = useState<Selection>(padraoInicial);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [groupsBot, setGroupsBot] = useState<Bot | null>(null);
+  const [pacingSessionId, setPacingSessionId] = useState<string | null>(null);
+  const pacingItems = usePacingKnobs().data?.items ?? [];
 
   const fetchBots = useCallback(
     () => apiClient.get<ApiEnvelope<{ bots: Bot[] }>>("/api/v1/channels/telegram"),
@@ -238,7 +275,11 @@ export function TelegramConnectionsClient() {
       ...current,
       [surface]: enabled
         ? Array.from(new Set([...current[surface], capability]))
-        : current[surface].filter((item) => item !== capability && !(capability === "receive_messages" && item === "group_messages")),
+        : current[surface].filter(
+            (item) =>
+              item !== capability &&
+              !(capability === "receive_messages" && item === "group_messages"),
+          ),
     }));
   }
 
@@ -261,7 +302,11 @@ export function TelegramConnectionsClient() {
       if (error instanceof ApiError) {
         toast.error(error.message + " (" + error.code + "; ID: " + error.requestId + ")");
       } else if (error instanceof Error && error.name === "TimeoutError") {
-        toast.error(t("A solicitação expirou antes de receber uma resposta. Atualize a tela antes de tentar novamente."));
+        toast.error(
+          t(
+            "A solicitação expirou antes de receber uma resposta. Atualize a tela antes de tentar novamente.",
+          ),
+        );
       } else if (error instanceof TypeError) {
         toast.error(t("Não foi possível alcançar a API. Verifique a conexão e tente novamente."));
       } else {
@@ -272,18 +317,29 @@ export function TelegramConnectionsClient() {
     }
   }
 
-  async function runLifecycle(bot: Bot, action: "activate" | "pause" | "reactivate" | "disconnect" | "delete") {
-    if (action === "delete" && !window.confirm(t("Excluir este bot e remover seu webhook do Telegram?"))) return;
+  async function runLifecycle(
+    bot: Bot,
+    action: "activate" | "pause" | "reactivate" | "disconnect" | "delete",
+  ) {
+    if (
+      action === "delete" &&
+      !window.confirm(t("Excluir este bot e remover seu webhook do Telegram?"))
+    )
+      return;
     setLifecycleConnectionId(bot.id);
     try {
       await apiClient.patch("/api/v1/channels/telegram", { action, connection_id: bot.id });
-      toast.success(t({
-        activate: "Bot ativado e webhook registrado.",
-        reactivate: "Bot reativado e webhook registrado.",
-        pause: "Bot pausado; updates pendentes foram preservados.",
-        disconnect: "Bot desconectado do Telegram; o cadastro foi preservado.",
-        delete: "Bot excluído e webhook removido.",
-      }[action]));
+      toast.success(
+        t(
+          {
+            activate: "Bot ativado e webhook registrado.",
+            reactivate: "Bot reativado e webhook registrado.",
+            pause: "Bot pausado; updates pendentes foram preservados.",
+            disconnect: "Bot desconectado do Telegram; o cadastro foi preservado.",
+            delete: "Bot excluído e webhook removido.",
+          }[action],
+        ),
+      );
       await load(true);
     } catch {
       toast.error(t("Não foi possível alterar o estado do bot Telegram."));
@@ -295,7 +351,9 @@ export function TelegramConnectionsClient() {
   async function checkHealth(bot: Bot) {
     setHealthConnectionId(bot.id);
     try {
-      const result = await apiClient.get<ApiEnvelope<Health>>(`/api/v1/channels/telegram/${bot.id}/health`);
+      const result = await apiClient.get<ApiEnvelope<Health>>(
+        `/api/v1/channels/telegram/${bot.id}/health`,
+      );
       setHealthByBot((current) => ({ ...current, [bot.id]: result.data }));
     } catch {
       toast.error(t("Não foi possível consultar a saúde do webhook Telegram."));
@@ -306,6 +364,13 @@ export function TelegramConnectionsClient() {
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-4" data-testid="telegram-connections">
+      {pacingSessionId !== null && (
+        <AntiBanSheet
+          item={pacingItems.find((item) => item.channel_session.id === pacingSessionId) ?? null}
+          canWrite
+          onClose={() => setPacingSessionId(null)}
+        />
+      )}
       <Card className="min-w-0 overflow-hidden border-accent/20 bg-gradient-to-r from-accent-soft via-surface to-surface p-4 sm:p-5 md:p-7">
         <div className="grid min-w-0 grid-cols-[3.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-3 lg:grid-cols-[3.5rem_minmax(0,1fr)_auto]">
           <div className="flex size-14 items-center justify-center rounded-xl bg-accent text-accent-foreground shadow-sm">
@@ -318,7 +383,7 @@ export function TelegramConnectionsClient() {
             <h2 className="mt-1 text-xl font-semibold tracking-tight text-text md:text-2xl">
               Telegram
             </h2>
-            <p className="mt-1 max-w-2xl break-words text-sm text-text-muted">
+            <p className="mt-1 max-w-2xl text-sm break-words text-text-muted">
               {t("Conecte bots independentes e escolha onde cada um poderá ser usado.")}
             </p>
           </div>
@@ -334,7 +399,11 @@ export function TelegramConnectionsClient() {
           value={String(bots.length).padStart(2, "0")}
           detail={t("Tokens validados")}
         />
-        <Stat label={t("Bots ativos")} value={String(activeCount).padStart(2, "0")} detail={t("Recebimento ativo")} />
+        <Stat
+          label={t("Bots ativos")}
+          value={String(activeCount).padStart(2, "0")}
+          detail={t("Recebimento ativo")}
+        />
       </div>
 
       <Card className="w-full min-w-0 p-3 sm:p-4 md:p-6">
@@ -343,8 +412,10 @@ export function TelegramConnectionsClient() {
             <p className="text-xs font-semibold tracking-[0.14em] text-accent uppercase">
               {t("Conexões e configurações")}
             </p>
-            <h3 className="mt-1 break-words text-lg font-semibold text-text">{t("Bots de Telegram desta organização")}</h3>
-            <p className="mt-1 break-words text-sm text-text-muted">
+            <h3 className="mt-1 text-lg font-semibold break-words text-text">
+              {t("Bots de Telegram desta organização")}
+            </h3>
+            <p className="mt-1 text-sm break-words text-text-muted">
               {t("Cada bot tem credencial e usos configurados separadamente.")}
             </p>
           </div>
@@ -355,12 +426,16 @@ export function TelegramConnectionsClient() {
             onClick={() => void load(true)}
             disabled={refreshing}
           >
-            <ArrowsClockwise size={16} aria-hidden="true" className={refreshing ? "animate-spin" : undefined} />
+            <ArrowsClockwise
+              size={16}
+              aria-hidden="true"
+              className={refreshing ? "animate-spin" : undefined}
+            />
             {refreshing ? t("Atualizando…") : t("Atualizar")}
           </Button>
         </div>
 
-        <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(19rem,0.75fr)]">
+        <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(16rem,1fr)]">
           <div className="flex min-h-56 min-w-0 flex-col gap-3">
             {loading ? (
               <p className="py-10 text-center text-sm text-text-muted">
@@ -372,39 +447,49 @@ export function TelegramConnectionsClient() {
                   <PaperPlaneTilt size={22} aria-hidden="true" />
                 </div>
                 <h5 className="mt-3 font-semibold text-text">{t("Nenhum bot cadastrado")}</h5>
-                <p className="mt-1 max-w-md break-words text-sm text-text-muted">
+                <p className="mt-1 max-w-md text-sm break-words text-text-muted">
                   {t("Valide um token do BotFather para começar a configurar a conexão.")}
                 </p>
               </div>
             ) : (
               bots.map((bot) => (
-                <article key={bot.id} className="w-full min-w-0 rounded-lg border border-border bg-surface p-3 sm:p-4">
+                <article
+                  key={bot.id}
+                  className="w-full min-w-0 rounded-lg border border-border bg-surface p-3 sm:p-4"
+                >
                   <div className="flex items-start gap-3">
                     <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent">
                       <Robot size={19} aria-hidden="true" />
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <h5 className="min-w-0 break-words font-semibold text-text">{bot.display_name}</h5>
-                        <Badge className="shrink-0" variant={bot.status === "active" ? "secondary" : "outline"}>
-                          {t({
-                            draft: "Token validado",
-                            configured: "Configurado",
-                            active: "Ativo",
-                            paused: "Pausado",
-                            disconnected: "Desconectado",
-                            error: "Erro",
-                          }[bot.status])}
+                        <h5 className="min-w-0 font-semibold break-words text-text">
+                          {bot.display_name}
+                        </h5>
+                        <Badge
+                          className="shrink-0"
+                          variant={bot.status === "active" ? "secondary" : "outline"}
+                        >
+                          {t(
+                            {
+                              draft: "Token validado",
+                              configured: "Configurado",
+                              active: "Ativo",
+                              paused: "Pausado",
+                              disconnected: "Desconectado",
+                              error: "Erro",
+                            }[bot.status],
+                          )}
                         </Badge>
                       </div>
                     </div>
                   </div>
                   <div className="mt-3 flex min-w-0 flex-col gap-1 pl-[52px]">
-                    <p className="break-words text-sm text-text-muted">
+                    <p className="text-sm break-words text-text-muted">
                       {bot.bot_username ? `@${bot.bot_username}` : t("Bot Telegram")} ·{" "}
                       {t("token termina em")} {bot.token_last4}
                     </p>
-                    <p className="break-words text-xs text-text-muted">
+                    <p className="text-xs break-words text-text-muted">
                       {bot.bindings.length
                         ? bot.bindings
                             .map(
@@ -416,9 +501,11 @@ export function TelegramConnectionsClient() {
                         : t("Nenhuma superfície selecionada")}
                     </p>
                   </div>
-                  <p className="mt-3 min-w-0 break-words rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-text">
+                  <p className="mt-3 min-w-0 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs break-words text-text">
                     {bot.status === "active"
-                      ? t("Webhook conectado; as atualizações são armazenadas para processamento idempotente.")
+                      ? t(
+                          "Webhook conectado; as atualizações são armazenadas para processamento idempotente.",
+                        )
                       : t("Bot ainda não está recebendo atualizações Telegram.")}
                   </p>
                   {bot.status === "active" ? (
@@ -433,20 +520,43 @@ export function TelegramConnectionsClient() {
                         disabled={healthConnectionId === bot.id}
                         onClick={() => void checkHealth(bot)}
                       >
-                        <ArrowsClockwise size={16} aria-hidden="true" className={healthConnectionId === bot.id ? "animate-spin" : undefined} />
+                        <ArrowsClockwise
+                          size={16}
+                          aria-hidden="true"
+                          className={healthConnectionId === bot.id ? "animate-spin" : undefined}
+                        />
                         <span className="hidden sm:inline">
-                          {healthConnectionId === bot.id ? t("Verificando…") : t("Verificar webhook")}
+                          {healthConnectionId === bot.id
+                            ? t("Verificando…")
+                            : t("Verificar webhook")}
                         </span>
                       </Button>
                       {(() => {
                         const health = healthByBot[bot.id];
                         if (!health) return null;
                         return (
-                          <span className="min-w-0 break-words text-xs text-text-muted" role="status">
+                          <span
+                            className="min-w-0 text-xs break-words text-text-muted"
+                            role="status"
+                          >
                             {health.health === "healthy"
                               ? `${t("Webhook confirmado")} · Telegram: ${health.pending_update_count ?? 0} ${t("updates pendentes")} · CRM: ${health.app_pending_update_count ?? 0} ${t("na fila")}`
                               : t("Webhook com problema. Revise a URL e a entrega no Telegram.")}
-                            {health.last_error_at ? ` · ${t("Último erro")}: ${new Date(health.last_error_at).toLocaleString()}` : ""}
+                            {health.webhook_target_host
+                              ? ` · ${t("Destino")}: ${health.webhook_target_host}`
+                              : ` · ${t("Destino do webhook desconhecido")}`}
+                            {(health.allowed_updates ?? []).length
+                              ? ` · ${t("Updates")}: ${(health.allowed_updates ?? []).join(", ")}`
+                              : ` · ${t("Sem updates permitidos")}`}
+                            {(health.missing_webhook_updates ?? []).length
+                              ? ` · ${t("Faltam updates")}: ${(health.missing_webhook_updates ?? []).join(", ")}`
+                              : ""}
+                            {health.webhook_delivery_error_code
+                              ? ` · ${t("Falha de entrega")}: ${t(health.webhook_delivery_error_code)}`
+                              : ""}
+                            {health.last_error_at
+                              ? ` · ${t("Último erro")}: ${new Date(health.last_error_at).toLocaleString()}`
+                              : ""}
                           </span>
                         );
                       })()}
@@ -466,8 +576,40 @@ export function TelegramConnectionsClient() {
                       <Gear size={16} aria-hidden="true" />
                       <span className="hidden sm:inline">{t("Configurar")}</span>
                     </Button>
-                    <TelegramOperatorLinks botId={bot.id} botName={bot.display_name} active={bot.status === "active" && bot.bindings.some((binding) => binding.surface === "human_cases" && binding.capabilities.includes("read_cases") && binding.capabilities.includes("reply_to_cases"))} />
-                    {bot.status === "active" && bot.channel_session_id && bot.bindings.some((binding) => binding.capabilities.includes("group_messages")) ? (
+                    {bot.channel_session_id ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setPacingSessionId(bot.channel_session_id)}
+                        disabled={
+                          !pacingItems.some(
+                            (item) => item.channel_session.id === bot.channel_session_id,
+                          )
+                        }
+                      >
+                        <ShieldCheck size={16} aria-hidden="true" />
+                        {t("Proteção de envio")}
+                      </Button>
+                    ) : null}
+                    <TelegramOperatorLinks
+                      botId={bot.id}
+                      botName={bot.display_name}
+                      active={
+                        bot.status === "active" &&
+                        bot.bindings.some(
+                          (binding) =>
+                            binding.surface === "human_cases" &&
+                            binding.capabilities.includes("read_cases") &&
+                            binding.capabilities.includes("reply_to_cases"),
+                        )
+                      }
+                    />
+                    {bot.status === "active" &&
+                    bot.channel_session_id &&
+                    bot.bindings.some((binding) =>
+                      binding.capabilities.includes("group_messages"),
+                    ) ? (
                       <Button
                         type="button"
                         variant="outline"
@@ -511,7 +653,9 @@ export function TelegramConnectionsClient() {
                           <span className="hidden sm:inline">{t("Ativar")}</span>
                         </Button>
                       ) : null}
-                      {bot.status === "paused" || bot.status === "disconnected" || bot.status === "error" ? (
+                      {bot.status === "paused" ||
+                      bot.status === "disconnected" ||
+                      bot.status === "error" ? (
                         <Button
                           type="button"
                           size="sm"
@@ -569,7 +713,9 @@ export function TelegramConnectionsClient() {
                 <Plus size={18} aria-hidden="true" />
               </div>
               <div className="min-w-0">
-                <h4 className="break-words font-semibold text-text">{t(bots.length === 0 ? "Adicionar bot" : "Adicionar outro bot")}</h4>
+                <h4 className="font-semibold break-words text-text">
+                  {t(bots.length === 0 ? "Adicionar bot" : "Adicionar outro bot")}
+                </h4>
                 <p className="mt-0.5 text-sm text-text-muted">
                   {t("A conexão é validada com o Telegram antes de ser salva.")}
                 </p>
@@ -683,7 +829,9 @@ export function TelegramConnectionsClient() {
             })}
           </div>
           <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-text">
-            {t("Grupos precisam de habilitação e permissão explícitas e não acionam IA. Casos humanos exigem pareamento de cada operador com uma conta ativa do CRM; o código expira em cinco minutos. Campanhas proativas, ferramentas de agente e Mini Apps permanecem desativadas.")}
+            {t(
+              "Grupos precisam de habilitação e permissão explícitas e não acionam IA. Casos humanos exigem pareamento de cada operador com uma conta ativa do CRM; o código expira em cinco minutos. Campanhas proativas, ferramentas de agente e Mini Apps permanecem desativadas.",
+            )}
           </p>
           <DialogFooter>
             <Button
@@ -704,8 +852,8 @@ export function TelegramConnectionsClient() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      {groupsBot?.channel_session_id ? (
-        <GruposSheet channelId={groupsBot.channel_session_id} providerLabel="Telegram" onClose={() => setGroupsBot(null)} />
+      {groupsBot ? (
+        <TelegramGroupsSheet connectionId={groupsBot.id} onClose={() => setGroupsBot(null)} />
       ) : null}
     </div>
   );
@@ -718,10 +866,10 @@ function Stat({ label, value, detail }: { label: string; value: string; detail: 
         <PaperPlaneTilt size={18} aria-hidden="true" />
       </div>
       <div className="min-w-0">
-        <p className="break-words text-xs leading-snug text-text-muted">{label}</p>
-        <p className="text-xl font-semibold leading-tight text-text">{value}</p>
+        <p className="text-xs leading-snug break-words text-text-muted">{label}</p>
+        <p className="text-xl leading-tight font-semibold text-text">{value}</p>
       </div>
-      <span className="col-start-2 min-w-0 break-words text-xs text-text-muted sm:col-start-auto sm:text-right">
+      <span className="col-start-2 min-w-0 text-xs break-words text-text-muted sm:col-start-auto sm:text-right">
         {detail}
       </span>
     </Card>

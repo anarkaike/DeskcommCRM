@@ -71,6 +71,15 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: deskcomm-agent-worker
+    # O worker tem até 30s para drenar; o Docker precisa esperar esse prazo.
+    stop_grace_period: 45s
+    # O DSN do container vale para TODOS os consumidores (skills, derivação,
+    # roteadores), não só para o pool principal do agent-engine.
+    # A expansão ocorre depois do env_file e o exec mantém Node como PID 1.
+    command:
+      - /bin/sh
+      - -c
+      - 'export SUPABASE_DB_URL="$${SUPABASE_DB_URL_WORKER:-$$SUPABASE_DB_URL}"; exec node --import tsx workers/agent-worker/main.ts'
     restart: unless-stopped
     env_file:
       - path: .env
@@ -81,6 +90,10 @@ services:
       # dentro do container, localhost é o próprio worker — o WAHA está na rede
       # do compose (serviço waha, porta interna 3000). Sobrepõe o .env.local.
       WAHA_API_BASE_URL: http://waha:3000
+      # O worker em Docker não pode usar 127.0.0.1/localhost para Supabase local.
+      # Dev local: host-gateway alcança a porta publicada pelo Supabase CLI.
+      # Quem usa Supabase remoto pode definir SUPABASE_SERVER_URL_WORKER no .env.
+      SUPABASE_SERVER_URL: ${SUPABASE_SERVER_URL_WORKER:-http://host.docker.internal:54321}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

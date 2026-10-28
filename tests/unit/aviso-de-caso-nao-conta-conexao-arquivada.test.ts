@@ -58,7 +58,7 @@ const MARCA_DE_APENDICE = /^-- ---- .* \(migration \d+\) ----/m;
 
 /** A última definição da função que o Postgres usa. */
 function ultimaDefinicao(texto: string): string {
-  const nome = "create or replace function public.fn_definir_aviso_de_caso";
+  const nome = "create or replace function public.fn_definir_aviso_de_caso(";
   // `lastIndexOf`, nunca `find`: o baseline é dump + apêndice e a ÚLTIMA é a que
   // fica de pé. Ancorar na primeira mede a definição morta.
   const i = texto.lastIndexOf(nome);

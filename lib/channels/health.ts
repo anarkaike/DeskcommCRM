@@ -97,7 +97,7 @@ export interface SaudeObservada {
  * com dois números ligados "WhatsApp desconectado" não diz QUAL — e a primeira
  * pergunta de quem lê o aviso é exatamente essa.
  */
-export function avisoDaConexao(saude: SaudeObservada, apelido: string): AvisoDeConexao | null {
+export function avisoDaConexao(saude: SaudeObservada, apelido: string, canal = "WhatsApp"): AvisoDeConexao | null {
   if (!saude.reachable) {
     // "Não deu para perguntar" tem DOIS motivos que pedem ações opostas, e
     // tratá-los igual foi o defeito medido: numa VPS real a chave do WAHA foi
@@ -141,7 +141,7 @@ export function avisoDaConexao(saude: SaudeObservada, apelido: string): AvisoDeC
     return {
       kind: "qr_rescan",
       severity: "critical",
-      title: `WhatsApp "${apelido}" desconectado — precisa escanear o QR de novo`,
+      title: `${canal} "${apelido}" desconectado — precisa escanear o QR de novo`,
       body: "Enquanto isso não acontecer, nenhuma mensagem entra nem sai por esta conexão.",
       episodio: status,
     };
@@ -150,7 +150,7 @@ export function avisoDaConexao(saude: SaudeObservada, apelido: string): AvisoDeC
   return {
     kind: "channel_number_alert",
     severity: "critical",
-    title: `WhatsApp "${apelido}" fora do ar (${status})`,
+    title: `${canal} "${apelido}" fora do ar (${status})`,
     body: "Nenhuma mensagem entra nem sai por esta conexão até ela voltar.",
     episodio: status,
   };
@@ -256,8 +256,9 @@ export async function sincronizarSaudeDaConexao(
    * ela mesma poderia ter aberto.
    */
   origem: "varredura" | "empurrao" = "varredura",
+  canal = "WhatsApp",
 ): Promise<"avisado" | "ja_avisado" | "resolvido" | "sem_mudanca"> {
-  const aviso = avisoDaConexao(saude, apelido);
+  const aviso = avisoDaConexao(saude, apelido, canal);
 
   const { data: linha } = await admin
     .from("channel_session_health")

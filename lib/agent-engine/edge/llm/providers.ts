@@ -225,12 +225,15 @@ export function modeloOpenAIRaciocina(modelId: string): boolean {
  * onde não existe. `minimal` NÃO vira `low` no Luna: medido acima, lá `low` é mais
  * lento até que o padrão, e `none` é o único que entrega o que o operador pediu.
  */
-function esforcoAceitoPeloModelo(
+export function esforcoAceitoPeloModelo(
   modelId: string,
   esforco: EsforcoDeRaciocinioOpenAI,
 ): EsforcoDeRaciocinioOpenAI {
   if (esforco !== 'none' && esforco !== 'minimal') return esforco;
   const id = modelId.toLowerCase();
+  // A primeira geração GPT-5 (incluindo snapshots) começa em minimal.
+  // Não confundir gpt-5-mini com gpt-5.4-mini, que aceita none.
+  if (/^gpt-5(?:-mini|-nano)?(?:-\d{4}-\d{2}-\d{2})?$/.test(id)) return 'minimal';
   const major = /^gpt-(\d+)/.exec(id)?.[1];
   if (major === undefined || Number(major) < 6) return esforco;
   const aceitaNone = id === 'gpt-6-luna' || id === 'gpt-6-sol';
