@@ -69,9 +69,6 @@ export const MENSAGEM_DA_RECUSA: Record<CodigoDeRecusa, string> = {
   validation_failed: "Confira o endereço e a chave: um dos dois passou do tamanho aceito.",
   endpoint_inseguro:
     "Endereço recusado por segurança: informe um servidor público em https, sem rede interna, sem localhost e sem segredo colado no endereço.",
-  approval_key_invalid: "A chave de aprovação deve ter pelo menos 32 caracteres.",
-  artwork_key_invalid: "A chave HMAC do bridge deve ter pelo menos 32 caracteres.",
-  artwork_blog_invalid: "Informe um ID de blog válido e configure a chave HMAC junto com o servidor MCP.",
   upstream_unavailable: "Não foi possível falar com o servidor.",
   erro_ao_gravar: "Não foi possível salvar. Tente de novo em instantes.",
   sem_servidor:
@@ -87,9 +84,6 @@ export function CadastroDoServidorMcpExterno() {
   const t = useT();
   const [endpoint, setEndpoint] = useState("");
   const [chave, setChave] = useState("");
-  const [chaveAprovacao, setChaveAprovacao] = useState("");
-  const [chaveArtwork, setChaveArtwork] = useState("");
-  const [artworkBlogId, setArtworkBlogId] = useState("");
   const [erro, setErro] = useState<string | null>(null);
   /** O desfecho que deu certo (salvou, testou ou removeu). */
   const [aviso, setAviso] = useState<string | null>(null);
@@ -124,7 +118,7 @@ export function CadastroDoServidorMcpExterno() {
       return;
     }
     iniciar(async () => {
-      const r = await definirServidorMcpExterno({ endpoint, chave, chaveAprovacao, chaveArtwork, artworkBlogId });
+      const r = await definirServidorMcpExterno({ endpoint, chave });
       if (!r.ok) {
         recusar(r.error);
         return;
@@ -134,14 +128,7 @@ export function CadastroDoServidorMcpExterno() {
       // chave sobreviver na tela sem que ninguém tenha pedido.
       setChaveCriada(r.chaveUltimos4);
       setChave("");
-      setChaveAprovacao("");
-      setChaveArtwork("");
-      setArtworkBlogId("");
-      setAviso(t(r.artworkConfigurado
-        ? "Configuração salva, incluindo a chave HMAC do bridge privado de artes."
-        : r.aprovacaoConfigurada
-        ? "Configuração salva, incluindo a chave de aprovação assinada."
-        : "Configuração salva. Leituras e cotações podem ser usadas; gravações continuam bloqueadas até configurar a chave de aprovação."));
+      setAviso(t("Configuração salva. Teste a conexão para ver o que o servidor oferece."));
     });
   }
 
@@ -150,16 +137,13 @@ export function CadastroDoServidorMcpExterno() {
     iniciar(async () => {
       // Endereço vazio é o contrato de APAGAR da action — a mesma porta do
       // salvar, com o mesmo gate de permissão e a mesma trilha de auditoria.
-      const r = await definirServidorMcpExterno({ endpoint: "", chave: "", chaveAprovacao: "", chaveArtwork: "", artworkBlogId: "" });
+      const r = await definirServidorMcpExterno({ endpoint: "", chave: "" });
       if (!r.ok) {
         recusar(r.error);
         return;
       }
       setEndpoint("");
       setChave("");
-      setChaveAprovacao("");
-      setChaveArtwork("");
-      setArtworkBlogId("");
       setAviso(t("Servidor externo removido. A IA desta empresa não alcança mais o sistema de fora."));
     });
   }
@@ -217,34 +201,6 @@ export function CadastroDoServidorMcpExterno() {
                 "A chave é gravada cifrada e não é mostrada de novo: depois de salvar, a tela revela só os quatro últimos caracteres.",
               )}
             </p>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="mcp-chave-aprovacao">{t("Chave HMAC de aprovação de gravações (opcional)")}</Label>
-            <Input
-              id="mcp-chave-aprovacao"
-              data-testid="chave-aprovacao"
-              type="password"
-              value={chaveAprovacao}
-              spellCheck={false}
-              onChange={(e) => setChaveAprovacao(e.target.value)}
-            />
-            <p className="text-xs text-muted-foreground">
-              {t(
-                "Use a mesma chave configurada no WordPress como SERVINDER_AGENT_APPROVAL_KEY. Ela é cifrada separadamente do token MCP. Deixe em branco para preservar a atual; sem ela, ferramentas de gravação falham fechadas.",
-              )}
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="mcp-artwork-blog-id">{t("ID do blog WordPress autorizado para o bridge de artes")}</Label>
-            <Input id="mcp-artwork-blog-id" value={artworkBlogId} inputMode="numeric" onChange={(e) => setArtworkBlogId(e.target.value)} placeholder={t("ID do blog WordPress (ex.: 4)")} />
-            <p className="text-xs text-muted-foreground">{t("Informe o ID do subsite WordPress que poderá consumir tickets de arte. A rota do CRM é fixa e usa HTTPS.")}</p>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="mcp-chave-artwork">{t("Chave HMAC do bridge de artes (opcional)")}</Label>
-            <Input id="mcp-chave-artwork" type="password" value={chaveArtwork} spellCheck={false} onChange={(e) => setChaveArtwork(e.target.value)} />
-            <p className="text-xs text-muted-foreground">{t("Chave independente, cifrada no CRM. Configure o mesmo valor no WordPress como SERVINDER_AGENT_ARTWORK_BRIDGE_KEY. Em branco preserva a chave atual; sem chave e blog ID, o bridge falha fechado.")}</p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">

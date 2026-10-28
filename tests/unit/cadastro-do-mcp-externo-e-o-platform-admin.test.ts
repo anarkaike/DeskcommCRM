@@ -135,7 +135,7 @@ beforeEach(() => {
 describe("quem cadastra é o dono da instalação, e o gate vem antes da forma (item 1)", () => {
   it("sem sessão: unauthenticated", async () => {
     estado.usuario = null;
-    expect(await definirServidorMcpExterno({ endpoint: "https://erp.loja/mcp", chave: CHAVE, chaveAprovacao: "" })).toEqual({
+    expect(await definirServidorMcpExterno({ endpoint: "https://erp.loja/mcp", chave: CHAVE })).toEqual({
       ok: false,
       error: "unauthenticated",
     });
@@ -152,7 +152,7 @@ describe("quem cadastra é o dono da instalação, e o gate vem antes da forma (
 
   it("sessão de suporte é recusada pela MESMA regra das extensões", async () => {
     estado.usuario = { id: "u", is_platform_admin: true, support: { ativo: true }, idioma: "pt" };
-    expect(await definirServidorMcpExterno({ endpoint: "https://erp.loja/mcp", chave: CHAVE, chaveAprovacao: "" })).toEqual({
+    expect(await definirServidorMcpExterno({ endpoint: "https://erp.loja/mcp", chave: CHAVE })).toEqual({
       ok: false,
       error: "forbidden_role",
     });
@@ -160,7 +160,7 @@ describe("quem cadastra é o dono da instalação, e o gate vem antes da forma (
 
   it("escopo que não é `full` é recusado", async () => {
     estado.plataforma = { scope: "leitura", mfa_required: false };
-    expect(await definirServidorMcpExterno({ endpoint: "https://erp.loja/mcp", chave: CHAVE, chaveAprovacao: "" })).toEqual({
+    expect(await definirServidorMcpExterno({ endpoint: "https://erp.loja/mcp", chave: CHAVE })).toEqual({
       ok: false,
       error: "forbidden_role",
     });
@@ -169,7 +169,7 @@ describe("quem cadastra é o dono da instalação, e o gate vem antes da forma (
   it("a plataforma cobra `aal2` quando a política dela pede", async () => {
     estado.plataforma = { scope: "full", mfa_required: true };
     estado.aal = "aal1";
-    expect(await definirServidorMcpExterno({ endpoint: "https://erp.loja/mcp", chave: CHAVE, chaveAprovacao: "" })).toEqual({
+    expect(await definirServidorMcpExterno({ endpoint: "https://erp.loja/mcp", chave: CHAVE })).toEqual({
       ok: false,
       error: "mfa_required",
     });
@@ -178,7 +178,7 @@ describe("quem cadastra é o dono da instalação, e o gate vem antes da forma (
   it("a recusa de permissão vem ANTES da organização ativa", async () => {
     estado.usuario = { id: "u", is_platform_admin: false, support: null, idioma: "pt" };
     estado.org = null;
-    expect(await definirServidorMcpExterno({ endpoint: "https://erp.loja/mcp", chave: CHAVE, chaveAprovacao: "" })).toEqual({
+    expect(await definirServidorMcpExterno({ endpoint: "https://erp.loja/mcp", chave: CHAVE })).toEqual({
       ok: false,
       error: "forbidden_role",
     });
@@ -189,9 +189,8 @@ describe("quem cadastra é o dono da instalação, e o gate vem antes da forma (
     const resultado = await definirServidorMcpExterno({
       endpoint: "https://erp.loja/mcp",
       chave: CHAVE,
-      chaveAprovacao: "",
     });
-    expect(resultado).toEqual({ ok: true, chaveUltimos4: "abcd", aprovacaoConfigurada: false, aprovacaoUltimos4: null, artworkConfigurado: false, artworkUltimos4: null, artworkBlogId: null });
+    expect(resultado).toEqual({ ok: true, chaveUltimos4: "abcd" });
     expect(estado.updates).toHaveLength(1);
   });
 });
@@ -221,7 +220,7 @@ describe("o registro é da ORGANIZAÇÃO da sessão, nunca do corpo do pedido (i
 
 describe("a chave sai do jsonb e vai cifrada (item 3)", () => {
   it("as quatro colunas recebem a chave; o `settings.mcp_externo` fica SEM chave", async () => {
-    await definirServidorMcpExterno({ endpoint: "https://erp.loja/mcp", chave: CHAVE, chaveAprovacao: "" });
+    await definirServidorMcpExterno({ endpoint: "https://erp.loja/mcp", chave: CHAVE });
     const payload = estado.updates[0]!;
 
     const settings = payload.settings as { mcp_externo?: Record<string, unknown>; conversions?: unknown };
@@ -247,39 +246,12 @@ describe("a chave sai do jsonb e vai cifrada (item 3)", () => {
   });
 
   it("apagar zera as colunas e o bolso, preservando os outros bolsos", async () => {
-    await definirServidorMcpExterno({ endpoint: "", chave: "", chaveAprovacao: "" });
+    await definirServidorMcpExterno({ endpoint: "", chave: "" });
     const payload = estado.updates[0]!;
     expect((payload.settings as Record<string, unknown>).mcp_externo).toBeUndefined();
     expect((payload.settings as Record<string, unknown>).conversions).toEqual({ meta_page_id: "111" });
     expect(payload.mcp_externo_chave_encrypted).toBeNull();
     expect(payload.mcp_externo_chave_last4).toBeNull();
-  });
-
-  it("grava a chave de bridge cifrada e vinculada ao blog, sem incluir segredo no jsonb", async () => {
-    const chaveArtwork = "segredo-hmac-arte-para-wordpress-123456";
-    const resultado = await definirServidorMcpExterno({
-      endpoint: "https://erp.loja/mcp", chave: CHAVE, chaveAprovacao: "",
-      chaveArtwork, artworkBlogId: "17",
-    });
-    expect(resultado).toMatchObject({ ok: true, artworkConfigurado: true, artworkUltimos4: "3456", artworkBlogId: 17 });
-    const payload = estado.updates[0]!;
-    expect(payload.mcp_externo_artwork_last4).toBe("3456");
-    expect(payload.mcp_externo_artwork_blog_id).toBe(17);
-    expect(JSON.stringify(payload.settings)).not.toContain(chaveArtwork);
-    expect(estado.audits[0]?.metadata).toMatchObject({ artwork_bridge_presente: true });
-  });
-
-  it("recusa chave de bridge curta e blog ID não positivo antes de gravar", async () => {
-    const chaveCurta = await definirServidorMcpExterno({
-      endpoint: "https://erp.loja/mcp", chave: CHAVE, chaveArtwork: "curta", artworkBlogId: "17",
-    });
-    expect(chaveCurta).toEqual({ ok: false, error: "artwork_key_invalid" });
-    const blogInvalido = await definirServidorMcpExterno({
-      endpoint: "https://erp.loja/mcp", chave: CHAVE,
-      chaveArtwork: "segredo-hmac-arte-para-wordpress-123456", artworkBlogId: "0",
-    });
-    expect(blogInvalido).toEqual({ ok: false, error: "artwork_blog_invalid" });
-    expect(estado.updates).toEqual([]);
   });
 });
 
@@ -292,7 +264,7 @@ describe("o endereço passa pelo guard anti-SSRF já no cadastro (item 4)", () =
     ["localhost", "http://localhost:3000/mcp"],
     ["ipv6 literal", "http://[::1]/mcp"],
   ])("%s: recusa e nada é gravado", async (_rotulo, endpoint) => {
-    const resultado = await definirServidorMcpExterno({ endpoint, chave: CHAVE, chaveAprovacao: "" });
+    const resultado = await definirServidorMcpExterno({ endpoint, chave: CHAVE });
     expect(resultado).toEqual({ ok: false, error: "endpoint_inseguro" });
     expect(estado.updates).toEqual([]);
     expect(estado.audits).toEqual([]);
@@ -302,7 +274,6 @@ describe("o endereço passa pelo guard anti-SSRF já no cadastro (item 4)", () =
     const resultado = await definirServidorMcpExterno({
       endpoint: "https://erp.loja/mcp",
       chave: CHAVE,
-      chaveAprovacao: "",
     });
     expect(resultado.ok).toBe(true);
   });
@@ -315,7 +286,6 @@ describe("o endereço não carrega segredo para a trilha (item 5)", () => {
     const resultado = await definirServidorMcpExterno({
       endpoint: "https://erp.loja/mcp?token=super-secreto",
       chave: CHAVE,
-      chaveAprovacao: "",
     });
     expect(resultado).toEqual({ ok: false, error: "endpoint_inseguro" });
     expect(estado.updates).toEqual([]);
@@ -325,7 +295,6 @@ describe("o endereço não carrega segredo para a trilha (item 5)", () => {
     const resultado = await definirServidorMcpExterno({
       endpoint: "https://erp.loja/mcp#segredo",
       chave: CHAVE,
-      chaveAprovacao: "",
     });
     expect(resultado).toEqual({ ok: false, error: "endpoint_inseguro" });
   });
@@ -334,7 +303,6 @@ describe("o endereço não carrega segredo para a trilha (item 5)", () => {
     const resultado = await definirServidorMcpExterno({
       endpoint: "https://***@erp.loja/mcp",
       chave: CHAVE,
-      chaveAprovacao: "",
     });
     expect(resultado).toEqual({ ok: false, error: "endpoint_inseguro" });
   });
@@ -343,7 +311,6 @@ describe("o endereço não carrega segredo para a trilha (item 5)", () => {
     await definirServidorMcpExterno({
       endpoint: "https://erp.loja:8443/mcp/v1/pedidos",
       chave: CHAVE,
-      chaveAprovacao: "",
     });
     const trilha = JSON.stringify(estado.audits);
     expect(estado.audits[0]!.metadata).toMatchObject({ endpoint: "erp.loja:8443", registrado: true });

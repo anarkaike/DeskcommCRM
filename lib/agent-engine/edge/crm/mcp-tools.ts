@@ -124,7 +124,6 @@ export async function buildMcpTurnTools(
     apiTokenId: ephemeral.id,
     requestId: ids.jobId,
     supabase: cfg.supabase,
-    ...(ids.conversationId ? { conversaDoTurno: ids.conversationId } : {}),
   };
   const auth: McpAuthResult = {
     organizationId: ids.organizationId,
@@ -179,7 +178,6 @@ export async function buildMcpTurnTools(
     modulosLigados: await modulosLigados(cfg.supabase),
     capacidadesLigadas: await capacidadesDaOrganizacao(cfg.supabase, ids.organizationId),
     ...(ids.contactId ? { contatoDoTurno: ids.contactId } : {}),
-    ...(ids.conversationId ? { conversaDoTurno: ids.conversationId } : {}),
     ...(servidorExterno ? { servidorMcpExterno: servidorExterno } : {}),
   });
 

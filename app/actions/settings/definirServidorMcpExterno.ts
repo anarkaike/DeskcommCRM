@@ -46,18 +46,11 @@ import { loadAuthUser, resolveActiveOrg } from "@/lib/auth/server";
 import { regraPlatformAdmin } from "@/lib/extensions/http";
 import { supportWriteError } from "@/lib/impersonate/support";
 import { BOLSO_MCP_EXTERNO, conferirEndpointSeguro, hostDoEndpoint, mesclarServidorMcpExterno } from "@/lib/mcp/servidor-externo/registro";
-import {
-  APROVACAO_MCP_APAGADA,
-  ARTWORK_BRIDGE_APAGADO,
-  cifrarChaveArtworkMcpExterno,
-  SEGREDO_APAGADO,
-  cifrarChaveAprovacaoMcpExterno,
-  cifrarChaveMcpExterno,
-} from "@/lib/mcp/servidor-externo/segredo";
+import { SEGREDO_APAGADO, cifrarChaveMcpExterno } from "@/lib/mcp/servidor-externo/segredo";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export type ResultadoRegistroDeServidorMcp =
-  | { ok: true; chaveUltimos4: string | null; aprovacaoConfigurada: boolean; aprovacaoUltimos4: string | null; artworkConfigurado: boolean; artworkUltimos4: string | null; artworkBlogId: number | null }
+  | { ok: true; chaveUltimos4: string | null }
   | {
       ok: false;
       error:
@@ -68,9 +61,6 @@ export type ResultadoRegistroDeServidorMcp =
         | "mfa_required"
         | "upstream_unavailable"
         | "endpoint_inseguro"
-        | "approval_key_invalid"
-        | "artwork_key_invalid"
-        | "artwork_blog_invalid"
         | "erro_ao_gravar";
     };
 
@@ -83,15 +73,9 @@ export type ResultadoRegistroDeServidorMcp =
 const entradaSchema = z.object({
   endpoint: z.string().trim().max(500),
   chave: z.string().trim().max(500),
-  /** Optional for read/quote access. Blank preserves an existing approval key. */
-  chaveAprovacao: z.string().trim().max(500).optional().default(""),
-  /** Dedicated key used only by the signed private-artwork transfer bridge. */
-  chaveArtwork: z.string().trim().max(500).optional().default(""),
-  /** WordPress blog ID allowed to consume artwork transfers. */
-  artworkBlogId: z.string().trim().max(20).optional().default(""),
 });
 
-export type RegistroDeServidorMcpInput = z.input<typeof entradaSchema>;
+export type RegistroDeServidorMcpInput = z.infer<typeof entradaSchema>;
 
 export async function definirServidorMcpExterno(
   input: RegistroDeServidorMcpInput,
@@ -121,16 +105,6 @@ export async function definirServidorMcpExterno(
   const endpoint = entrada.data.endpoint.trim();
   const chave = entrada.data.chave.trim();
   const apagando = endpoint === "" || chave === "";
-  const chaveAprovacao = entrada.data.chaveAprovacao.trim();
-  if (chaveAprovacao !== "" && chaveAprovacao.length < 32) return { ok: false, error: "approval_key_invalid" };
-  const chaveArtwork = entrada.data.chaveArtwork.trim();
-  if (chaveArtwork !== "" && chaveArtwork.length < 32) return { ok: false, error: "artwork_key_invalid" };
-  const artworkBlogRaw = entrada.data.artworkBlogId.trim();
-  const artworkBlogId = artworkBlogRaw === "" ? null : Number(artworkBlogRaw);
-  if ((artworkBlogRaw !== "" && (!Number.isSafeInteger(artworkBlogId) || (artworkBlogId ?? 0) < 1)) ||
-      ((chaveArtwork !== "" || artworkBlogRaw !== "") && apagando)) {
-    return { ok: false, error: "artwork_blog_invalid" };
-  }
 
   // 3) Anti-SSRF no CADASTRO (item 4). Endpoint vazio não passa por aqui: ele
   // é o contrato de apagar, não um endereço a chamar.
@@ -147,7 +121,7 @@ export async function definirServidorMcpExterno(
   const admin = createAdminClient();
   const { data: atual, error: erroLeitura } = await admin
     .from("organizations")
-    .select("settings,mcp_externo_aprovacao_last4,mcp_externo_artwork_last4,mcp_externo_artwork_blog_id")
+    .select("settings")
     .eq("id", org.orgId)
     .maybeSingle();
   if (erroLeitura) return { ok: false, error: "erro_ao_gravar" };
@@ -158,20 +132,10 @@ export async function definirServidorMcpExterno(
   const temRegistro = settings[BOLSO_MCP_EXTERNO] !== undefined;
   // A CHAVE nunca entra no jsonb: sai cifrada, ou zerada quando apagam.
   const colunas = temRegistro ? cifrarChaveMcpExterno(chave) : SEGREDO_APAGADO;
-  const colunasAprovacao = !temRegistro
-    ? APROVACAO_MCP_APAGADA
-    : chaveAprovacao !== ""
-      ? cifrarChaveAprovacaoMcpExterno(chaveAprovacao)
-      : {};
-  const colunasArtwork = !temRegistro
-    ? ARTWORK_BRIDGE_APAGADO
-    : chaveArtwork !== ""
-      ? cifrarChaveArtworkMcpExterno(chaveArtwork)
-      : {};
 
   const { error } = await admin
     .from("organizations")
-    .update({ settings, ...colunas, ...colunasAprovacao, ...colunasArtwork, ...(artworkBlogId !== null ? { mcp_externo_artwork_blog_id: artworkBlogId } : {}) })
+    .update({ settings, ...colunas })
     // A LINHA da organização da sessão (item 2) — o filtro é parte do contrato,
     // não detalhe de implementação: sem ele um update sem where gravaria a
     // chave de todo mundo.
@@ -193,26 +157,9 @@ export async function definirServidorMcpExterno(
       endpoint: temRegistro ? hostDoEndpoint(endpoint) : null,
       registrado: temRegistro,
       chave_presente: temRegistro,
-      aprovacao_presente: temRegistro && (chaveAprovacao !== "" || atual?.mcp_externo_aprovacao_last4 != null),
-      artwork_bridge_presente: temRegistro && (chaveArtwork !== "" || atual?.mcp_externo_artwork_last4 != null),
     },
   });
 
   revalidatePath("/app/settings", "layout");
-  const aprovacaoUltimos4 = chaveAprovacao
-    ? chaveAprovacao.slice(-4)
-    : (atual?.mcp_externo_aprovacao_last4 as string | null | undefined) ?? null;
-  const artworkUltimos4 = chaveArtwork
-    ? chaveArtwork.slice(-4)
-    : (atual?.mcp_externo_artwork_last4 as string | null | undefined) ?? null;
-  const artworkBlogSalvo = artworkBlogId ?? (atual?.mcp_externo_artwork_blog_id as number | null | undefined) ?? null;
-  return {
-    ok: true,
-    chaveUltimos4: temRegistro ? chave.slice(-4) : null,
-    aprovacaoConfigurada: temRegistro && aprovacaoUltimos4 !== null,
-    aprovacaoUltimos4: temRegistro ? aprovacaoUltimos4 : null,
-    artworkConfigurado: temRegistro && artworkUltimos4 !== null && artworkBlogSalvo !== null,
-    artworkUltimos4: temRegistro ? artworkUltimos4 : null,
-    artworkBlogId: temRegistro ? artworkBlogSalvo : null,
-  };
+  return { ok: true, chaveUltimos4: temRegistro ? chave.slice(-4) : null };
 }

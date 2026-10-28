@@ -44,11 +44,11 @@ import {
 } from "./chamada";
 import { escolhasRemotas } from "./ids";
 import { hostDoEndpoint, lerEndpointMcpExterno, type ServidorMcpExterno } from "./registro";
-import { abrirChaveAprovacaoMcpExterno, abrirChaveMcpExterno } from "./segredo";
+import { abrirChaveMcpExterno } from "./segredo";
 
 /** Colunas que saem do jsonb porque a RLS entregava a chave a todo membro. */
 const COLUNAS_DO_SEGREDO =
-  "settings, mcp_externo_chave_encrypted, mcp_externo_chave_iv, mcp_externo_chave_tag, mcp_externo_aprovacao_encrypted, mcp_externo_aprovacao_iv, mcp_externo_aprovacao_tag";
+  "settings, mcp_externo_chave_encrypted, mcp_externo_chave_iv, mcp_externo_chave_tag";
 
 /** O que o montador do turno recebe: a configuração e o que o servidor anunciou. */
 export interface ServidorMcpExternoMontado {
@@ -69,8 +69,6 @@ export interface ServidorMcpExternoMontado {
   contato?: string;
   /** A identidade do contato (`CABECALHOS_DO_CONTATO`), lida do banco. */
   cabecalhos?: Readonly<Record<string, string>>;
-  /** Segredo privado do executor, nunca incluído em schema ou resposta ao modelo. */
-  chaveAprovacao?: string;
 }
 
 export interface OpcoesDeCarga {
@@ -179,9 +177,6 @@ export async function carregarServidorMcpExterno(
     mcp_externo_chave_encrypted?: unknown;
     mcp_externo_chave_iv?: unknown;
     mcp_externo_chave_tag?: unknown;
-    mcp_externo_aprovacao_encrypted?: unknown;
-    mcp_externo_aprovacao_iv?: unknown;
-    mcp_externo_aprovacao_tag?: unknown;
   } | null;
 
   const endpoint = lerEndpointMcpExterno(linha?.settings);
@@ -192,11 +187,6 @@ export async function carregarServidorMcpExterno(
   });
   if (!endpoint || !chave) return null;
   const servidor: ServidorMcpExterno = { endpoint, chave };
-  const chaveAprovacao = abrirChaveAprovacaoMcpExterno({
-    mcp_externo_aprovacao_encrypted: linha?.mcp_externo_aprovacao_encrypted as string | undefined,
-    mcp_externo_aprovacao_iv: linha?.mcp_externo_aprovacao_iv as string | undefined,
-    mcp_externo_aprovacao_tag: linha?.mcp_externo_aprovacao_tag as string | undefined,
-  }) ?? undefined;
 
   const contato = opcoes?.contatoDoTurno;
   const cabecalhos = contato
@@ -219,8 +209,8 @@ export async function carregarServidorMcpExterno(
       return null;
     }
     return contato && cabecalhos
-      ? { servidor, ferramentas, contato, cabecalhos, ...(chaveAprovacao ? { chaveAprovacao } : {}) }
-      : { servidor, ferramentas, ...(chaveAprovacao ? { chaveAprovacao } : {}) };
+      ? { servidor, ferramentas, contato, cabecalhos }
+      : { servidor, ferramentas };
   } catch (err) {
     logger.warn("servidor MCP externo registrado nao respondeu — turno segue sem as ferramentas dele", {
       organization_id: organizationId,

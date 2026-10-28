@@ -86,8 +86,6 @@ export interface PickToolsInput {
    * do turno à mão, esse id é traduzido para o negócio aberto dele.
    */
   contatoDoTurno?: string;
-  /** Conversa confiável do turno para validar confirmação comercial literal. */
-  conversaDoTurno?: string;
   /**
    * Servidor MCP externo REGISTRADO pela instalação, já com as ferramentas que
    * ele anunciou (#2147).
@@ -430,7 +428,7 @@ function wrapMcpTool(
             if (def.category === "write") await guardServiceEffect();
             return def.handler(
               argsRecord as never,
-              input.contatoDoTurno ? { ...input.ctx, contatoDoTurno: input.contatoDoTurno, ...(input.conversaDoTurno ? { conversaDoTurno: input.conversaDoTurno } : {}) } : input.ctx,
+              input.contatoDoTurno ? { ...input.ctx, contatoDoTurno: input.contatoDoTurno } : input.ctx,
             );
           },
         );
@@ -659,11 +657,6 @@ export function pickToolsFromMcp(input: PickToolsInput): Record<string, Tool> {
           ...(input.servidorMcpExterno.cabecalhos
             ? { cabecalhos: input.servidorMcpExterno.cabecalhos }
             : {}),
-          supabase: input.supabase,
-          organizationId: input.ctx.organizationId,
-          contatoDoTurno: input.contatoDoTurno,
-          conversaDoTurno: input.conversaDoTurno,
-          chaveAprovacao: input.servidorMcpExterno.chaveAprovacao,
         },
       );
       // O servidor carrega a identidade DESTE contato? Só então a leitura

@@ -202,32 +202,6 @@ describe("toda escrita montável no turno tem o dono de cada identificador decla
   );
 });
 
-describe("escritas Disk Uniformes só passam com autorização nominal", () => {
-  const diskWrites = [
-    "diskuniformes_customer_create",
-    "diskuniformes_customer_update",
-    "diskuniformes_customer_archive",
-    "diskuniformes_order_create",
-    "diskuniformes_order_update",
-    "diskuniformes_order_cancel",
-    "diskuniformes_order_item_add",
-    "diskuniformes_order_item_update",
-    "diskuniformes_order_item_remove",
-  ];
-
-  it.each(diskWrites)("%s tem escopo explícito e depende do dono remoto", async (nome) => {
-    expect(ESCOPO_DAS_ESCRITAS[nome]).toEqual({});
-    expect(await escritaCabeNoTurno({} as never, ORG, DO_TURNO, nome, { order_id: 123, item_id: 456 })).toEqual({ permitido: true });
-  });
-
-  it("não libera nomes de escrita arbitrários do servidor externo", async () => {
-    expect(await escritaCabeNoTurno({} as never, ORG, DO_TURNO, "diskuniformes_order_refund", {})).toMatchObject({
-      permitido: false,
-      motivo: "escrita_sem_escopo_do_turno",
-    });
-  });
-});
-
 describe("forma do valor num campo declarado", () => {
   it("lista no lugar do id é recusada, não pulada", async () => {
     const lista = await executar("crm_book_appointment", { contact_id: [DE_B] }, DO_TURNO);

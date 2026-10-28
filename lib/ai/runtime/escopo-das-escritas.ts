@@ -47,9 +47,7 @@ export type DonoDoCampo =
   /** `lead_id`: quem guarda é `negocioDaEscritaDoTurno`, em `tools.ts`. */
   | "negocio"
   /** Não é registro de cliente: funil, etapa, usuário, fluxo. */
-  | "configuracao"
-  /** Mensagem recebida, pertencente ao contato do turno. */
-  | "mensagem";
+  | "configuracao";
 
 export const ESCOPO_DAS_ESCRITAS: Readonly<Record<string, Readonly<Record<string, DonoDoCampo>>>> = {
   // ---- agenda ----
@@ -103,41 +101,10 @@ export const ESCOPO_DAS_ESCRITAS: Readonly<Record<string, Readonly<Record<string
   // ---- retorno ----
   crm_schedule_followup: { lead_id: "negocio", contact_id: "contato" },
   crm_cancel_followup: { followup_id: "retorno" },
-  crm_create_artwork_transfer: { message_id: "mensagem" },
   crm_enroll_followup_flow: { contact_id: "contato", flow_id: "configuracao" },
 
-  // ---- Disk Uniformes commerce (escopo de cliente validado pelo servidor WP) ----
-  // O contrato remoto não aceita contact/customer ids do modelo: o plugin usa
-  // X-Deskcomm-Contato-Id e valida cada pedido/item antes de ler ou gravar.
-  diskuniformes_customer_create: {},
-  diskuniformes_customer_update: {},
-  diskuniformes_customer_archive: {},
-  diskuniformes_order_create: {},
-  diskuniformes_order_update: {},
-  diskuniformes_order_cancel: {},
-  diskuniformes_order_item_add: {},
-  diskuniformes_order_item_update: {},
-  diskuniformes_order_item_remove: {},
-
-  // ---- tools de comércio WooCommerce da Disk Uniformes via MCP externo ----
-  // A seleção do servidor MCP não carrega IDs de pedido/cliente fornecidos pelo
-  // modelo: o plugin escopa pelo contato confiável do cabeçalho. Escritas com
-  // cotação validam o código comercial; cabeçalho/cliente/arquivo do pedido
-  // usam desafio HMAC de ação e payload em lib/mcp/tools/externo.ts.
-  servinder_woocommerce_customers_create: {},
-  servinder_woocommerce_customers_update: {},
-  servinder_woocommerce_orders_update: {},
-  servinder_woocommerce_orders_archive: {},
-  servinder_woocommerce_orders_restore: {},
-  servinder_woocommerce_quote_create: {},
-  servinder_woocommerce_quote_recalculate: {},
-  servinder_woocommerce_orders_create: {},
-  servinder_woocommerce_order_items_add: {},
-  servinder_woocommerce_order_items_update: {},
-  servinder_woocommerce_order_items_remove: {},
-
   // ---- sem registro de cliente ----
-  crm_save_org_memory: {}
+  crm_save_org_memory: {},
 };
 
 export type VereditoDaEscrita =
@@ -187,8 +154,6 @@ async function campoEhDoContato(
       return true;
     case "contato":
       return id.toLowerCase() === contato.toLowerCase();
-    case "mensagem":
-      return existeDoContato(supabase, "messages", organizationId, contato, id);
     case "conversa":
       return existeDoContato(supabase, "conversations", organizationId, contato, id);
     case "compromisso":

@@ -147,8 +147,6 @@ export const PUBLIC_PATHS: RegExp[] = [
   // cartão de fidelidade (a única das automações que não é texto) não teria
   // como sair depois do corte de gateway.
   /^\/api\/v1\/conversations\/[^/]+\/media$/,
-  // HMAC-protected single-use binary transfer; authorization is enforced in the route.
-  /^\/api\/v1\/woocommerce\/artwork-transfers\/[A-Za-z0-9_-]{40,64}\/consume$/,
   // CONFIGURAÇÃO DE IA, FOLLOW-UP E AGENDA SERVER-TO-SERVER (issue #1875).
   // Mesma dualidade das linhas acima: sessão OU Bearer `dsk_…`, resolvidos por
   // `lib/api/auth-dual.ts` DENTRO de cada rota (a org sai da linha do token e

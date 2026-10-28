@@ -614,7 +614,6 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
       apiTokenId: ephemeral.id,
       requestId: run.id,
       supabase: admin,
-      ...(run.conversation_id ? { conversaDoTurno: run.conversation_id } : {}),
     };
     const handoffSignal: RuntimeHandoffSignal = { triggered: false };
     // #2147 — servidor MCP externo que o dono da instalação registrou. `null`
@@ -655,7 +654,6 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
       handoffSignal,
       ...(servidorExterno ? { servidorMcpExterno: servidorExterno } : {}),
       ...(contatoDoTurno ? { contatoDoTurno } : {}),
-      ...(run.conversation_id ? { conversaDoTurno: run.conversation_id } : {}),
     });
 
     // 8) Load history with budget.

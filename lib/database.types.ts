@@ -87,12 +87,6 @@ export type Database = {
           { foreignKeyName: "telegram_case_operators_connection_fk"; columns: ["organization_id", "connection_id"]; isOneToOne: false; referencedRelation: "telegram_bot_connections"; referencedColumns: ["organization_id", "id"] },
         ];
       };
-      channel_integrations: {
-        Row: { organization_id: string; profile_id: string; credential_encrypted: string; created_at: string; updated_at: string }
-        Insert: { organization_id: string; profile_id: string; credential_encrypted: string; created_at?: string; updated_at?: string }
-        Update: { organization_id?: string; profile_id?: string; credential_encrypted?: string; created_at?: string; updated_at?: string }
-        Relationships: [{ foreignKeyName: "channel_integrations_organization_id_fkey"; columns: ["organization_id"]; isOneToOne: true; referencedRelation: "organizations"; referencedColumns: ["id"] }]
-      }
       account_plans: {
         Row: {
           created_at: string;

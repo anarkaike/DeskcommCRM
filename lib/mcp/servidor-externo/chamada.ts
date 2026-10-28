@@ -84,8 +84,6 @@ export interface OpcoesDeChamada {
    * `tools/call`, e por isso não sobrescreve, remove nem acrescenta cabeçalho.
    */
   cabecalhos?: Readonly<Record<string, string>>;
-  /** Assinatura transitória; o fetch a injeta apenas no tools/call deste nome. */
-  aprovacaoDaChamada?: { ferramenta: string; cabecalho: string };
 }
 
 /**
@@ -168,7 +166,6 @@ async function comOCliente<T>(
   oQueFazer: (cliente: Client) => Promise<T>,
   fetch?: FetchLike,
   cabecalhos?: Readonly<Record<string, string>>,
-  aprovacaoDaChamada?: { ferramenta: string; cabecalho: string },
 ): Promise<T> {
   // Concatenação em vez de interpolação: o cabeçalho é montado num lugar só,
   // e a chave não aparece literal em nenhuma template string deste arquivo.
@@ -176,38 +173,14 @@ async function comOCliente<T>(
   // O nome do cabeçalho em constante: o valor é montado uma vez só, e nenhum
   // dos dois aparece colado numa string literal de cabeçalho.
   const nomeDoCabecalho = "Authorization";
-  const fetchBase = fetch ?? fetchDeSaida(servidor.endpoint);
-  const fetchAutorizado: FetchLike = async (input, init) => {
-    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
-    for (const [nome, valor] of Object.entries(cabecalhos ?? {})) headers.set(nome, valor);
-    headers.set(nomeDoCabecalho, cabecalho);
-    // Consentimento vale para uma única mutação: nunca sai em initialize,
-    // notifications/initialized, tools/list ou outro tools/call.
-    if (aprovacaoDaChamada && init?.method?.toUpperCase() === "POST") {
-      let corpo: unknown;
-      try {
-        const texto = typeof init.body === "string"
-          ? init.body
-          : input instanceof Request
-            ? await input.clone().text()
-            : "";
-        corpo = JSON.parse(texto);
-      } catch {
-        corpo = null;
-      }
-      const mensagens = Array.isArray(corpo) ? corpo : [corpo];
-      const autorizado = mensagens.some((mensagem) =>
-        mensagem?.method === "tools/call" &&
-        mensagem?.params?.name === aprovacaoDaChamada.ferramenta
-      );
-      if (autorizado) headers.set("X-Servinder-Approval", aprovacaoDaChamada.cabecalho);
-    }
-    return fetchBase(input, { ...init, headers });
-  };
   const transporte = new StreamableHTTPClientTransport(new URL(servidor.endpoint), {
+    // Identidade do contato antes, autenticação por último: nada do executor troca a chave.
+    // ponytail: sem HMAC extra — a chave Bearer do cadastro já autentica o Deskcomm perante o servidor.
     requestInit: { headers: { ...cabecalhos, [nomeDoCabecalho]: cabecalho } },
-    // Todo o tráfego segue pelo guard de saída; HMAC somente no tools/call autorizado.
-    fetch: fetchAutorizado,
+    // O guard anti-SSRF entra POR AQUI (item 4): o SDK aceita `fetch` próprio e
+    // é por ele que toda requisição deste transporte passa. Sem opção nenhuma o
+    // default é `fetchDeSaida` — protegido, e não o fetch global.
+    fetch: fetch ?? fetchDeSaida(servidor.endpoint),
   });
   const cliente = new Client({ name: "deskcomm-crm", version: "0.1.0" });
   try {
@@ -273,7 +246,6 @@ export async function chamarFerramentaRemota(
     (cliente) => cliente.callTool({ name: nome, arguments: argumentos }, undefined, { timeout: timeoutMs }),
     opcoes?.fetch,
     opcoes?.cabecalhos,
-    opcoes?.aprovacaoDaChamada,
   )) as {
     content?: Array<{ type?: string; text?: unknown }>;
     isError?: boolean;

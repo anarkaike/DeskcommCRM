@@ -26,7 +26,6 @@
  */
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { lookup as DnsLookup } from "node:dns/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mesmo mock de `tests/unit/busca-vazia-nao-e-sucesso.test.ts`: a auditoria é
@@ -38,7 +37,7 @@ vi.mock("@/lib/audit", () => ({ audit: (e: unknown) => auditSpy(e) }));
 // por padrão delega ao `lookup` real (os stubs daqui moram em IP literal, que
 // não passa por DNS), e o teste da peça de DNS troca a resposta numa chamada só.
 vi.mock("node:dns/promises", async (importOriginal) => {
-  const real = await importOriginal<{ lookup: typeof DnsLookup }>();
+  const real = await importOriginal<typeof import("node:dns/promises")>();
   return { ...real, lookup: vi.fn(real.lookup) };
 });
 
@@ -62,8 +61,6 @@ import { carregarServidorMcpExterno, carregarServidorMcpExternoDoTurno } from ".
 import { lerEndpointMcpExterno, mesclarServidorMcpExterno } from "./registro";
 import { cifrarChaveMcpExterno } from "./segredo";
 import { toolIdRemoto } from "./ids";
-import { definirFerramentasRemotas } from "@/lib/mcp/tools/externo";
-import { assinarAprovacaoServinder } from "./aprovacao";
 import { assertSafeOutboundUrl } from "@/lib/automation/outbound-url";
 import { assertDestinoResolvidoSeguro } from "@/lib/automation/outbound-ip";
 
@@ -87,9 +84,6 @@ const autorizacoesRecebidas: Array<string | null | undefined> = [];
 /** TODA requisição que chegou ao stub, com os cabeçalhos como saíram no fio. */
 const requisicoes: Array<{ metodo: string | undefined; cabecalhos: IncomingHttpHeaders }> = [];
 let ultimaChamada: { nome: unknown; argumentos: unknown } | null = null;
-const codigoCotacao = "ABCD1234";
-const hashCotacao = codigoCotacao.toLowerCase() + "0".repeat(56);
-let ultimaAssinatura: string | undefined;
 
 function responderA(mensagem: any): any | null {
   if (mensagem?.id === undefined || mensagem?.method === undefined) return null;
@@ -134,8 +128,6 @@ function responderA(mensagem: any): any | null {
     // Mesma chave, pedindo comissão: o ERP diz 403 (issue #2147). A permissão
     // fica lá, onde o dado mora — o cliente só propaga o recuso.
     const recusado = String(params?.arguments?.consulta ?? "").includes("comissao");
-    if (params?.name === "servinder_woocommerce_quote_get") return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "cotacao" }], structuredContent: { quote_id: params.arguments.quote_id, status: "quoted", confirmation_hash: hashCotacao, confirmation_code: codigoCotacao, expires_at: new Date(Date.now() + 60000).toISOString(), currency: "USD", items: [{ name: "Camisa Escolar", quantity: 2, total: "40.00" }], total_excluding_shipping: "50.00", shipping_status: "not_calculated" } } };
-    if (params?.name === "servinder_woocommerce_orders_create") return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "pedido criado" }], structuredContent: { order_id: 44 } } };
     return {
       jsonrpc: "2.0",
       id,
@@ -165,7 +157,6 @@ beforeAll(async () => {
     req.on("data", (pedaco) => (corpo += pedaco));
     req.on("end", () => {
       autorizacoesRecebidas.push(req.headers.authorization);
-      if (req.headers["x-servinder-approval"]) ultimaAssinatura = String(req.headers["x-servinder-approval"]);
       let mensagens: any[] = [];
       try {
         const bruto = JSON.parse(corpo || "[]");
@@ -782,143 +773,6 @@ describe("uso durante o atendimento: opção do agente + identidade do contato (
     // O que o modelo escreveu chega ao servidor como ARGUMENTO, no corpo — que
     // é onde o servidor deve ignorá-lo.
     expect(ultimaChamada?.argumentos).toMatchObject({ consulta: "meu número é outro" });
-  });
-
-  it("confirma cotação no histórico do contato e assina apenas a criação do pedido", async () => {
-    const segredoAprovacao = "K".repeat(40);
-    const quoteId = "4f1c2d3e-0000-4000-8000-00000000c0ff";
-    const args = {
-      quote_id: quoteId,
-      confirm: true,
-      confirmed_by: "customer",
-      confirmation_hash: hashCotacao,
-      confirmation_code: codigoCotacao,
-      idempotency_key: "pedido-confirmado-20261026-0001",
-    };
-    const filtros: Record<string, unknown> = {};
-    const supabase = {
-      from: (table: string) => {
-        const cadeia: any = {
-          select: () => cadeia,
-          eq: (column: string, value: unknown) => ((filtros[column] = value), cadeia),
-          order: () => cadeia,
-          limit: () => cadeia,
-          maybeSingle: async () => ({
-            data: table === "conversations" && filtros.id === CONVERSA &&
-              filtros.contact_id === CONTATO && filtros.organization_id === ORG
-              ? { id: CONVERSA }
-              : null,
-            error: null,
-          }),
-          then: (resolve: (value: unknown) => unknown) =>
-            Promise.resolve({
-              data: table === "messages"
-                ? [
-                    { direction: "inbound", sent_via: "user", body: "CONFIRMO ABCD1234", sent_at: "2026-10-26T12:02:00Z", created_at: "2026-10-26T12:02:00Z" },
-                    { direction: "outbound", sent_via: "ai", body: "Camisa Escolar, 2 unidades: USD 40.00. Total USD 50.00. Frete não calculado. Código ABCD1234. Responda CONFIRMO ABCD1234.", sent_at: "2026-10-26T12:01:00Z", created_at: "2026-10-26T12:01:00Z" },
-                  ]
-                : [],
-              error: null,
-            }).then(resolve),
-        };
-        return cadeia;
-      },
-    };
-    const nome = "servinder_woocommerce_orders_create";
-    const ferramenta = definirFerramentasRemotas(
-      servidor(),
-      [{ name: nome, inputSchema: { type: "object", properties: {} } }],
-      new Set(),
-      [{ nome, leitura: false }],
-      {
-        supabase: supabase as never,
-        organizationId: ORG,
-        contatoDoTurno: CONTATO,
-        conversaDoTurno: CONVERSA,
-        chaveAprovacao: segredoAprovacao,
-        servidorInterno: servidor(),
-        fetch: fetchDoStub(),
-        cabecalhos: { [CABECALHOS_DO_CONTATO.id]: CONTATO },
-      },
-    )[0]!;
-    requisicoes.length = 0;
-    const result = await ferramenta.handler(args, {} as never);
-    expect(result).toMatchObject({ texto: "pedido criado", dados: { order_id: 44 } });
-    expect(ultimaChamada).toEqual({ nome, argumentos: args });
-    const posts = requisicoes.filter((r) => r.metodo === "POST");
-    expect(posts.filter((r) => r.cabecalhos["x-servinder-approval"])).toHaveLength(1);
-    expect(ultimaAssinatura).toMatch(/^\d{10}\.[a-f0-9]{64}$/);
-    if (!ultimaAssinatura) throw new Error("assinatura HMAC ausente");
-    const timestampAssinado = Number(ultimaAssinatura.slice(0, 10));
-    expect(ultimaAssinatura).toBe(assinarAprovacaoServinder({
-      chave: segredoAprovacao,
-      contatoId: CONTATO,
-      acao: nome,
-      payload: args,
-      timestamp: timestampAssinado,
-    }));
-  });
-
-  it("prepara uma mutação sem gravar e só a assina após exibir o resumo exato e receber confirmação", async () => {
-    const segredo = "M".repeat(40);
-    const nome = "servinder_woocommerce_customers_update";
-    const baseArgs = { customer_id: 21, first_name: "Junio", expected_updated_at: "2026-10-26T10:00:00Z", confirmed_fields: ["first_name"], idempotency_key: "customer-update-key-20261026" };
-    let history: any[] = [];
-    const supabase = {
-      from: (table: string) => {
-        const filtros: Record<string, unknown> = {};
-        const cadeia: any = {
-          select: () => cadeia,
-          eq: (column: string, value: unknown) => ((filtros[column] = value), cadeia),
-          order: () => cadeia,
-          limit: () => cadeia,
-          maybeSingle: async () => ({ data: table === "conversations" && filtros.id === CONVERSA && filtros.contact_id === CONTATO && filtros.organization_id === ORG ? { id: CONVERSA } : null, error: null }),
-          then: (resolve: (value: unknown) => unknown) => Promise.resolve({ data: table === "messages" ? history : [], error: null }).then(resolve),
-        };
-        return cadeia;
-      },
-    };
-    const ferramenta = definirFerramentasRemotas(
-      servidor(),
-      [{ name: nome, inputSchema: { type: "object", properties: { ...Object.fromEntries(Object.keys(baseArgs).map((key) => [key, { type: "string" }])), confirm: { type: "boolean" }, confirmed_by: { type: "string" }, approval_code: { type: "string" }, approval_expires_at: { type: "string" } } } }],
-      new Set(),
-      [{ nome, leitura: false }],
-      { supabase: supabase as never, organizationId: ORG, contatoDoTurno: CONTATO, conversaDoTurno: CONVERSA, chaveAprovacao: segredo, fetch: fetchDoStub(), cabecalhos: { [CABECALHOS_DO_CONTATO.id]: CONTATO } },
-    )[0]!;
-
-    requisicoes.length = 0;
-    const preparado = await ferramenta.handler(baseArgs, {} as never);
-    const challenge = (preparado as any).dados;
-    expect(challenge.status).toBe("customer_confirmation_required");
-    expect(challenge.textoConfirmacao).toContain('"first_name":"Junio"');
-    expect(requisicoes).toHaveLength(0);
-
-    history = [
-      { direction: "inbound", sent_via: "user", body: `CONFIRMO ${challenge.codigo}`, sent_at: new Date().toISOString(), created_at: new Date().toISOString() },
-      { direction: "outbound", sent_via: "ai", body: challenge.textoConfirmacao, sent_at: new Date(Date.now() - 1000).toISOString(), created_at: new Date(Date.now() - 1000).toISOString() },
-    ];
-    const args = { ...baseArgs, confirm: true, confirmed_by: "customer", approval_code: challenge.codigo, approval_expires_at: challenge.expiraEm };
-    const resultado = await ferramenta.handler(args, {} as never);
-    expect(resultado).toMatchObject({ texto: FRASE, dados: DADOS });
-    expect(ultimaChamada).toEqual({ nome, argumentos: baseArgs });
-    expect(requisicoes.filter((r) => r.cabecalhos["x-servinder-approval"])).toHaveLength(1);
-    expect(ultimaAssinatura).toMatch(/^\d{10}\.[a-f0-9]{64}$/);
-    if (!ultimaAssinatura) throw new Error("assinatura HMAC ausente");
-    const timestampAssinado = Number(ultimaAssinatura.slice(0, 10));
-    expect(ultimaAssinatura).toBe(assinarAprovacaoServinder({
-      chave: segredo, contatoId: CONTATO, acao: nome, payload: baseArgs, timestamp: timestampAssinado,
-    }));
-  });
-
-  it("envia a assinatura HMAC somente no tools/call autorizado, nunca no handshake", async () => {
-    requisicoes.length = 0;
-    await chamarFerramentaRemota(servidor(), "erp_achar", { consulta: "pelicula iphone 15" }, {
-      fetch: fetchDoStub(),
-      aprovacaoDaChamada: { ferramenta: "erp_achar", cabecalho: "1729950000.abc123" },
-    });
-    const posts = requisicoes.filter((r) => r.metodo === "POST");
-    expect(posts.length).toBeGreaterThan(1);
-    expect(posts.filter((r) => r.cabecalhos["x-servinder-approval"] === "1729950000.abc123")).toHaveLength(1);
   });
 
   it("canal: sai da conversa DO TURNO; sem ela, ou conversa de outro contato, fica ausente", async () => {
