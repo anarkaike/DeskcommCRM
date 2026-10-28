@@ -104,7 +104,13 @@ if sys.argv[-1] == "ffmpeg":
     output.chmod(0o755)
 `, "/usr/bin/env python3");
   const script = passo === NORMALIZAR ? "source scripts/ci/apt-e2e-failover.sh; trocar_espelho_apt_e2e" : scriptDoPasso(passo);
-  const resultado = spawnSync("bash", ["-e", "-c", script], {
+  // A workstation may already have ffmpeg. Hide only that host executable until
+  // the apt stub creates its own binary; every other command uses the normal PATH.
+  const isolated = `command() {
+    if [ "$1" = "-v" ] && [ "$2" = "ffmpeg" ] && [ ! -x "$TEST_BIN/ffmpeg" ]; then return 1; fi
+    builtin command "$@"
+  }\n${script}`;
+  const resultado = spawnSync("bash", ["-e", "-c", isolated], {
     cwd: RAIZ,
     env: {
       ...process.env, PATH: `${bin}:/usr/bin:/bin`, HOME: raiz,

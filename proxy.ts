@@ -55,6 +55,53 @@ export async function proxy(request: NextRequest) {
   const isAdminSurface = host.startsWith("admin.") || pathname.startsWith("/admin");
 
   if (isPublicPath(pathname)) {
+    // A local session can retain an old refresh token after Supabase restarts.
+    // Validate it on /login only when present, and clear it if GoTrue rejects it.
+    if (
+      request.method === "GET" &&
+      pathname === "/login" &&
+      request.cookies.getAll().some(({ name }) => name === COOKIE_NAME || name.startsWith(`${COOKIE_NAME}.`))
+    ) {
+      const authCheck = createServerClient(
+        env.NEXT_PUBLIC_SUPABASE_URL,
+        env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+        {
+          global: {
+            fetch: fetchDoServidor(
+              urlDoSupabaseNoServidor(env.SUPABASE_SERVER_URL, env.NEXT_PUBLIC_SUPABASE_URL),
+              env.NEXT_PUBLIC_SUPABASE_URL,
+            ),
+          },
+          cookies: {
+            getAll() {
+              return request.cookies.getAll();
+            },
+            setAll(cookiesToSet: { name: string; value: string; options: CookieOptions }[]) {
+              cookiesToSet.forEach(({ name, value, options }) => {
+                request.cookies.set(name, value);
+                response.cookies.set(name, value, options);
+              });
+            },
+          },
+          cookieOptions: {
+            name: COOKIE_NAME,
+            sameSite: "strict",
+            httpOnly: true,
+            secure: cookieSecure(),
+            path: "/",
+          },
+        },
+      );
+      const { data: { user } } = await authCheck.auth.getUser();
+      if (!user) {
+        for (const { name } of request.cookies.getAll()) {
+          if (name === COOKIE_NAME || name.startsWith(`${COOKIE_NAME}.`)) {
+            request.cookies.delete(name);
+            response.cookies.delete(name);
+          }
+        }
+      }
+    }
     return response;
   }
 
@@ -98,6 +145,14 @@ export async function proxy(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   if (!user) {
+    // Drop the rejected session so protected navigations do not retry the same
+    // invalid refresh token on every request.
+    for (const { name } of request.cookies.getAll()) {
+      if (name === COOKIE_NAME || name.startsWith(`${COOKIE_NAME}.`)) {
+        request.cookies.delete(name);
+        response.cookies.delete(name);
+      }
+    }
     // API routes must respond with JSON envelope (contract: {error:{code,message}})
     // — never redirect HTML to JSON consumers. UI routes redirect to /login as before.
     if (pathname.startsWith("/api/")) {

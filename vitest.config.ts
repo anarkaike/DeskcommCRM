@@ -10,6 +10,8 @@ import { selecionarCercas } from "./vitest.cercas";
 const CERCAS = selecionarCercas(__dirname);
 
 export default defineConfig({
+  // Unit tests must not inherit Redis, Supabase or other credentials from the dev stack.
+  envDir: process.env.DESKCOMM_UNIT_USE_LOCAL_ENV === "1" ? undefined : false,
   // JSX automático já é o default do transform esbuild no Vite 7+ (vitest 4);
   // a opção `esbuild.jsx` saiu do tipo — provado pelos testes de componente.
   test: {
