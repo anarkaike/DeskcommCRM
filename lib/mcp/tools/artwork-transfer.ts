@@ -19,7 +19,7 @@ export const crmCreateArtworkTransfer: McpToolDefinition<typeof inputShape> = {
     "Prepara a transferência segura de um arquivo que o cliente anexou nesta conversa para o catálogo comercial WordPress. Passe somente o message_id de uma mensagem inbound com mídia; a identidade de contato/conversa vem do turno e não pode ser escolhida. Retorna um ticket temporário de uso único, nunca um caminho ou URL do Storage. Use apenas quando o fluxo de venda precisar importar a arte/documento recebido.",
   inputSchema: inputShape,
   category: "write",
-  requiresRole: "agent",
+  requiresRole: "ai_operator",
   requiresScope: "mcp:write",
   redigirParaAuditoria: () => ({ message_id: "[redigido]" }),
   handler: async (input, ctx) => {

@@ -190,7 +190,10 @@ describe("quem cadastra é o dono da instalação, e o gate vem antes da forma (
       endpoint: "https://erp.loja/mcp",
       chave: CHAVE,
     });
-    expect(resultado).toEqual({ ok: true, chaveUltimos4: "abcd" });
+    expect(resultado).toEqual({
+      ok: true, chaveUltimos4: "abcd", aprovacaoConfigurada: false, aprovacaoUltimos4: null,
+      artworkConfigurado: false, artworkUltimos4: null, artworkBlogId: null,
+    });
     expect(estado.updates).toHaveLength(1);
   });
 });
