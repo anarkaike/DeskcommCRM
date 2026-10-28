@@ -209,3 +209,13 @@ anterior à v1.0.0; regenere (`/graphify .`) antes de confiar em detalhe fino.
   nome de pasta, portanto **INFERIDO**.
 
 - [Acompanhamento administrativo por sessão](support-sessions.md) — autoridade, somente leitura, saída e contratos OAuth.
+
+## Experimentos preservados para revisão posterior
+
+MCP externo e documentos de propostas do fork estão congelados nesta branch.
+Não são parte da integração Telegram nem estão aprovados para deploy.
+- [2026-10-26-extensoes-plano-execucao](superpowers/plans/2026-10-26-extensoes-plano-execucao.md).
+- [2026-10-26-extensoes-contratos-dados](superpowers/specs/2026-10-26-extensoes-contratos-dados.md).
+- [2026-10-26-extensoes-matriz-testes](superpowers/specs/2026-10-26-extensoes-matriz-testes.md).
+- [2026-10-26-extensoes-plataforma-design](superpowers/specs/2026-10-26-extensoes-plataforma-design.md).
+- [2026-10-26-mercado-pago-adaptador-design](superpowers/specs/2026-10-26-mercado-pago-adaptador-design.md).
