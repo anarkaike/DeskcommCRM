@@ -50,6 +50,9 @@ it("todo handler mutante do app declara guarda de suporte ou é infraestrutura i
   // linhas acima. Não há sessão de suporte para a guarda ler; chamá-la aqui
   // seria um no-op que devolve 503 quando o GoTrue oscila.
   if(path==="app/api/v1/tenants/provision/route.ts")continue;
+  // Infraestrutura servidor a servidor: exige HMAC dedicada, ticket de uso único e
+  // escopo de contato/blog; não autentica por cookie nem admite sessão de suporte.
+  if(path==="app/api/v1/woocommerce/artwork-transfers/[transferId]/consume/route.ts")continue;
   if(path.includes("/impersonate"))continue; // início/fim autenticam a posse e têm contrato próprio
   const source=ts.createSourceFile(path,readFileSync(path,"utf8"),ts.ScriptTarget.Latest,true);
   // DUAS FORMAS de exportar um handler, e o gate precisa das duas. A varredura

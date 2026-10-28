@@ -41,6 +41,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx): Promise<Response> {
   if (!connectionId.success || !telegramUserId.success || !body.success)
     return fail("validation_error", "Invalid member grant.", 422, { requestId });
 
+  const auditedConnectionId = connectionId.data;
   const client = await getRequestPool().connect();
   try {
     await client.query("begin");
@@ -151,7 +152,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx): Promise<Response> {
       actorUserId: authz.user.id,
       organizationId: authz.org.orgId,
       resourceType: "telegram_bot_connection",
-      resourceId: connectionId.data,
+      resourceId: auditedConnectionId,
       requestId,
       metadata: {
         member_review: true,

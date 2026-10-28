@@ -94,6 +94,7 @@ export async function PUT(req: NextRequest, ctx: Ctx): Promise<Response> {
     return fail("validation_error", "Invalid Telegram group settings.", 422, { requestId });
   }
   const input = parsedBody.data;
+  const auditedConnectionId = parsedId.data;
   let client: PoolClient | null = null;
   try {
     client = await getRequestPool().connect();
@@ -257,7 +258,7 @@ export async function PUT(req: NextRequest, ctx: Ctx): Promise<Response> {
       actorUserId: authz.user.id,
       organizationId: authz.org.orgId,
       resourceType: "telegram_bot_connection",
-      resourceId: parsedId.data,
+      resourceId: auditedConnectionId,
       requestId,
       metadata: {
         group_id: groupId,

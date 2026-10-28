@@ -9427,26 +9427,20 @@ alter table public.channel_sessions
 alter table public.channel_sessions
   drop constraint if exists channel_sessions_provider_check;
 
-alter table public.channel_sessions
-  add constraint channel_sessions_provider_check
-  -- 'wacalls' (0233), 'zernio_social' (0368) e 'datafy' (0387) somados AQUI —
-  -- UM bloco só por constraint (não duplicar drop+add por migration).
+alter table public.channel_sessions add constraint channel_sessions_provider_check
   check (provider = any (array['waha'::text, 'meta_cloud'::text, 'zernio'::text, 'wacalls'::text, 'zernio_social'::text, 'datafy'::text, 'telegram'::text]));
 
 alter table public.channel_sessions
   drop constraint if exists channel_sessions_provider_ref_check;
 
-alter table public.channel_sessions
-  add constraint channel_sessions_provider_ref_check check (
-    (provider = 'waha'       and waha_session_name    is not null) or
-    (provider = 'meta_cloud' and meta_phone_number_id is not null) or
-    -- 'zernio_social' (migration 0368) endereça pelo MESMO `zernio_account_id`:
-    -- é o mesmo intermediário, com outra superfície de canal.
-    (provider in ('zernio', 'zernio_social') and zernio_account_id is not null) or
-    (provider = 'wacalls'    and wacalls_session_id    is not null) or
-    (provider = 'datafy'     and datafy_phone_number_id is not null) or
-    (provider = 'telegram'   and telegram_bot_connection_id is not null)
-  );
+alter table public.channel_sessions add constraint channel_sessions_provider_ref_check check (
+  (provider = 'waha' and waha_session_name is not null) or
+  (provider = 'meta_cloud' and meta_phone_number_id is not null) or
+  (provider in ('zernio', 'zernio_social') and zernio_account_id is not null) or
+  (provider = 'wacalls' and wacalls_session_id is not null) or
+  (provider = 'datafy' and datafy_phone_number_id is not null) or
+  (provider = 'telegram' and telegram_bot_connection_id is not null and phone_number is null)
+);
 
 comment on column public.channel_sessions.zernio_account_id is
   'Identificador da conta conectada NO INTERMEDIÁRIO (accountId), não o phone_number_id da Meta. É o que endereça envio e webhook. Espelhado em lib/channels/session-ref.ts.';
@@ -60127,9 +60121,8 @@ alter table public.telegram_bot_connections
 
 alter table public.telegram_bot_connections
   drop constraint if exists telegram_bot_connections_status_check;
-alter table public.telegram_bot_connections
-  add constraint telegram_bot_connections_status_check
-  check (status in ('draft', 'configured', 'active', 'paused', 'disconnected', 'error'));
+alter table public.telegram_bot_connections add constraint telegram_bot_connections_status_check
+  check (status in ('draft', 'configured', 'active', 'paused', 'disconnected', 'error', 'deleted'));
 
 create unique index if not exists telegram_bot_connections_webhook_path_unique
   on public.telegram_bot_connections (webhook_path_token)
@@ -60192,27 +60185,18 @@ alter table public.telegram_webhook_updates drop constraint if exists telegram_w
 alter table public.telegram_webhook_updates add constraint telegram_webhook_updates_status_check
   check (status in ('pending', 'processing', 'processed', 'ignored', 'error', 'deferred'));
 alter table public.telegram_bot_connections add column if not exists deleted_at timestamptz;
-alter table public.telegram_bot_connections drop constraint if exists telegram_bot_connections_status_check;
-alter table public.telegram_bot_connections add constraint telegram_bot_connections_status_check
-  check (status in ('draft', 'configured', 'active', 'paused', 'disconnected', 'error', 'deleted'));
+
+-- telegram_bot_connections_status_check is consolidated in its first final definition.
 drop index if exists public.telegram_bot_connections_bot_global_unique;
 create unique index if not exists telegram_bot_connections_bot_global_unique
   on public.telegram_bot_connections (telegram_bot_id) where deleted_at is null;
 drop index if exists public.telegram_bot_connections_org_bot_unique;
 create unique index if not exists telegram_bot_connections_org_bot_unique
   on public.telegram_bot_connections (organization_id, telegram_bot_id) where deleted_at is null;
-alter table public.channel_sessions drop constraint if exists channel_sessions_provider_check;
-alter table public.channel_sessions add constraint channel_sessions_provider_check
-  check (provider in ('waha', 'meta_cloud', 'zernio', 'zernio_social', 'wacalls', 'datafy', 'telegram'));
-alter table public.channel_sessions drop constraint if exists channel_sessions_provider_ref_check;
-alter table public.channel_sessions add constraint channel_sessions_provider_ref_check check (
-  (provider = 'waha' and waha_session_name is not null) or
-  (provider = 'meta_cloud' and meta_phone_number_id is not null) or
-  (provider in ('zernio', 'zernio_social') and zernio_account_id is not null) or
-  (provider = 'wacalls' and wacalls_session_id is not null) or
-  (provider = 'datafy' and datafy_phone_number_id is not null) or
-  (provider = 'telegram' and telegram_bot_connection_id is not null and phone_number is null)
-);
+
+-- channel_sessions_provider_check is consolidated in its first final definition.
+
+-- channel_sessions_provider_ref_check is consolidated in its first final definition.
 create unique index if not exists channel_sessions_telegram_connection_unique
   on public.channel_sessions (telegram_bot_connection_id) where telegram_bot_connection_id is not null;
 do $$ begin
@@ -60221,9 +60205,8 @@ do $$ begin
     references public.telegram_bot_connections (organization_id, id) on delete restrict;
 exception when duplicate_object then null; end $$;
 
-alter table public.conversations drop constraint if exists conversations_channel_check;
-alter table public.conversations add constraint conversations_channel_check
-  check (channel in ('whatsapp', 'instagram', 'facebook', 'telegram'));
+
+-- conversations_channel_check is consolidated in its first final definition.
 
 create or replace function public.fn_upsert_telegram_contact(
   p_org uuid, p_identity text, p_display_name text
@@ -60524,8 +60507,7 @@ revoke select on public.telegram_bot_surface_capabilities from anon, authenticat
 grant select (organization_id, connection_id, surface, capability)
   on public.telegram_bot_surface_capabilities to authenticated;
 
-drop policy if exists telegram_bot_surface_capabilities_select_tenant
-  on public.telegram_bot_surface_capabilities;
+drop policy if exists telegram_bot_surface_capabilities_select_tenant on public.telegram_bot_surface_capabilities;
 create policy telegram_bot_surface_capabilities_select_tenant
   on public.telegram_bot_surface_capabilities
   for select to authenticated
@@ -60904,11 +60886,8 @@ comment on column public.telegram_team_group_members.can_read_cases is
 
 -- Reconciled Servinder source: supabase/migrations/20261026220500_9023_telegram_numeric_group_ids.sql
 -- manifest: Permite IDs numéricos de grupos Telegram na tabela compartilhada de grupos de sessão.
-alter table public.channel_session_groups
-  drop constraint if exists channel_session_groups_group_chat_id_check;
-alter table public.channel_session_groups
-  add constraint channel_session_groups_group_chat_id_check
-  check (group_chat_id like '%@g.us' or group_chat_id ~ '^-?[0-9]{1,20}$');
+
+-- channel_session_groups_group_chat_id_check is consolidated in its first final definition.
 
 -- Reconciled Servinder source: supabase/migrations/20261026220600_9024_telegram_team_assistant_runtime.sql
 -- manifest: Enable the isolated, read-only Telegram team case assistant.
@@ -60917,7 +60896,7 @@ alter table public.telegram_case_interactions
 
 alter table public.telegram_case_interactions
   add constraint telegram_case_interactions_action_check
-  check (action in ('list_open','list_closed','view_case','guide_reply','guide_question','resolve','escalate','approve_member','assistant_reply'));
+  check (action in ('list_open','list_closed','view_case','guide_reply','guide_question','resolve','escalate','approve_member','deny_member','assistant_reply'));
 
 comment on column public.telegram_team_group_settings.team_assistant_enabled is
   'Opt-in read-only assistant for verified members replying to case cards in this Telegram group; it cannot mutate cases or message customers.';
@@ -60948,12 +60927,9 @@ alter table public.telegram_case_interactions
   add column if not exists target_telegram_user_id text
   check (target_telegram_user_id ~ '^[0-9]{1,20}$');
 
-alter table public.telegram_case_interactions
-  drop constraint if exists telegram_case_interactions_action_check;
 
-alter table public.telegram_case_interactions
-  add constraint telegram_case_interactions_action_check
-  check (action in ('list_open','list_closed','view_case','guide_reply','guide_question','resolve','escalate','approve_member','deny_member','assistant_reply'));
+
+-- telegram_case_interactions_action_check is consolidated in its first final definition.
 
 comment on column public.telegram_team_group_members.approval_state is
   'Review state for an observed Telegram participant. Observers and denied members never receive CRM action grants.';

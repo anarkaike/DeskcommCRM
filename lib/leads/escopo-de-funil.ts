@@ -140,6 +140,7 @@ export const ALVO_DE_FUNIL: Record<string, AlvoDeFunil> = {
   crm_assign_conversation: "sem_funil",
   crm_resume_ai_attendance: "sem_funil",
   crm_save_org_memory: "sem_funil",
+  crm_create_artwork_transfer: "sem_funil",
   crm_propose_contact_field: "sem_funil",
   // Rascunho sugerido por integração (#1611): opera por `conversation_id`,
   // nunca `lead_id`, e não mexe em estado de funil nenhum. A barreira é OUTRA,

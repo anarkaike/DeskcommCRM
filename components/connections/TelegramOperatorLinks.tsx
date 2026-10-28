@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel } from "@/components/ui/alert-dialog";
+import { copyToClipboard } from "@/lib/clipboard";
 import { apiClient } from "@/lib/api/client";
 import { ApiError } from "@/lib/api/types";
 import { useT } from "@/hooks/i18n/useT";
@@ -113,7 +114,7 @@ export function TelegramOperatorLinks({ botId, botName, active }: Props) {
     if (!command) return;
     const value = command.command;
     try {
-      await navigator.clipboard.writeText(value);
+      if (!(await copyToClipboard(value))) throw new Error("clipboard_copy_failed");
       setCopiedCommand(value);
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopiedCommand(null), 2500);
@@ -230,7 +231,7 @@ export function TelegramOperatorLinks({ botId, botName, active }: Props) {
                 type="button"
                 onClick={() => void copyCommand()}
                 aria-label={t("Copiar comando de pareamento")}
-                className="flex w-full cursor-pointer items-center gap-3 rounded bg-background/70 p-2 text-left transition-colors hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex w-full cursor-pointer items-center gap-3 rounded-md bg-background/70 p-2 text-left transition-colors hover:bg-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <code className="min-w-0 flex-1 break-all select-text">{command.command}</code>
                 <span className="ml-auto flex shrink-0 items-center justify-end gap-1.5">

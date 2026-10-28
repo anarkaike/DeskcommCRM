@@ -28,6 +28,7 @@ export async function POST(req: NextRequest, ctx: Ctx): Promise<Response> {
     body = schema.safeParse(await req.json().catch(() => null));
   if (!id.success || !body.success)
     return fail("validation_error", "Invalid group attestation.", 422, { requestId });
+  const auditedConnectionId = id.data;
   const client = await getRequestPool().connect();
   try {
     await client.query("begin");
@@ -109,7 +110,7 @@ export async function POST(req: NextRequest, ctx: Ctx): Promise<Response> {
       actorUserId: authz.user.id,
       organizationId: authz.org.orgId,
       resourceType: "telegram_bot_connection",
-      resourceId: id.data,
+      resourceId: auditedConnectionId,
       requestId,
       metadata: {
         group_membership_attested: true,

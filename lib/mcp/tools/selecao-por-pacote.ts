@@ -80,7 +80,7 @@ import { entraPorPacote, type ToolBundle, type ToolRisk } from "./pacotes";
  * que o bloco ⚠️ acima diz. O dia em que o `evoluir` exigir 28, o passo volta a
  * ser ele.
  */
-export const TETO_TOOLS_POR_AGENTE = 27;
+export const TETO_TOOLS_POR_AGENTE = 28;
 
 /** O mínimo que a regra precisa saber de uma capacidade. */
 export interface CapacidadeSelecionavel {

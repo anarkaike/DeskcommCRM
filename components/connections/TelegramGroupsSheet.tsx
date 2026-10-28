@@ -13,6 +13,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useT } from "@/hooks/i18n/useT";
+import { rotuloDoContato } from "@/lib/contacts/rotulo-do-contato";
 import { ArrowsClockwise, ChatCircle, ShieldCheck } from "@/lib/ui/icons";
 type Member = {
   telegram_user_id: string;
@@ -339,7 +340,8 @@ export function TelegramGroupsSheet({
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="font-medium">
-                          {m.display_name || (m.username ? `@${m.username}` : m.telegram_user_id)}
+                          {rotuloDoContato({ name: m.display_name, display_name: m.username ? `@${m.username}` : null }, t)}
+                          <code className="ml-2 text-xs text-text-muted">{m.telegram_user_id}</code>
                           <span className="ml-2 text-xs text-text-muted">
                             {m.approval_state === "observer" ? t("Observador aprovado") : m.approval_state === "denied" ? t("Sem acesso aprovado") : m.paired_user_id ? t("Pareado ao CRM") : t("Sem pareamento")}
                           </span>

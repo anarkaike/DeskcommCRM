@@ -51,7 +51,7 @@ const ferramentas: FerramentaRemota[] = TODAS_AS_TOOLS.map((name) => ({
 }));
 const servidor = { endpoint: "https://diskuniformes.servinder.com.br/wp-json/servinder/v1/mcp", chave: "token-de-teste" };
 
-describe("contrato DeskcommCRM ↔ Servinder WooCommerce MCP", () => {
+describe("contrato do CRM ↔ Servinder WooCommerce MCP", () => {
   it("preserva os nomes e classifica as 24 tools anunciadas no escopo correto", () => {
     const escolhas = TODAS_AS_TOOLS.map((nome) => ({ nome, leitura: LEITURA.has(nome) }));
     const montadas = definirFerramentasRemotas(servidor, ferramentas, new Set(), escolhas);

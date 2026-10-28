@@ -47,7 +47,9 @@ export type DonoDoCampo =
   /** `lead_id`: quem guarda é `negocioDaEscritaDoTurno`, em `tools.ts`. */
   | "negocio"
   /** Não é registro de cliente: funil, etapa, usuário, fluxo. */
-  | "configuracao";
+  | "configuracao"
+  /** Mensagem recebida, pertencente ao contato do turno. */
+  | "mensagem";
 
 export const ESCOPO_DAS_ESCRITAS: Readonly<Record<string, Readonly<Record<string, DonoDoCampo>>>> = {
   // ---- agenda ----
@@ -94,6 +96,7 @@ export const ESCOPO_DAS_ESCRITAS: Readonly<Record<string, Readonly<Record<string
   // ---- retorno ----
   crm_schedule_followup: { lead_id: "negocio", contact_id: "contato" },
   crm_cancel_followup: { followup_id: "retorno" },
+  crm_create_artwork_transfer: { message_id: "mensagem" },
   crm_enroll_followup_flow: { contact_id: "contato", flow_id: "configuracao" },
 
   // ---- Disk Uniformes commerce (escopo de cliente validado pelo servidor WP) ----
@@ -177,6 +180,8 @@ async function campoEhDoContato(
       return true;
     case "contato":
       return id.toLowerCase() === contato.toLowerCase();
+    case "mensagem":
+      return existeDoContato(supabase, "messages", organizationId, contato, id);
     case "conversa":
       return existeDoContato(supabase, "conversations", organizationId, contato, id);
     case "compromisso":
