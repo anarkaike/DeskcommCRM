@@ -59,6 +59,7 @@ export type {
   ChannelAdapter,
   ChannelCapabilities,
   ChannelProvider,
+  ContatoDoAparelho,
   ProviderDeMensagem,
   OutboundEnvelope,
   OutboundKind,

@@ -25,6 +25,7 @@
     "operator",
     "discovery",
     "candidates",
+    "site-enrich",
     "crm",
     "queue",
     "inbox",
@@ -116,6 +117,13 @@
       "label": "ElevenLabs Agents privado e teste no navegador"
     },
     {
+      "id": "site-enrich",
+      "lane": "app",
+      "col": 3,
+      "type": "component",
+      "label": "Auditoria de site no tick (spec 24)"
+    },
+    {
       "id": "inbound-turn",
       "lane": "app",
       "col": 4,
@@ -142,6 +150,13 @@
       "col": 6,
       "type": "component",
       "label": "Gatilho: mensagem da saída falhou, a reserva volta"
+    },
+    {
+      "id": "site-tool",
+      "lane": "app",
+      "col": 5,
+      "type": "component",
+      "label": "Consulta da análise do site na conversa (só leitura, por contato do turno)"
     }
   ],
   "edges": [
@@ -246,6 +261,21 @@
       "label": "crm-summary autorizado: contexto comercial e fontes no painel lateral"
     },
     {
+      "from": "candidates",
+      "to": "site-enrich",
+      "label": "auditoria de site em data.site"
+    },
+    {
+      "from": "site-enrich",
+      "to": "queue",
+      "label": "gancho real na abordagem"
+    },
+    {
+      "from": "site-enrich",
+      "to": "inbox",
+      "label": "auditoria no painel via crm-summary"
+    },
+    {
       "from": "inbound-turn",
       "to": "saida-configuravel",
       "label": "conta e reserva a saída antes de enviar"
@@ -269,6 +299,21 @@
       "from": "saida-volta-com-a-mensagem",
       "to": "operator",
       "label": "audita prospecting.exit_offer_withdrawn; a tela volta a 'Saída ainda não oferecida'"
+    },
+    {
+      "from": "candidates",
+      "to": "site-tool",
+      "label": "lê data.site, a estratégia e o cadastro do contato da conversa"
+    },
+    {
+      "from": "site-tool",
+      "to": "inbound-turn",
+      "label": "o agente consulta durante qualquer turno, da primeira à última mensagem"
+    },
+    {
+      "from": "site-tool",
+      "to": "operator",
+      "label": "cada consulta sai no registro de ferramentas do agente (laço: a tela mostra se o agente usa)"
     }
   ]
 }
