@@ -15,6 +15,8 @@ const nextConfig: NextConfig = {
   // desligado porque Next 16.3 + adapter + standalone quebra o onBuildComplete
   // com ENOENT next-server.js.nft.json (#96646).
   output: process.env.VERCEL ? undefined : "standalone",
+  // Permite que o Chrome local carregue recursos do servidor Next dev pelo túnel WSL.
+  allowedDevOrigins: ["127.0.0.1"],
   /**
    * O `standalone` copia SÓ o que o file tracing detecta — e ele não detecta
    * tudo de `@swc/helpers`.

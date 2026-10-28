@@ -54,6 +54,7 @@ import { crmListContactOrders, crmSearchProducts } from "./comercio";
 import { crmGetHonorariosContrato, crmListHonorariosParcelas } from "./honorarios";
 import { crmDescribeExternalData, crmQueryExternalData } from "./dados-externos";
 import { crmConsultarReceita } from "./receitas-externas";
+import { crmCreateArtworkTransfer } from "./artwork-transfer";
 import { crmListPrivacyRequests } from "./privacidade";
 import {
   crmArchiveStage,
@@ -122,6 +123,7 @@ export const allTools: ReadonlyArray<McpToolDefinition> = [
   crmSaveOrgMemory,
   crmListContactOrders,
   crmSearchProducts,
+  crmCreateArtworkTransfer,
   crmGetHonorariosContrato,
   crmListHonorariosParcelas,
   crmPrepararProposta,

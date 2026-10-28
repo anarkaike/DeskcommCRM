@@ -9,7 +9,7 @@ import type { OutboundMedia } from "@/lib/waha/media-send";
 
 export type { OutboundMedia };
 
-export type ChannelProvider = "waha" | "meta_cloud" | "zernio" | "zernio_social" | "wacalls" | "datafy";
+export type ChannelProvider = "waha" | "meta_cloud" | "zernio" | "zernio_social" | "wacalls" | "datafy" | "telegram";
 
 /**
  * Os providers que transportam MENSAGEM — o subconjunto sobre o qual a matriz
@@ -56,6 +56,8 @@ export interface ChannelCapabilities {
   costPerMessage: boolean;
   /** O atendente pode editar e apagar para todos uma mensagem já enviada. */
   alteraMensagemEnviada: boolean;
+  /** Este provider já tem consumidores seguros para disparos automatizados? */
+  automatedOutbound: boolean;
 }
 
 /**
@@ -80,6 +82,8 @@ export interface RecipientInput {
    * `waIdentity.startsWith("lid:")` — justo o caso que a regra protege.
    */
   waLid?: string | null | undefined;
+  /** Endereço da conversa fornecido pelo canal, quando aplicável. */
+  providerConversationId?: string | null;
 }
 
 /** Contato compartilhado (vcard) — só `kind: "contact"`. */
@@ -120,6 +124,8 @@ export interface ChannelTenantScope {
 }
 
 export interface OutboundEnvelope extends ChannelTenantScope {
+  /** Autor do envio; canais podem reservar recursos por superfície. */
+  actorType?: string;
   /** Callback interno: revalida a origem depois do preparo assíncrono e antes do transporte. */
   beforeSend?: () => Promise<void>;
   /** Identificador da sessão/número no provider (WAHA: nome da sessão). */

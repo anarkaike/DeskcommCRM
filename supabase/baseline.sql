@@ -57228,7 +57228,7 @@ create table if not exists public.telegram_webhook_updates (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   connection_id uuid not null,
-  update_id bigint not null,
+  update_id bigint,
   update_type text not null,
   payload jsonb not null,
   status text not null default 'pending',
@@ -57347,12 +57347,6 @@ grant execute on function public.fn_upsert_telegram_conversation(uuid, uuid, uui
 
 -- Source: 20261024000000_0726_telegram_inbox_groups.sql
 -- manifest: **Grupos Telegram entram na Inbox por allowlist explícita.** IDs e títulos descobertos vêm de updates reais; conversas permanecem humanas e não acionam IA.
-
-alter table public.channel_session_groups
-  drop constraint if exists channel_session_groups_group_chat_id_check;
-alter table public.channel_session_groups
-  add constraint channel_session_groups_group_chat_id_check
-  check (group_chat_id like '%@g.us' or group_chat_id ~ '^-?[0-9]{1,20}$');
 
 drop function if exists public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text);
 create or replace function public.fn_upsert_telegram_conversation(
@@ -57591,81 +57585,7 @@ create policy telegram_bot_surface_capabilities_select_tenant
   for select to authenticated
   using (organization_id in (select public.fn_user_org_ids()));
 
--- ---- VARREDURA anon: função nova nasce exposta em quem ATUALIZA (migration 0116) ----
---
--- ⚠️ DE PROPÓSITO, NENHUMA FUNÇÃO É CRIADA DEPOIS DESTE BLOCO. Apêndice que cria
--- função entra ANTES dele — quem o empurrar para o meio desarma a cura para tudo
--- que vier depois. (O último bloco do arquivo é a chamada das travas do suporte,
--- migration 0274, que não cria função.)
--- Vigiado por `tests/unit/varredura-anon-e-o-ultimo-bloco.test.ts`.
---
--- A 0108 revogou anon numa LISTA de 8 funções, medida num banco instalado do
--- ZERO. Quem ATUALIZA tem outro estado: o `ALTER DEFAULT PRIVILEGES ... GRANT
--- ALL ON FUNCTIONS TO anon` do corpo deste arquivo grava uma entrada em
--- `pg_default_acl` que fica no catálogo PARA SEMPRE, e a partir daí toda função
--- criada em `public` nasce com EXECUTE para anon — inclusive as deste apêndice.
---
--- Medido numa VPS real (2026-08-07), comparando com o que um install fresco
--- produz: 6 definer expostas a anon e 5 a authenticated, entre elas
--- `fn_decrypt_oauth` — alcançável pela anon key, que vai para o browser.
---
--- Lista conserta o estoque e reabre no próximo `create function`. Esta varredura
--- é auto-curativa e roda DEPOIS de tudo que cria função, então cura no mesmo run
--- em que o defeito nasceria. Desfazer o ALTER DEFAULT PRIVILEGES não serve: ele
--- vem do `pg_dump` do Supabase e é reescrito a cada re-aplicação.
---
--- As duas origens de EXECUTE (a mesma lição da 0108): grant DIRETO a anon, que
--- `revoke from public` não remove; e grant a PUBLIC, do qual anon HERDA, que
--- `revoke from anon` não remove. O privilégio EFETIVO de authenticated e
--- service_role é medido ANTES e devolvido depois — tira anon sem tirar leitura.
-do $$
-declare
-  f record;
-  tinha_auth boolean;
-  tinha_service boolean;
-begin
-  if to_regrole('anon') is null then
-    return;
-  end if;
 
-  for f in
-    select p.oid, p.oid::regprocedure as assinatura
-      from pg_proc p
-      join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public'
-       and p.prosecdef
-  loop
-    tinha_auth := to_regrole('authenticated') is not null
-                  and has_function_privilege('authenticated', f.oid, 'EXECUTE');
-    tinha_service := to_regrole('service_role') is not null
-                     and has_function_privilege('service_role', f.oid, 'EXECUTE');
-
-    execute format('revoke execute on function %s from public, anon', f.assinatura);
-
-    if tinha_auth then
-      execute format('grant execute on function %s to authenticated', f.assinatura);
-    end if;
-    if tinha_service then
-      execute format('grant execute on function %s to service_role', f.assinatura);
-    end if;
-  end loop;
-end $$;
-
--- regra 2 (authenticated): as 5 que o update abriu e o install não abre. Aqui não
--- cabe varredura — `authenticated` PRECISA de EXECUTE nos helpers de RLS e em
--- `retrieve_top_k_chunks` (num install fresco ele tem). É julgamento por função,
--- e o alvo de cada linha é o valor que um install fresco produz, medido.
-revoke execute on function public.fn_audit_log_row() from authenticated;
-revoke execute on function public.fn_decrypt_oauth(bytea) from authenticated;
-revoke execute on function public.fn_encrypt_oauth(text) from authenticated;
-revoke execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) from authenticated;
-revoke execute on function public.fn_update_budget_consumption() from authenticated;
-
-grant execute on function public.fn_audit_log_row() to service_role;
-grant execute on function public.fn_decrypt_oauth(bytea) to service_role;
-grant execute on function public.fn_encrypt_oauth(text) to service_role;
-grant execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) to service_role;
-grant execute on function public.fn_update_budget_consumption() to service_role;
 
 
 -- ---- Criador provisório sai na entrega (migration 0237) ----
@@ -60493,3 +60413,585 @@ create view public.external_db_connections_safe
 
 revoke all on public.external_db_connections_safe from anon;
 grant select on public.external_db_connections_safe to authenticated;
+-- manifest: Configura capacidades internas independentes por grupo Telegram sem alterar a allowlist da Inbox.
+create unique index if not exists channel_session_groups_org_id_uidx
+  on public.channel_session_groups (organization_id, id);
+
+create table if not exists public.telegram_team_group_settings (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  connection_id uuid not null,
+  channel_session_group_id uuid not null,
+  group_chat_id text not null check (group_chat_id ~ '^-?[0-9]{1,20}$'),
+  case_alerts_enabled boolean not null default false,
+  case_actions_enabled boolean not null default false,
+  team_assistant_enabled boolean not null default false,
+  membership_state text not null default 'unknown'
+    check (membership_state in ('unknown','healthy','stale','suspended')),
+  membership_checked_at timestamptz,
+  membership_last_update_id bigint,
+  assistant_disabled_reason text,
+  created_by uuid references auth.users(id) on delete set null,
+  updated_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint telegram_team_group_settings_connection_fk
+    foreign key (organization_id, connection_id)
+    references public.telegram_bot_connections (organization_id, id) on delete cascade,
+  constraint telegram_team_group_settings_group_fk
+    foreign key (organization_id, channel_session_group_id)
+    references public.channel_session_groups (organization_id, id) on delete cascade,
+  constraint telegram_team_group_settings_group_unique unique (organization_id, connection_id, group_chat_id),
+  constraint telegram_team_group_settings_row_unique unique (organization_id, id)
+);
+
+create table if not exists public.telegram_team_group_members (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  group_setting_id uuid not null,
+  telegram_user_id text not null check (telegram_user_id ~ '^[0-9]{1,20}$'),
+  paired_user_id uuid references auth.users(id) on delete set null,
+  display_name text,
+  username text,
+  membership_status text not null default 'unknown'
+    check (membership_status in ('unknown','member','left','restricted')),
+  observed_at timestamptz not null default now(),
+  last_update_id bigint,
+  can_use_assistant boolean not null default false,
+  can_act_on_cases boolean not null default false,
+  can_approve_members boolean not null default false,
+  reviewed_by uuid references auth.users(id) on delete set null,
+  reviewed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint telegram_team_group_members_setting_fk
+    foreign key (organization_id, group_setting_id)
+    references public.telegram_team_group_settings (organization_id, id) on delete cascade,
+  constraint telegram_team_group_members_identity_unique
+    unique (organization_id, group_setting_id, telegram_user_id)
+);
+
+create index if not exists telegram_team_group_settings_org_idx
+  on public.telegram_team_group_settings (organization_id, connection_id);
+create index if not exists telegram_team_group_members_lookup_idx
+  on public.telegram_team_group_members (organization_id, group_setting_id, membership_status);
+
+alter table public.telegram_team_group_settings enable row level security;
+alter table public.telegram_team_group_members enable row level security;
+revoke all on public.telegram_team_group_settings from public, anon, authenticated;
+revoke all on public.telegram_team_group_members from public, anon, authenticated;
+grant select, insert, update, delete on public.telegram_team_group_settings to service_role;
+grant select, insert, update, delete on public.telegram_team_group_members to service_role;
+
+drop policy if exists telegram_team_group_settings_select on public.telegram_team_group_settings;
+create policy telegram_team_group_settings_select on public.telegram_team_group_settings
+  for select to authenticated
+  using (organization_id in (
+    select org_id from public.fn_user_org_ids() org_id
+    where public.fn_user_role_in_org(org_id) in ('manager','admin')
+  ));
+drop policy if exists telegram_team_group_members_select on public.telegram_team_group_members;
+create policy telegram_team_group_members_select on public.telegram_team_group_members
+  for select to authenticated
+  using (organization_id in (
+    select org_id from public.fn_user_org_ids() org_id
+    where public.fn_user_role_in_org(org_id) in ('manager','admin')
+  ));
+
+comment on table public.telegram_team_group_settings is
+  'Canonical internal-capability settings per Telegram group; channel_session_groups.enabled remains only the Inbox allowlist.';
+comment on column public.telegram_team_group_settings.membership_state is
+  'Security state. AI and case writes require healthy; Telegram Bot API does not provide a complete member inventory.';
+
+-- 9019_telegram_team_cases_runtime
+alter table public.telegram_team_group_settings
+  add column if not exists membership_attested_at timestamptz,
+  add column if not exists membership_attested_by uuid references auth.users(id) on delete set null;
+
+create table if not exists public.telegram_case_alert_config (
+  organization_id uuid primary key references public.organizations(id) on delete cascade,
+  group_setting_id uuid not null,
+  enabled boolean not null default false,
+  updated_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint telegram_case_alert_config_group_fk foreign key (organization_id, group_setting_id)
+    references public.telegram_team_group_settings (organization_id, id) on delete cascade
+);
+
+create table if not exists public.telegram_case_alert_deliveries (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  case_id uuid not null references public.agent_cases(id) on delete cascade,
+  group_setting_id uuid not null,
+  connection_id uuid not null,
+  message_id text,
+  status text not null default 'pending' check (status in ('pending','sending','sent','failed','cancelled')),
+  error_code text,
+  attempts smallint not null default 0 check (attempts between 0 and 10),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  sent_at timestamptz,
+  constraint telegram_case_alert_deliveries_group_fk foreign key (organization_id, group_setting_id)
+    references public.telegram_team_group_settings (organization_id, id) on delete cascade,
+  constraint telegram_case_alert_deliveries_connection_fk foreign key (organization_id, connection_id)
+    references public.telegram_bot_connections (organization_id, id) on delete cascade,
+  constraint telegram_case_alert_deliveries_unique unique (organization_id, case_id, group_setting_id)
+);
+
+create table if not exists public.telegram_case_interactions (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  connection_id uuid not null,
+  group_setting_id uuid not null,
+  update_id bigint,
+  telegram_user_id text not null check (telegram_user_id ~ '^[0-9]{1,20}$'),
+  actor_user_id uuid references auth.users(id) on delete set null,
+  case_id uuid references public.agent_cases(id) on delete set null,
+  action text not null check (action in ('list_open','list_closed','view_case','guide_reply','guide_question','resolve','escalate','approve_member','assistant_reply')),
+  status text not null default 'received' check (status in ('received','confirmed','completed','rejected','expired')),
+  callback_token_hash text unique,
+  group_message_id text,
+  reply_to_message_id text,
+  expires_at timestamptz,
+  consumed_at timestamptz,
+  created_at timestamptz not null default now(),
+  constraint telegram_case_interactions_connection_fk foreign key (organization_id, connection_id)
+    references public.telegram_bot_connections (organization_id, id) on delete cascade,
+  constraint telegram_case_interactions_group_fk foreign key (organization_id, group_setting_id)
+    references public.telegram_team_group_settings (organization_id, id) on delete cascade,
+  constraint telegram_case_interactions_update_unique unique (connection_id, update_id)
+);
+
+create index if not exists telegram_case_alert_deliveries_pending_idx
+  on public.telegram_case_alert_deliveries (organization_id, status, created_at);
+create index if not exists telegram_case_interactions_expiry_idx
+  on public.telegram_case_interactions (expires_at) where status in ('received','confirmed');
+
+alter table public.telegram_case_alert_config enable row level security;
+alter table public.telegram_case_alert_deliveries enable row level security;
+alter table public.telegram_case_interactions enable row level security;
+revoke all on public.telegram_case_alert_config, public.telegram_case_alert_deliveries, public.telegram_case_interactions from public, anon, authenticated;
+grant select, insert, update, delete on public.telegram_case_alert_config, public.telegram_case_alert_deliveries, public.telegram_case_interactions to service_role;
+
+comment on column public.telegram_team_group_settings.membership_attested_at is
+  'Explicit admin attestation of observed Telegram roster; Bot API cannot enumerate all group members. New membership event clears this attestation.';
+comment on table public.telegram_case_alert_config is
+  'Organization alert destination references canonical per-group settings; group permissions are not duplicated.';
+comment on table public.telegram_case_alert_deliveries is
+  'Idempotent minimal Telegram alert receipts; no case text, contact data or transcript.';
+comment on table public.telegram_case_interactions is
+  'Idempotent Telegram group action/callback correlation; no message body retained.';
+
+-- manifest: use one canonical case-alert destination for WhatsApp or a Telegram team group.
+alter table public.config_aviso_de_caso
+  add column if not exists destino_tipo text not null default 'whatsapp',
+  add column if not exists telegram_group_setting_id uuid;
+
+alter table public.config_aviso_de_caso
+  alter column telefone_destino drop not null;
+
+alter table public.config_aviso_de_caso
+  drop constraint if exists config_aviso_de_caso_destino_tipo_check;
+alter table public.config_aviso_de_caso
+  add constraint config_aviso_de_caso_destino_tipo_check
+  check (destino_tipo in ('whatsapp','telegram'));
+
+alter table public.config_aviso_de_caso
+  drop constraint if exists config_aviso_de_caso_telegram_group_fk;
+alter table public.config_aviso_de_caso
+  add constraint config_aviso_de_caso_telegram_group_fk
+  foreign key (organization_id, telegram_group_setting_id)
+  references public.telegram_team_group_settings(organization_id, id)
+  on delete set null (telegram_group_setting_id);
+
+alter table public.config_aviso_de_caso
+  drop constraint if exists config_aviso_de_caso_destination_shape;
+alter table public.config_aviso_de_caso
+  add constraint config_aviso_de_caso_destination_shape check (
+    (destino_tipo='whatsapp' and telegram_group_setting_id is null
+      and (telefone_destino is not null or ligado=false))
+    or
+    (destino_tipo='telegram' and channel_session_id is null and telefone_destino is null
+      and destino_jid is null and resposta_whatsapp_habilitada=false
+      and (telegram_group_setting_id is not null or ligado=false))
+  );
+
+create or replace function public.fn_aviso_de_caso_coerente()
+returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+begin
+  if new.channel_session_id is not null or new.telefone_destino is not null then
+    new.destino_tipo := 'whatsapp';
+    new.telegram_group_setting_id := null;
+  end if;
+  if new.destino_tipo = 'telegram' then
+    new.channel_session_id := null;
+    new.telefone_destino := null;
+    new.destino_jid := null;
+    new.resposta_whatsapp_habilitada := false;
+    if new.telegram_group_setting_id is null then
+      new.ligado := false;
+    end if;
+  else
+    new.telegram_group_setting_id := null;
+    if new.channel_session_id is null or new.telefone_destino is null then
+      new.ligado := false;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.fn_aviso_de_caso_coerente() from public, anon, authenticated;
+
+-- Migrate the earlier Telegram-only pointer into the same canonical row.
+do $$
+declare
+  r record;
+begin
+  if to_regclass('public.telegram_case_alert_config') is not null then
+    for r in execute 'select organization_id, group_setting_id, enabled, updated_by from public.telegram_case_alert_config' loop
+      if r.enabled then
+        insert into public.config_aviso_de_caso
+          (organization_id, destino_tipo, telegram_group_setting_id, channel_session_id,
+           telefone_destino, destino_jid, rotulo, ligado, resposta_whatsapp_habilitada,
+           criado_por, atualizado_por)
+        values
+          (r.organization_id, 'telegram', r.group_setting_id, null, null, null, null, true, false,
+           r.updated_by, r.updated_by)
+        on conflict (organization_id) do update set
+          destino_tipo='telegram', telegram_group_setting_id=excluded.telegram_group_setting_id,
+          channel_session_id=null, telefone_destino=null, destino_jid=null,
+          resposta_whatsapp_habilitada=false, ligado=true, atualizado_por=excluded.atualizado_por,
+          updated_at=now();
+      end if;
+    end loop;
+    drop table public.telegram_case_alert_config;
+  end if;
+end;
+$$;
+
+create or replace function public.fn_definir_aviso_de_caso_telegram(
+  p_org uuid,
+  p_group_setting_id uuid
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_group public.telegram_team_group_settings;
+begin
+  if auth.uid() is null or p_org is null
+     or not public.fn_role_at_least(p_org, 'admin')
+     or not public.fn_support_write_allowed(p_org) then
+    raise exception 'aviso_de_caso_forbidden' using errcode = '42501';
+  end if;
+  if not public.fn_session_mfa_proven() then
+    raise exception 'aviso_de_caso_mfa_required' using errcode = '42501';
+  end if;
+
+  if p_group_setting_id is not null then
+    select t.* into v_group
+      from public.telegram_team_group_settings t
+      join public.telegram_bot_connections c
+        on c.organization_id=t.organization_id and c.id=t.connection_id
+     where t.organization_id=p_org and t.id=p_group_setting_id
+       and t.case_alerts_enabled=true and t.membership_state='healthy'
+       and t.membership_attested_at is not null and c.status='active' and c.deleted_at is null
+       and exists (
+         select 1 from public.telegram_bot_surface_capabilities x
+          where x.organization_id=t.organization_id and x.connection_id=t.connection_id
+            and x.surface='team_alerts' and x.capability='send_alerts'
+       )
+     for update of t;
+    if not found then
+      raise exception 'telegram_case_alert_group_ineligible' using errcode = '22023';
+    end if;
+  end if;
+
+  insert into public.config_aviso_de_caso
+    (organization_id,destino_tipo,telegram_group_setting_id,channel_session_id,
+     telefone_destino,destino_jid,rotulo,ligado,resposta_whatsapp_habilitada,
+     criado_por,atualizado_por)
+  values
+    (p_org,'telegram',p_group_setting_id,null,null,null,null,p_group_setting_id is not null,false,auth.uid(),auth.uid())
+  on conflict (organization_id) do update set
+    destino_tipo='telegram', telegram_group_setting_id=excluded.telegram_group_setting_id,
+    channel_session_id=null, telefone_destino=null, destino_jid=null, rotulo=null,
+    ligado=excluded.ligado, resposta_whatsapp_habilitada=false,
+    atualizado_por=auth.uid(), updated_at=now();
+
+  return jsonb_build_object('saved',true,'destino_tipo','telegram','group_setting_id',p_group_setting_id);
+end;
+$$;
+revoke all on function public.fn_definir_aviso_de_caso_telegram(uuid,uuid) from public, anon;
+grant execute on function public.fn_definir_aviso_de_caso_telegram(uuid,uuid) to authenticated;
+
+comment on column public.config_aviso_de_caso.destino_tipo is
+  'Canonical case-alert destination kind; both WhatsApp and Telegram settings use this single organization row.';
+comment on column public.config_aviso_de_caso.telegram_group_setting_id is
+  'Selected Telegram team group when destino_tipo=telegram; group capabilities remain on telegram_team_group_settings.';
+
+
+-- manifest: Permite IDs numéricos de grupos Telegram na tabela compartilhada de grupos de sessão.
+alter table public.channel_session_groups
+  drop constraint if exists channel_session_groups_group_chat_id_check;
+alter table public.channel_session_groups
+  add constraint channel_session_groups_group_chat_id_check
+  check (group_chat_id like '%@g.us' or group_chat_id ~ '^-?[0-9]{1,20}$');
+
+-- ---- VARREDURA anon: função nova nasce exposta em quem ATUALIZA (migration 0116) ----
+--
+-- ⚠️ DE PROPÓSITO, NENHUMA FUNÇÃO É CRIADA DEPOIS DESTE BLOCO. Este bloco fica
+-- depois de todas as definições e mutações de privilégios do baseline.
+-- Vigiado por `tests/unit/varredura-anon-e-o-ultimo-bloco.test.ts`.
+--
+-- A 0108 revogou anon numa LISTA de 8 funções, medida num banco instalado do
+-- ZERO. Quem ATUALIZA tem outro estado: o `ALTER DEFAULT PRIVILEGES ... GRANT
+-- ALL ON FUNCTIONS TO anon` do corpo deste arquivo grava uma entrada em
+-- `pg_default_acl` que fica no catálogo PARA SEMPRE, e a partir daí toda função
+-- criada em `public` nasce com EXECUTE para anon — inclusive as deste apêndice.
+--
+-- Medido numa VPS real (2026-08-07), comparando com o que um install fresco
+-- produz: 6 definer expostas a anon e 5 a authenticated, entre elas
+-- `fn_decrypt_oauth` — alcançável pela anon key, que vai para o browser.
+--
+-- Lista conserta o estoque e reabre no próximo `create function`. Esta varredura
+-- é auto-curativa e roda DEPOIS de tudo que cria função, então cura no mesmo run
+-- em que o defeito nasceria. Desfazer o ALTER DEFAULT PRIVILEGES não serve: ele
+-- vem do `pg_dump` do Supabase e é reescrito a cada re-aplicação.
+--
+-- As duas origens de EXECUTE (a mesma lição da 0108): grant DIRETO a anon, que
+-- `revoke from public` não remove; e grant a PUBLIC, do qual anon HERDA, que
+-- `revoke from anon` não remove. O privilégio EFETIVO de authenticated e
+-- service_role é medido ANTES e devolvido depois — tira anon sem tirar leitura.
+do $$
+declare
+  f record;
+  tinha_auth boolean;
+  tinha_service boolean;
+begin
+  if to_regrole('anon') is null then
+    return;
+  end if;
+
+  for f in
+    select p.oid, p.oid::regprocedure as assinatura
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public'
+       and p.prosecdef
+  loop
+    tinha_auth := to_regrole('authenticated') is not null
+                  and has_function_privilege('authenticated', f.oid, 'EXECUTE');
+    tinha_service := to_regrole('service_role') is not null
+                     and has_function_privilege('service_role', f.oid, 'EXECUTE');
+
+    execute format('revoke execute on function %s from public, anon', f.assinatura);
+
+    if tinha_auth then
+      execute format('grant execute on function %s to authenticated', f.assinatura);
+    end if;
+    if tinha_service then
+      execute format('grant execute on function %s to service_role', f.assinatura);
+    end if;
+  end loop;
+end $$;
+
+-- regra 2 (authenticated): as 5 que o update abriu e o install não abre. Aqui não
+-- cabe varredura — `authenticated` PRECISA de EXECUTE nos helpers de RLS e em
+-- `retrieve_top_k_chunks` (num install fresco ele tem). É julgamento por função,
+-- e o alvo de cada linha é o valor que um install fresco produz, medido.
+revoke execute on function public.fn_audit_log_row() from authenticated;
+revoke execute on function public.fn_decrypt_oauth(bytea) from authenticated;
+revoke execute on function public.fn_encrypt_oauth(text) from authenticated;
+revoke execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) from authenticated;
+revoke execute on function public.fn_update_budget_consumption() from authenticated;
+
+grant execute on function public.fn_audit_log_row() to service_role;
+grant execute on function public.fn_decrypt_oauth(bytea) to service_role;
+grant execute on function public.fn_encrypt_oauth(text) to service_role;
+grant execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) to service_role;
+grant execute on function public.fn_update_budget_consumption() to service_role;
+
+-- 9021 - independent HMAC secret for external MCP write approvals.
+alter table public.organizations
+  add column if not exists mcp_externo_aprovacao_encrypted bytea,
+  add column if not exists mcp_externo_aprovacao_iv bytea,
+  add column if not exists mcp_externo_aprovacao_tag bytea,
+  add column if not exists mcp_externo_aprovacao_last4 text;
+comment on column public.organizations.mcp_externo_aprovacao_encrypted is
+  'MCP external HMAC approval key encrypted with AES-256-GCM, independent from bearer token.';
+comment on column public.organizations.mcp_externo_aprovacao_iv is
+  'AES-GCM IV for the MCP external HMAC approval key.';
+comment on column public.organizations.mcp_externo_aprovacao_tag is
+  'AES-GCM tag for the MCP external HMAC approval key.';
+comment on column public.organizations.mcp_externo_aprovacao_last4 is
+  'Last four characters of the HMAC approval key, partial identifier only.';
+
+-- 9022 - separate read-only case grant for Telegram team groups.
+alter table public.telegram_team_group_members
+  add column if not exists can_read_cases boolean not null default false;
+update public.telegram_team_group_members
+   set can_read_cases=true
+ where can_act_on_cases=true and can_read_cases=false;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conname='telegram_team_group_members_act_requires_read'
+       and conrelid='public.telegram_team_group_members'::regclass
+  ) then
+    alter table public.telegram_team_group_members
+      add constraint telegram_team_group_members_act_requires_read
+      check (not can_act_on_cases or can_read_cases);
+  end if;
+end $$;
+comment on column public.telegram_team_group_members.can_read_cases is
+  'Allows a paired, reviewed operator to list and inspect cases in this group without permission to act on them.';
+
+-- manifest: Registra aprovação segura de participantes Telegram como observadores e correlaciona callbacks de aprovação.
+alter table public.telegram_team_group_members
+  add column if not exists approval_state text not null default 'pending';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname='telegram_team_group_members_approval_state_check'
+      and conrelid='public.telegram_team_group_members'::regclass
+  ) then
+    alter table public.telegram_team_group_members
+      add constraint telegram_team_group_members_approval_state_check
+      check (approval_state in ('pending','approved','observer','denied'));
+  end if;
+end $$;
+
+update public.telegram_team_group_members
+   set approval_state=case when reviewed_at is not null then 'approved' else 'pending' end
+ where approval_state='pending' and reviewed_at is not null;
+
+alter table public.telegram_case_interactions
+  add column if not exists target_telegram_user_id text
+  check (target_telegram_user_id ~ '^[0-9]{1,20}$');
+
+alter table public.telegram_case_interactions
+  drop constraint if exists telegram_case_interactions_action_check;
+
+alter table public.telegram_case_interactions
+  add constraint telegram_case_interactions_action_check
+  check (action in ('list_open','list_closed','view_case','guide_reply','guide_question','resolve','escalate','approve_member','deny_member','assistant_reply'));
+
+comment on column public.telegram_team_group_members.approval_state is
+  'Review state for an observed Telegram participant. Observers and denied members never receive CRM action grants.';
+comment on column public.telegram_case_interactions.target_telegram_user_id is
+  'Observed Telegram participant targeted by a short-lived approve/deny membership callback.';
+
+-- ---- VARREDURA anon: função nova nasce exposta em quem ATUALIZA (migration 0116) ----
+--
+-- ⚠️ DE PROPÓSITO, NENHUMA FUNÇÃO É CRIADA DEPOIS DESTE BLOCO. Este bloco fica
+-- depois de todas as definições e mutações de privilégios do baseline.
+-- Vigiado por `tests/unit/varredura-anon-e-o-ultimo-bloco.test.ts`.
+--
+-- A 0108 revogou anon numa LISTA de 8 funções, medida num banco instalado do
+-- ZERO. Quem ATUALIZA tem outro estado: o `ALTER DEFAULT PRIVILEGES ... GRANT
+-- ALL ON FUNCTIONS TO anon` do corpo deste arquivo grava uma entrada em
+-- `pg_default_acl` que fica no catálogo PARA SEMPRE, e a partir daí toda função
+-- criada em `public` nasce com EXECUTE para anon — inclusive as deste apêndice.
+--
+-- Medido numa VPS real (2026-08-07), comparando com o que um install fresco
+-- produz: 6 definer expostas a anon e 5 a authenticated, entre elas
+-- `fn_decrypt_oauth` — alcançável pela anon key, que vai para o browser.
+--
+-- Lista conserta o estoque e reabre no próximo `create function`. Esta varredura
+-- é auto-curativa e roda DEPOIS de tudo que cria função, então cura no mesmo run
+-- em que o defeito nasceria. Desfazer o ALTER DEFAULT PRIVILEGES não serve: ele
+-- vem do `pg_dump` do Supabase e é reescrito a cada re-aplicação.
+--
+-- As duas origens de EXECUTE (a mesma lição da 0108): grant DIRETO a anon, que
+-- `revoke from public` não remove; e grant a PUBLIC, do qual anon HERDA, que
+-- `revoke from anon` não remove. O privilégio EFETIVO de authenticated e
+-- service_role é medido ANTES e devolvido depois — tira anon sem tirar leitura.
+do $$
+declare
+  f record;
+  tinha_auth boolean;
+  tinha_service boolean;
+begin
+  if to_regrole('anon') is null then
+    return;
+  end if;
+
+  for f in
+    select p.oid, p.oid::regprocedure as assinatura
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public'
+       and p.prosecdef
+  loop
+    tinha_auth := to_regrole('authenticated') is not null
+                  and has_function_privilege('authenticated', f.oid, 'EXECUTE');
+    tinha_service := to_regrole('service_role') is not null
+                     and has_function_privilege('service_role', f.oid, 'EXECUTE');
+
+    execute format('revoke execute on function %s from public, anon', f.assinatura);
+
+    if tinha_auth then
+      execute format('grant execute on function %s to authenticated', f.assinatura);
+    end if;
+    if tinha_service then
+      execute format('grant execute on function %s to service_role', f.assinatura);
+    end if;
+  end loop;
+end $$;
+
+-- regra 2 (authenticated): as 5 que o update abriu e o install não abre. Aqui não
+-- cabe varredura — `authenticated` PRECISA de EXECUTE nos helpers de RLS e em
+-- `retrieve_top_k_chunks` (num install fresco ele tem). É julgamento por função,
+-- e o alvo de cada linha é o valor que um install fresco produz, medido.
+revoke execute on function public.fn_audit_log_row() from authenticated;
+revoke execute on function public.fn_decrypt_oauth(bytea) from authenticated;
+revoke execute on function public.fn_encrypt_oauth(text) from authenticated;
+revoke execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) from authenticated;
+revoke execute on function public.fn_update_budget_consumption() from authenticated;
+
+grant execute on function public.fn_audit_log_row() to service_role;
+grant execute on function public.fn_decrypt_oauth(bytea) to service_role;
+grant execute on function public.fn_encrypt_oauth(text) to service_role;
+grant execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) to service_role;
+grant execute on function public.fn_update_budget_consumption() to service_role;
+
+-- Idempotent appendix for migration 9026: signed private artwork transfers.
+alter table public.organizations
+  add column if not exists mcp_externo_artwork_encrypted bytea,
+  add column if not exists mcp_externo_artwork_iv bytea,
+  add column if not exists mcp_externo_artwork_tag bytea,
+  add column if not exists mcp_externo_artwork_last4 text,
+  add column if not exists mcp_externo_artwork_blog_id bigint;
+
+comment on column public.organizations.mcp_externo_artwork_encrypted is
+  'Encrypted HMAC key for private inbound media transfers; separate from MCP bearer and approval key.';
+comment on column public.organizations.mcp_externo_artwork_blog_id is
+  'WordPress blog ID authorized to consume artwork transfers for this organization.';
+
+create table if not exists public.mcp_artwork_transfers (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  token_hash text not null unique check (token_hash ~ '^[a-f0-9]{64}$'),
+  contact_id uuid not null references public.contacts(id) on delete cascade,
+  conversation_id uuid not null references public.conversations(id) on delete cascade,
+  message_id uuid not null references public.messages(id) on delete cascade,
+  blog_id bigint not null check (blog_id > 0),
+  expires_at timestamptz not null,
+  consumed_at timestamptz,
+  created_at timestamptz not null default now(),
+  constraint mcp_artwork_transfers_expiry_after_creation check (expires_at > created_at)
+);
+create index if not exists mcp_artwork_transfers_expiry_idx on public.mcp_artwork_transfers (expires_at);
+create index if not exists mcp_artwork_transfers_scope_idx on public.mcp_artwork_transfers (organization_id, contact_id, conversation_id, message_id);
+alter table public.mcp_artwork_transfers enable row level security;
+revoke all on public.mcp_artwork_transfers from public, anon, authenticated;
+grant select, insert, update, delete on public.mcp_artwork_transfers to service_role;

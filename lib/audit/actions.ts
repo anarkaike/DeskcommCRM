@@ -1212,6 +1212,8 @@ export const AUDIT_ACTIONS = [
   "telegram.case_operator_unpaired",
   "telegram.case_replied",
   "telegram.bot_settings_updated",
+  "telegram.team_group_settings_updated",
+  "telegram.team_group_assistant_replied",
   "telegram.bot_activated",
   "telegram.bot_paused",
   "telegram.bot_disconnected",

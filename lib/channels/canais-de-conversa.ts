@@ -42,6 +42,8 @@ import { SOCIAL_NETWORKS } from "./social/catalog";
 export const CANAIS_DE_CONVERSA = [
   "whatsapp",
   ...SOCIAL_NETWORKS.filter((rede) => rede.inbox).map((rede) => rede.id),
+  // Telegram bot provider, independent of Zernio.
+  "telegram",
 ] as const satisfies readonly string[];
 
 export type CanalDeConversa = (typeof CANAIS_DE_CONVERSA)[number];

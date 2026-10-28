@@ -15,7 +15,10 @@ const h = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: h.role }));
 vi.mock("@/lib/webhooks/secrets", () => ({ decryptWebhookSecret: h.decrypt }));
-vi.mock("@/lib/webhooks/url-publica", () => ({ basePublicaDaInstalacao: () => "https://crm.example", basePublicaDoWebhookTelegram: () => "https://crm.example" }));
+vi.mock("@/lib/webhooks/url-publica", () => ({
+  basePublicaDaInstalacao: () => "https://crm.example",
+  basePublicaDoWebhookTelegram: () => "https://crm.example",
+}));
 vi.mock("@/lib/channels/telegram/bot-api", () => ({ getTelegramWebhookInfo: h.webhookInfo }));
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
@@ -37,7 +40,9 @@ import { telegramConnectionDriver } from "@/lib/channels/telegram/connection-dri
 
 describe("Telegram webhook health route", () => {
   beforeEach(() => {
-    h.role.mockReset().mockResolvedValue({ ok: true, org: { orgId: "org-1" }, user: { id: "user-1" } });
+    h.role
+      .mockReset()
+      .mockResolvedValue({ ok: true, org: { orgId: "org-1" }, user: { id: "user-1" } });
     h.decrypt.mockReset().mockResolvedValue("server-token");
     h.webhookInfo.mockReset().mockResolvedValue({
       url: "https://crm.example/api/v1/webhooks/telegram/path-secret-123456789012345678901234567890",
@@ -46,10 +51,12 @@ describe("Telegram webhook health route", () => {
       lastErrorMessage: null,
       hasCustomCertificate: false,
       maxConnections: 40,
-      allowedUpdates: ["message"],
+      allowedUpdates: ["message", "callback_query", "chat_member", "my_chat_member"],
     });
     vi.spyOn(telegramConnectionDriver, "validateCredential").mockResolvedValue({
-      providerAccountId: "123456", username: "clinica_bot", displayName: "Atendimento",
+      providerAccountId: "123456",
+      username: "clinica_bot",
+      displayName: "Atendimento",
     });
   });
 
@@ -60,8 +67,18 @@ describe("Telegram webhook health route", () => {
     );
     const body = await response.json();
     expect(response.status).toBe(200);
-    expect(body.data).toMatchObject({ health: "healthy", pending_update_count: 2, app_pending_update_count: 2, webhook_matches: true });
+    expect(body.data).toMatchObject({
+      health: "healthy",
+      pending_update_count: 2,
+      app_pending_update_count: 2,
+      webhook_matches: true,
+      webhook_target_host: "crm.example",
+      allowed_updates: ["message", "callback_query", "chat_member", "my_chat_member"],
+      missing_webhook_updates: [],
+      webhook_delivery_error_code: null,
+    });
     expect(JSON.stringify(body)).not.toContain("path-secret");
+    expect(JSON.stringify(body)).not.toContain("https://crm.example/api/");
   });
 
   it("reports a webhook that points elsewhere as degraded", async () => {
@@ -78,6 +95,9 @@ describe("Telegram webhook health route", () => {
       new NextRequest("https://crm.example/api/v1/channels/telegram/connection-1/health"),
       { params: Promise.resolve({ id: "connection-1" }) },
     );
-    expect((await response.json()).data).toMatchObject({ health: "degraded", webhook_matches: false });
+    expect((await response.json()).data).toMatchObject({
+      health: "degraded",
+      webhook_matches: false,
+    });
   });
 });

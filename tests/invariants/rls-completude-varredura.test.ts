@@ -93,6 +93,21 @@ const PROVA_PROPRIA: readonly Excecao[] = [
   { tabela: "appointment_recovery_receipts", razao: "tests/invariants/agenda-presenca-acl.test.ts — leitura/escrita direta anon/authenticated negadas, escrita service_role negada e RPC service-only valida a tupla org/evento nos dois sentidos A/B" },
   { tabela: "event_service_origins", razao: "tests/invariants/service-event-origin.test.ts — recibo server-only, authenticated sem leitura/escrita, RPC rejeita tenant B real" },
   { tabela: "platform_support_sessions", razao: "tests/invariants/suporte-temporario.test.ts — grant por sessão, readonly e nenhuma escrita direta authenticated" },
+  ...[
+    "telegram_bot_bindings",
+    "telegram_bot_connections",
+    "telegram_bot_surface_capabilities",
+    "telegram_case_alert_deliveries",
+    "telegram_case_interactions",
+    "telegram_case_operators",
+    "telegram_case_pairing_challenges",
+    "telegram_team_group_members",
+    "telegram_team_group_settings",
+    "telegram_webhook_updates",
+  ].map(tabela => ({
+    tabela,
+    razao: "tests/invariants/telegram-team-group-server-only.test.ts — tabela Telegram server-only: RLS habilitada, anon/authenticated sem privilégios efetivos e SELECT barrado com permission denied; service_role retém acesso.",
+  })),
   {
     tabela: "crm_proposal_counters",
     razao:

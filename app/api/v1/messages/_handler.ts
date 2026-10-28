@@ -166,6 +166,17 @@ async function removerEcoDoProprioEnvio(
 }
 
 /**
+ * Actor semantico que deve chegar ao canal. Acoes de automacao podem enviar
+ * texto efetivamente escrito por um agente, marcadas pelo contexto confiavel
+ * `textoEscritoPelaIA`; para canais com permissao por emissor, isso e uma
+ * resposta de IA, nao um webhook generico.
+ */
+function actorTypeParaCanal(actor: Actor): string {
+  if (actor.type === "webhook_source" && actor.textoEscritoPelaIA) return "ai_agent";
+  return actor.type;
+}
+
+/**
  * De quem é esta linha, no vocabulário de `messages.sent_via`.
  *
  * A pergunta era UMA só (`!== "user"`), e por isso a automação se apresentava
@@ -913,6 +924,7 @@ export async function sendMessageHandler(
     phoneNumber: c.contacts?.phone_number,
     waIdentity: c.contacts?.wa_identity,
     waLid: c.contacts?.wa_lid,
+    providerConversationId: c.provider_conversation_id,
   });
 
   // Releitura no sink: o operador pode ter fechado o canal enquanto o modelo
@@ -1107,6 +1119,7 @@ export async function sendMessageHandler(
         await checkBoundary();
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
+          actorType: actorTypeParaCanal(ctx.actor),
           organizationId: ctx.organization_id,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,
@@ -1134,6 +1147,7 @@ export async function sendMessageHandler(
         await checkBoundary();
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
+          actorType: actorTypeParaCanal(ctx.actor),
           organizationId: ctx.organization_id,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,
@@ -1162,6 +1176,7 @@ export async function sendMessageHandler(
         await checkBoundary();
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
+          actorType: actorTypeParaCanal(ctx.actor),
           organizationId: ctx.organization_id,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,
@@ -1179,6 +1194,7 @@ export async function sendMessageHandler(
         await checkBoundary();
         ({ externalId } = await adapter.send({
           beforeSend: checkBoundary,
+          actorType: actorTypeParaCanal(ctx.actor),
           organizationId: ctx.organization_id,
           sessionRef: resolveSessionRef(c.channel_sessions),
           to: chatId,

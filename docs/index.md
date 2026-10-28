@@ -208,3 +208,16 @@ anterior à v1.0.0; regenere (`/graphify .`) antes de confiar em detalhe fino.
   nome de pasta, portanto **INFERIDO**.
 
 - [Acompanhamento administrativo por sessão](support-sessions.md) — autoridade, somente leitura, saída e contratos OAuth.
+
+
+---
+
+## Propostas datadas do fork Servinder
+
+Os documentos abaixo são propostas e planos; não afirmam capacidade implementada nem aceite upstream.
+
+- [Extensões: desenho de produto e decisões](superpowers/specs/2026-10-26-extensoes-plataforma-design.md).
+- [Extensões: contratos técnicos e banco](superpowers/specs/2026-10-26-extensoes-contratos-dados.md).
+- [Extensões: matriz de testes](superpowers/specs/2026-10-26-extensoes-matriz-testes.md).
+- [Extensões: plano de execução](superpowers/plans/2026-10-26-extensoes-plano-execucao.md).
+- [Frente independente: Mercado Pago](superpowers/specs/2026-10-26-mercado-pago-adaptador-design.md).

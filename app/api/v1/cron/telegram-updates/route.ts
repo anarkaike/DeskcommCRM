@@ -7,6 +7,8 @@ import { getInboundDriver } from "@/lib/channels/inbound/registry";
 import { logger } from "@/lib/logger";
 import { STATUS_OPERANTE, ehOperante, statusDaOrgEmbutida } from "@/lib/organizacao/operante";
 import { handleTelegramHumanCaseUpdate } from "@/lib/channels/telegram/human-cases";
+import { handleTelegramGroupMembershipUpdate } from "@/lib/channels/telegram/group-membership";
+import { handleTelegramGroupCaseUpdate } from "@/lib/channels/telegram/group-cases";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -79,14 +81,24 @@ export async function GET(req: NextRequest): Promise<Response> {
         continue;
       }
       const update = row.payload as Record<string, unknown>;
-      const handledAsHumanCase = connection?.status === "active"
+      const handledMembership = connection?.status === "active"
+        ? await handleTelegramGroupMembershipUpdate(admin, {
+            organizationId: row.organization_id, connectionId: row.connection_id, update,
+          })
+        : false;
+      const handledAsGroupCase = connection?.status === "active" && !handledMembership
+        ? await handleTelegramGroupCaseUpdate(admin, {
+            organizationId: row.organization_id, connectionId: row.connection_id, update,
+          })
+        : false;
+      const handledAsHumanCase = connection?.status === "active" && !handledMembership && !handledAsGroupCase
         ? await handleTelegramHumanCaseUpdate(admin, {
             organizationId: row.organization_id, connectionId: row.connection_id, update,
           })
         : false;
       const result = !connection || connection.status !== "active"
         ? "ignored"
-        : handledAsHumanCase
+        : handledMembership || handledAsGroupCase || handledAsHumanCase
           ? "ingested"
           : await getInboundDriver("telegram").ingest(admin, {
               organizationId: row.organization_id,
