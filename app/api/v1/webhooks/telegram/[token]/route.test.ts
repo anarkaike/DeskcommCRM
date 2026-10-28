@@ -99,6 +99,44 @@ describe("Telegram webhook receiver", () => {
     expect(h.upsert).not.toHaveBeenCalled();
   });
 
+  it("rejects an oversized declared body without reading it", async () => {
+    const req = request("{}");
+    req.headers.set("content-length", "1000001");
+    const response = await POST(req, { params: Promise.resolve({ token }) });
+    expect(response.status).toBe(413);
+    expect(h.upsert).not.toHaveBeenCalled();
+  });
+
+  it("cancels a chunked body as soon as its bytes exceed the limit", async () => {
+    const cancel = vi.fn();
+    const encoder = new TextEncoder();
+    let reads = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads++;
+        controller.enqueue(encoder.encode("é".repeat(300_000)));
+      },
+      cancel,
+    }, { highWaterMark: 0 });
+    const req = request("{}");
+    Object.defineProperty(req, "body", { value: stream });
+    const response = await POST(req, { params: Promise.resolve({ token }) });
+    expect(response.status).toBe(413);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(reads).toBe(2);
+    expect(h.upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects an interrupted body without persisting a partial update", async () => {
+    const req = request("{}");
+    Object.defineProperty(req, "body", { value: new ReadableStream({
+      start(controller) { controller.error(new Error("disconnected")); },
+    }) });
+    const response = await POST(req, { params: Promise.resolve({ token }) });
+    expect(response.status).toBe(400);
+    expect(h.upsert).not.toHaveBeenCalled();
+  });
+
   it("rejects malformed updates", async () => {
     const response = await POST(request(JSON.stringify({ update_id: -1 })), {
       params: Promise.resolve({ token }),

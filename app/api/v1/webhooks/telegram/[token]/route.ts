@@ -23,6 +23,34 @@ function segredoConfere(recebido: string | null, esperado: string | null): boole
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/** Enforce the byte limit while reading, including chunked requests without Content-Length. */
+async function lerCorpoLimitado(req: NextRequest): Promise<string | null> {
+  const declared = req.headers.get("content-length");
+  if (declared && /^\d+$/.test(declared) && Number(declared) > MAX_BODY_BYTES) {
+    await req.body?.cancel();
+    return null;
+  }
+  const reader = req.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_BODY_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks, bytes).toString("utf8");
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export async function POST(req: NextRequest, ctx: RouteCtx): Promise<Response> {
   const requestId = randomUUID();
   const { token } = await ctx.params;
@@ -48,8 +76,13 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<Response> {
     return fail("unauthorized", "invalid Telegram webhook secret", 401, { requestId });
   }
 
-  const rawBody = await req.text();
-  if (Buffer.byteLength(rawBody, "utf8") > MAX_BODY_BYTES) {
+  let rawBody: string | null;
+  try {
+    rawBody = await lerCorpoLimitado(req);
+  } catch {
+    return fail("invalid_request", "invalid_body", 400, { requestId });
+  }
+  if (rawBody === null) {
     return fail("invalid_request", "Telegram update is too large.", 413, { requestId });
   }
 
