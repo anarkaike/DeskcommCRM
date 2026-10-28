@@ -132,6 +132,7 @@ export interface ConfigDoAviso {
   destino_jid: string | null;
   ligado: boolean;
   resposta_whatsapp_habilitada: boolean;
+  destino_tipo?: string;
 }
 
 export interface CasoDoAviso {
@@ -695,11 +696,12 @@ export function createSupabaseAvisoDb(admin: SupabaseClient): AvisoDb {
     async carregaConfig(orgId) {
       const { data, error } = await admin
         .from("config_aviso_de_caso")
-        .select("organization_id, channel_session_id, telefone_destino, destino_jid, ligado, resposta_whatsapp_habilitada")
+        .select("organization_id, channel_session_id, telefone_destino, destino_jid, ligado, resposta_whatsapp_habilitada, destino_tipo")
         .eq("organization_id", orgId)
         .maybeSingle();
       if (error) throw new Error(error.message);
-      return (data as ConfigDoAviso | null) ?? null;
+      const config = (data as ConfigDoAviso | null) ?? null;
+      return config?.destino_tipo === "telegram" ? null : config;
     },
 
     async carregaCaso(orgId, caseId) {

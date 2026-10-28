@@ -35,6 +35,7 @@ import { conversaoDeNascimentoMetaHandler } from "@/lib/conversoes/nascimento-me
 import { conversaoDeCliqueMetaHandler } from "@/lib/conversoes/clique-meta.handler";
 import { avisoDeAgendamentoNoWhatsAppHandler } from "@/lib/agenda/aviso-de-agendamento.handler";
 import { avisoDeCasoAoSuporteHandler } from "@/lib/escalacao/aviso-ao-suporte.handler";
+import { telegramCaseAlertHandler } from "@/lib/escalacao/telegram-case-alert.handler";
 import { casoNaCentralHandler } from "@/lib/escalacao/caso-na-central.handler";
 import { followupGatilhoCasoHandler } from "@/lib/followup/gatilho-caso.handler";
 import { followupGatilhoEtapaHandler } from "@/lib/followup/gatilho-etapa.handler";
@@ -85,6 +86,7 @@ const PULA: EventHandler[] = [
   followupGatilhoPresencaHandler,
   webPushInboundHandler,
   avisoDeCasoAoSuporteHandler,
+  telegramCaseAlertHandler,
   avisoDePropostaNoWhatsAppHandler,
   avisoDeAgendamentoNoWhatsAppHandler,
   conversaoDeVendaHandler,

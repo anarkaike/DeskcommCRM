@@ -59,7 +59,9 @@ if [ "$rc" = 0 ]; then printf '#!/bin/sh\\necho " A..... aac   AAC (Advanced Aud
 exit "$rc"`,
   );
   falso("sudo", `echo "sudo $*" >> "${log}"`);
-  const r = spawnSync("bash", ["-e", "-c", scriptDoPasso(passo)], {
+  // A sonda ignora o ffmpeg do host até a instalação simulada criar o binário.
+  const isolamento = `command() { if [ "$1" = "-v" ] && [ "$2" = "ffmpeg" ]; then test -x "${bin}/ffmpeg"; else builtin command "$@"; fi; };\n`;
+  const r = spawnSync("bash", ["-e", "-c", isolamento + scriptDoPasso(passo)], {
     // PATH mínimo: um ffmpeg da máquina de quem roda o teste pularia o laço.
     env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, HOME: raiz, GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted" },
     encoding: "utf-8",

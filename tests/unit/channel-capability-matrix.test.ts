@@ -17,7 +17,7 @@ import {
   type ProviderDeMensagem,
 } from "@/lib/channels/capabilities";
 
-const PROVIDERS = ["waha", "meta_cloud", "zernio", "zernio_social", "datafy"] as const satisfies readonly ProviderDeMensagem[];
+const PROVIDERS = ["waha", "meta_cloud", "zernio", "zernio_social", "datafy", "telegram"] as const satisfies readonly ProviderDeMensagem[];
 
 /**
  * Esquecer um provider aqui passa a ser erro de COMPILAÇÃO.
@@ -40,6 +40,7 @@ const CAPABILITIES = [
   "groups",
   "costPerMessage",
   "alteraMensagemEnviada",
+  "automatedOutbound",
   "phonebook",
 ] as const;
 
@@ -61,7 +62,7 @@ describe("matriz capability × provider é exaustiva", () => {
   });
 
   it("resolução é fail-closed — provider desconhecido lança", () => {
-    expect(() => capabilitiesOf("telegram" as ChannelProvider)).toThrow(/unknown_channel_provider/);
+    expect(capabilitiesOf("telegram" as ChannelProvider)).toMatchObject({ automatedOutbound: false });
   });
 
   it("chamada de voz não responde a pergunta de canal de mensagem", () => {
@@ -75,7 +76,7 @@ describe("matriz capability × provider é exaustiva", () => {
     for (const p of PROVIDERS) expect(transportaMensagem(p)).toBe(true);
     // Provider mais novo que este código (clone que atualizou o schema antes da
     // imagem) também não serve para mandar recado.
-    expect(transportaMensagem("telegram")).toBe(false);
+    expect(transportaMensagem("telegram")).toBe(true);
     expect(transportaMensagem(null)).toBe(false);
   });
 

@@ -607,6 +607,8 @@ const schema = z.object({
     .string()
     .url()
     .default("http://localhost:3000"),
+  /** Base pública opcional dos webhooks Telegram, separada da origem do painel. */
+  TELEGRAM_WEBHOOK_BASE_URL: z.string().optional().default(""),
   /**
    * URL pública opcional para os webhooks da Meta (WhatsApp Cloud API / canais oficiais).
    * Quando definida, é usada no lugar de NEXT_PUBLIC_APP_URL para compor a URL de callback

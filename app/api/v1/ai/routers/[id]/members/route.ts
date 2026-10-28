@@ -12,6 +12,7 @@ import type { PoolClient } from "pg";
 import { resolveAuthDual, tetoDeEscritaDoToken } from "@/lib/api/auth-dual";
 import { ok, fail } from "@/lib/api/wrappers";
 import { audit } from "@/lib/audit";
+import { logger } from "@/lib/logger";
 import { getRequestPool } from "@/lib/agent-engine/db/request-pool";
 import { writeRouterMembers } from "@/lib/ai/agents/router-members";
 import { replaceRouterMembersHttp } from "@/lib/ai/agents/router-members-http";
@@ -138,6 +139,10 @@ export async function PUT(req: NextRequest, ctx: RouteCtx): Promise<Response> {
         409,
         { requestId },
       );
+    logger.error("[ai.router_members] falha ao salvar intenções", { requestId, code });
+    if (["EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ETIMEDOUT", "08006", "08001", "57P03"].includes(code ?? "")) {
+      return fail("upstream_unavailable", t("Não foi possível conectar ao banco para salvar as intenções. Tente novamente em instantes."), 503, { requestId });
+    }
     return fail("internal_error", "Erro ao gravar membros do router.", 500, { requestId });
   } finally {
     db?.release(erroNaTransacao);

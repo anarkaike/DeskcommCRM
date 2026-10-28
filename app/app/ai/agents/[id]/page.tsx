@@ -115,7 +115,7 @@ export default async function AgentEditorPage({ params }: { params: Promise<{ id
         .from("ai_provider_credentials_safe")
         .select(CREDENTIAL_COLUMNS)
         .eq("organization_id", activeOrg.orgId),
-      listSelectableChannels(supabase, activeOrg.orgId),
+      listSelectableChannels(supabase, activeOrg.orgId, { purpose: "agent_replies" }),
       supabase
         .from("ai_router_members")
         .select("router_id, ai_routers(name, organization_id, channel_session_id)")

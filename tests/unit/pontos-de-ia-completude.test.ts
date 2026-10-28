@@ -66,7 +66,23 @@ function purposesDoTexto(texto: string, arquivo = "source.ts"): string[] {
       const temIrma = (nome: string) => ts.isObjectLiteralExpression(object) &&
         object.properties.some(p => ts.isPropertyAssignment(p) && p.name.getText(ast).replace(/["']/g, "") === nome);
       const iconeDoManifest = temIrma("src") && temIrma("sizes");
-      if (!enqueueResult && !iconeDoManifest) result.push(...literals(node.initializer));
+      const chamada = object.parent;
+      const expressao = ts.isCallExpression(chamada) ? chamada.expression : undefined;
+      const nomeDaChamada = expressao === undefined
+        ? ""
+        : ts.isIdentifier(expressao)
+          ? expressao.text
+          : ts.isPropertyAccessExpression(expressao)
+            ? expressao.name.text
+            : "";
+      // listSelectableChannels tambem recebe purpose, mas esse valor
+      // seleciona o tipo de canal e nao configura uma chamada de modelo.
+      const filtroDeCanal = ts.isObjectLiteralExpression(object) &&
+        ts.isCallExpression(chamada) && chamada.arguments.includes(object) &&
+        nomeDaChamada === "listSelectableChannels";
+      if (!enqueueResult && !iconeDoManifest && !filtroDeCanal) {
+        result.push(...literals(node.initializer));
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -158,6 +174,8 @@ describe("registro de pontos de IA × código", () => {
     expect(purposesDoTexto(`const a = { purpose: payload.purpose };`)).toEqual([]);
     expect(purposesDoTexto(`function queue() { return { kind: "enqueue_turn", purpose: "send_message" }; }`)).toEqual([]);
     expect(purposesDoTexto(`runModelCall(db, cfg, { purpose: "send_message" });`)).toEqual(["send_message"]);
+    expect(purposesDoTexto(`listSelectableChannels(db, org, { purpose: "agent_replies" });`)).toEqual([]);
+    expect(purposesDoTexto(`runModelCall(db, cfg, { purpose: "case_chat" });`)).toEqual(["case_chat"]);
     expect(purposesDoTexto(`const icons = [{ src: "/i", sizes: "512x512", purpose: "maskable" }];`)).toEqual([]);
     expect(purposesDoTexto(`runModelCall(db, cfg, { src: "x", purpose: "agent_turn" });`)).toEqual(["agent_turn"]);
   });

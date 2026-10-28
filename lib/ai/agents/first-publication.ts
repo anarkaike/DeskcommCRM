@@ -106,7 +106,7 @@ export async function publishFirstVersion(
   // terminava sem gravar estado, sem audit, sem evento e sem dizer nada na tela.
   let canais: SelectableChannel[];
   try {
-    canais = await listSelectableChannels(admin, orgId);
+    canais = await listSelectableChannels(admin, orgId, { purpose: "agent_replies" });
   } catch (err) {
     return { published: false, reason: "failed", message: mensagemDoErro(err) };
   }

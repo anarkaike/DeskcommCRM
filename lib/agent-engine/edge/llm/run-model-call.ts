@@ -60,7 +60,7 @@ import { costCents, gravacaoDeUmaHora } from './pricing';
 import { custoDoModeloForaDoMotor } from './pricing-do-catalogo';
 import { chaveDeOrcamentoDaInstalacao } from '../../../instalacao/comportamento';
 import { cobrancaLigadaComMemo } from '../../../instalacao/modulos';
-import { createDefaultRegistry, type ProviderRegistry } from './providers';
+import { createDefaultRegistry, esforcoAceitoPeloModelo, modeloOpenAIRaciocina, type ProviderRegistry } from './providers';
 import { buildStablePrefix } from './stable-prefix';
 import {
   degrauDoEnderecoProprio,
@@ -993,8 +993,12 @@ export async function runModelCall(db: pg.Pool, cfg: LlmEdgeConfig, input: RunMo
       // qualquer modelo; no Gemini 2.5 Pro vira `thinkingBudget: 0`, que o Google
       // documenta como recusado, e no 3.x Pro, `thinkingLevel: "minimal"`. Uma recusa
       // derrubaria a classificação em todo turno. Entram com a medição deles.
-      ...(input.reasoning !== undefined && PROVEDORES_COM_RACIOCINIO_NENHUM_MEDIDO.has(cfgUsada.provider)
-        ? { reasoning: input.reasoning }
+      ...(input.reasoning !== undefined
+        && PROVEDORES_COM_RACIOCINIO_NENHUM_MEDIDO.has(cfgUsada.provider)
+        && (cfgUsada.provider !== 'openai' || modeloOpenAIRaciocina(model))
+        ? { reasoning: cfgUsada.provider === 'openai'
+          ? esforcoAceitoPeloModelo(model, input.reasoning)
+          : input.reasoning }
         : {}),
     });
   };
