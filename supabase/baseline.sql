@@ -59950,7 +59950,7 @@ $$;
 revoke execute on function public.fn_enfileirar_midia_vencida(integer) from public, anon, authenticated;
 grant execute on function public.fn_enfileirar_midia_vencida(integer) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072100_0721_telegram_bot_connections.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072100_9009_telegram_bot_connections.sql
 -- manifest: **Registro isolado de bots Telegram por tenant.** Guarda tokens cifrados e bindings de produto em domínio próprio; conexão validada ainda não ativa webhook nem concede papel ou acesso a dados.
 
 create table if not exists public.telegram_bot_connections (
@@ -60115,7 +60115,7 @@ $$;
 revoke execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) from public, anon, authenticated;
 grant execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072200_0722_telegram_webhook_lifecycle.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072200_9010_telegram_webhook_lifecycle.sql
 -- manifest: **Ciclo de vida do webhook por bot Telegram.** Persiste apenas o token de caminho opaco e o segredo de verificação cifrado; ativa/pausa/desconecta sem descartar updates pendentes.
 
 alter table public.telegram_bot_connections
@@ -60144,7 +60144,7 @@ comment on column public.telegram_bot_connections.webhook_path_token is
 comment on column public.telegram_bot_connections.webhook_secret_encrypted is
   'secret_token do header X-Telegram-Bot-Api-Secret-Token cifrado com fn_encrypt_oauth.';
 
--- Reconciled Servinder source: supabase/migrations/20261021072300_0723_telegram_webhook_updates.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072300_9011_telegram_webhook_updates.sql
 -- manifest: **Entrada autenticada e idempotente de updates Telegram.** Persiste o payload para consumo/reprocessamento antes de responder 200 ao Telegram.
 
 create table if not exists public.telegram_webhook_updates (
@@ -60180,7 +60180,7 @@ grant select, insert, update, delete on public.telegram_webhook_updates to servi
 comment on table public.telegram_webhook_updates is
   'Fila durável e idempotente dos updates aceitos pelo webhook Telegram. Payload tem dados pessoais e só é acessível via service_role; consumidores devem apagar/reter conforme política LGPD.';
 
--- Reconciled Servinder source: supabase/migrations/20261021072400_0724_telegram_inbox_runtime.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072400_9012_telegram_inbox_runtime.sql
 -- manifest: **Canal Telegram no ledger compartilhado da Inbox.** Cria sessão
 -- sem número/engine WAHA, identidade opaca de contato e conversa `telegram`;
 -- não habilita grupos, IA nem envio proativo.
@@ -60255,7 +60255,7 @@ end; $$;
 revoke all on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid) from public, anon, authenticated;
 grant execute on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072500_0725_telegram_conversation_destination.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072500_9013_telegram_conversation_destination.sql
 -- manifest: **O destino de resposta Telegram fica na conversa.** A Inbox monta o adapter a partir de conversations.provider_conversation_id; sem persistir o chat_id ali, toda resposta humana era recusada como destinatário ausente.
 
 drop function if exists public.fn_upsert_telegram_conversation(uuid, uuid, uuid);
@@ -60284,7 +60284,7 @@ end; $$;
 revoke all on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text) from public, anon, authenticated;
 grant execute on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072600_0726_telegram_inbox_groups.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072600_9014_telegram_inbox_groups.sql
 -- manifest: **Grupos Telegram entram na Inbox por allowlist explícita.** IDs e títulos descobertos vêm de updates reais; conversas permanecem humanas e não acionam IA.
 
 alter table public.channel_session_groups
@@ -60355,7 +60355,7 @@ $$;
 revoke all on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text) from public, anon, authenticated;
 grant execute on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072700_0727_telegram_edit_active_bot.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072700_9015_telegram_edit_active_bot.sql
 -- manifest: Mantém o bot Telegram ativo ao salvar alterações de bindings e capacidades; edição não interrompe webhook nem sessão.
 create or replace function public.fn_telegram_bot_save_bindings(
   p_organization_id uuid,
@@ -60416,7 +60416,7 @@ $$;
 revoke execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) from public, anon, authenticated;
 grant execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072800_0728_telegram_human_cases_operators.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072800_9016_telegram_human_cases_operators.sql
 -- manifest: Pareia operadores Telegram a usuários ativos do tenant para consulta e resposta auditável de casos humanos.
 create table if not exists public.telegram_case_pairing_challenges (
   id uuid primary key default gen_random_uuid(),
@@ -60502,7 +60502,7 @@ $$;
 revoke execute on function public.fn_telegram_case_operator_pair(uuid,uuid,text,text) from public, anon, authenticated;
 grant execute on function public.fn_telegram_case_operator_pair(uuid,uuid,text,text) to service_role;
 
--- Reconciled Servinder source: supabase/migrations/20261021072900_0729_telegram_selector_metadata_rls.sql
+-- Reconciled Servinder source: supabase/migrations/20261021072900_9017_telegram_selector_metadata_rls.sql
 -- manifest: Metadados mínimos dos bots Telegram ficam legíveis para membros do tenant via RLS, sem expor tokens cifrados.
 
 -- O seletor de canais usa o cliente autenticado. A tabela de bots continua sem
