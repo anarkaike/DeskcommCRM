@@ -12,6 +12,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { ApiError } from "@/lib/api/types";
 import { ok, fail } from "@/lib/api/wrappers";
 import type { Actor } from "@/lib/api/handlers/types";
+import { MENSAGEM_DA_RECUSA_DO_MODULO, MODULO_NAO_ENTRA_AQUI } from "@/lib/auth/modulo-autorizado";
 import { requireRole } from "@/lib/auth/require-role";
 import { extractBearer, validateBearerToken, ensureRole, ensureScope, McpAuthError } from "@/lib/mcp/auth";
 import { traduzir } from "@/lib/i18n/dicionario";
@@ -74,6 +75,17 @@ async function resolveContactsAuth(req: NextRequest, requestId: string): Promise
         };
       }
       throw err;
+    }
+
+    // Token de MÓDULO não entra por aqui (spec 33, F3): esta rota lê pelos escopos do token e não
+    // passa pela área consentida. O módulo alcança contatos por `resolveAuthDual`, que confere a área.
+    if (auth.actor.type === "module") {
+      return {
+        ok: false,
+        response: fail(MODULO_NAO_ENTRA_AQUI, MENSAGEM_DA_RECUSA_DO_MODULO[MODULO_NAO_ENTRA_AQUI], 403, {
+          requestId,
+        }),
+      };
     }
 
     try {
@@ -194,7 +206,10 @@ export async function POST(req: NextRequest): Promise<Response> {
       supabase,
       {
         organization_id: activeOrg.orgId,
-        actor: { type: "user", id: user.id },
+        // O PAPEL vai junto porque a criação no "Só os seus" decide por ele:
+        // só Atendente ganha a conversa do contato novo (#3479). É a mesma
+        // forma que as rotas de conversa já usam no `actor`.
+        actor: { type: "user", id: user.id, role: activeOrg.role },
         requestId,
         idioma: user.idioma,
       },

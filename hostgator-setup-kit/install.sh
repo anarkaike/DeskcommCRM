@@ -41,6 +41,8 @@ dc() {
   # para arquivo ausente derrubaria o compose no meio da instalação.
   local -a ca=()
   if ca_do_supabase_ok && [ -f docker-compose.supabase-ca.yml ]; then ca=(-f docker-compose.supabase-ca.yml); fi
+  # Rede do Supabase self-hosted no mesmo host (gemea de _common.sh).
+  if rede_do_supabase_ok && [ -f docker-compose.supabase-rede.yml ]; then ca+=(-f docker-compose.supabase-rede.yml); fi
   if [ "${SINGLE_SERVER:-0}" = "1" ]; then
     # #2099: o overlay do proxy da hospedagem entra também no single-server.
     case "${REVERSE_PROXY:-caddy}" in
@@ -63,6 +65,9 @@ dc_files() {
   local sufixo=""
   if ca_do_supabase_ok && [ -f docker-compose.supabase-ca.yml ]; then
     sufixo=" -f docker-compose.supabase-ca.yml"
+  fi
+  if rede_do_supabase_ok && [ -f docker-compose.supabase-rede.yml ]; then
+    sufixo="${sufixo} -f docker-compose.supabase-rede.yml"
   fi
   if [ "${SINGLE_SERVER:-0}" = "1" ]; then
     case "${REVERSE_PROXY:-caddy}" in
@@ -110,10 +115,17 @@ ca_do_supabase() {
 # Idem _common.sh: silenciosa, para as decisões de montagem.
 ca_do_supabase_ok() { ca_do_supabase >/dev/null 2>&1; }
 
+# Gemea de _common.sh: rede docker de um Supabase self-hosted no mesmo host.
+rede_do_supabase_ok() {
+  [ -n "${SUPABASE_DOCKER_NETWORK:-}" ] && docker network inspect "$SUPABASE_DOCKER_NETWORK" >/dev/null 2>&1
+}
+
 pg_container() {
   local -a rede=() ca=()
   local caminho=""
-  [ -n "${PSQL_DOCKER_NETWORK:-}" ] && rede=(--network "$PSQL_DOCKER_NETWORK")
+  # Gêmea de _common.sh: sem PSQL_DOCKER_NETWORK, vale a rede do Supabase do mesmo host.
+  if [ -n "${PSQL_DOCKER_NETWORK:-}" ]; then rede=(--network "$PSQL_DOCKER_NETWORK")
+  elif rede_do_supabase_ok; then rede=(--network "$SUPABASE_DOCKER_NETWORK"); fi
   # `local caminho` separado de propósito: `local caminho="$(...)"` engole o
   # status do comando substituído e o `if` aceitaria CA quebrada como pronta.
   if caminho="$(ca_do_supabase 2>/dev/null)"; then
@@ -2676,6 +2688,16 @@ telemetria_no_banner() {
   fi
 }
 
+senha_no_banner() {
+  # O install-single-server.sh preenche OWNER_PASSWORD antes de chamar --yes.
+  # Pode ser uma senha gerada pelo kit ou uma credencial preparada pela pessoa.
+  if [ "${SINGLE_SERVER:-0}" = "1" ]; then
+    t "(a que você definiu ou a de OWNER_PASSWORD no .env da pasta do CRM)"
+  else
+    t "(a que você definiu)"
+  fi
+}
+
 cat <<DONE
 
 $(c_grn "═══════════════════════════════════════════════════════")
@@ -2690,7 +2712,7 @@ $(pendencia_da_ia)
 
   2. $(t "Faça login com:")
        $(t "e-mail:") ${OWNER_EMAIL}
-       $(t "senha:")  $(t "(a que você definiu)")
+       $(t "senha:")  $(senha_no_banner)
 
   3. $(t "Conecte o WhatsApp (2º passo do onboarding):")
        $(t "Deixe o WhatsApp JÁ ABERTO em Configurações → Aparelhos conectados")

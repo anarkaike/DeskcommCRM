@@ -27,6 +27,10 @@
  * - **Uma entrega por EVENTO**, não por agendamento. Remarcar duas vezes são
  *   duas notícias; o mesmo evento entregue de novo pelo dreno é uma só. A
  *   `unique (organization_id, event_id)` dá isso.
+ * - **Número e grupo.** O aviso sai para o número e, se houver, para um grupo
+ *   do WhatsApp da mesma conexão — cada destino com a sua linha de entrega
+ *   (`alvo`), a sua `unique` e o seu desfecho. Grupo que falha adia ou cai só
+ *   ele; o número não espera por ele.
  * - **O cancelamento fecha o laço.** `appointment.cancelled` cancela o aviso
  *   ainda represado do mesmo agendamento — e, se nenhum aviso dele chegou a
  *   sair, não avisa o cancelamento de algo que o dono nunca soube.
@@ -69,6 +73,7 @@ import {
 } from "./texto-do-aviso-de-agendamento";
 import {
   EVENTOS_DO_AVISO_DE_AGENDAMENTO,
+  type AlvoDaEntregaDeAgendamento,
   type EventoDoAvisoDeAgendamento,
   type StatusDaEntregaDeAgendamento,
 } from "./vocabulario-do-aviso-de-agendamento";
@@ -100,7 +105,34 @@ export interface ConfigDoAvisoDeAgendamento {
   organization_id: string;
   channel_session_id: string | null;
   telefone_destino: string | null;
+  /** O `chatId` (`…@g.us`) de um grupo da mesma conexão — destino EXTRA. */
+  grupo_destino: string | null;
   ligado: boolean;
+  /**
+   * Também lembrar o dono ANTES de cada horário (migration 9326), nos degraus
+   * do tipo de atendimento. Opcional no tipo para os dublês antigos: ausente é
+   * desligado. Motor em `lib/agenda/lembrete-ao-dono.ts`.
+   */
+  lembrar_antes?: boolean;
+  /**
+   * O resumo das 7h só sai quando o dia tem agendamento ou houve mudança
+   * represada da madrugada (migration 9434, #4988). Opcional no tipo pelo
+   * mesmo motivo de `lembrar_antes`: ausente é desligado, o resumo sai todo dia.
+   */
+  resumo_so_com_agendamento?: boolean;
+}
+
+/** Para onde vai cada entrega: o número e o grupo, cada um quando existe. */
+export interface DestinoDoAviso {
+  alvo: AlvoDaEntregaDeAgendamento;
+  destino: string;
+}
+
+export function destinosDe(cfg: ConfigDoAvisoDeAgendamento): DestinoDoAviso[] {
+  const destinos: DestinoDoAviso[] = [];
+  if (cfg.telefone_destino) destinos.push({ alvo: "numero", destino: cfg.telefone_destino });
+  if (cfg.grupo_destino) destinos.push({ alvo: "grupo", destino: cfg.grupo_destino });
+  return destinos;
 }
 
 export interface AgendamentoDoAviso {
@@ -119,6 +151,8 @@ export interface EntregaDeAgendamento {
   organization_id: string;
   appointment_id: string | null;
   evento: string | null;
+  /** O número ou o grupo: sem isto, a falha de um e a do outro se leem iguais. */
+  alvo: AlvoDaEntregaDeAgendamento;
   destino: string;
   status: StatusDaEntregaDeAgendamento | string;
   tentativas: number;
@@ -151,6 +185,7 @@ export interface AvisoDeAgendamentoDb
     eventId: string;
     appointmentId: string;
     evento: EventoDoAvisoDeAgendamento;
+    alvo: AlvoDaEntregaDeAgendamento;
     destino: string;
     channelSessionId: string;
     status: "pendente" | "para_o_resumo";
@@ -158,17 +193,28 @@ export interface AvisoDeAgendamentoDb
   reivindicaResumo(entrada: {
     organizationId: string;
     dia: string;
+    alvo: AlvoDaEntregaDeAgendamento;
     destino: string;
     channelSessionId: string;
   }): Promise<{ criada: boolean; entrega: EntregaDeAgendamento | null }>;
+  /**
+   * Já existe a entrega do resumo deste dia para ESTE destino (enviada, falha
+   * ou ainda tentando). Só é perguntado no dia vazio com
+   * `resumo_so_com_agendamento` (#4988).
+   */
+  resumoJaReivindicado(orgId: string, dia: string, alvo: AlvoDaEntregaDeAgendamento): Promise<boolean>;
   atualizaEntrega(orgId: string, entregaId: string, patch: PatchDaEntregaDeAgendamento): Promise<void>;
   /** `pendente` e `para_o_resumo` do agendamento viram `cancelado`; devolve quantas. */
   cancelaPendentesDoAgendamento(orgId: string, appointmentId: string, excetoEventId: string): Promise<number>;
-  houveAvisoEnviado(orgId: string, appointmentId: string): Promise<boolean>;
+  /** Algum aviso deste agendamento já saiu (ou entrou no resumo) para ESTE destino. */
+  houveAvisoEnviado(orgId: string, appointmentId: string, alvo: AlvoDaEntregaDeAgendamento): Promise<boolean>;
   /** A agenda do dia, `pending`/`confirmed`, entre os dois instantes. */
   agendaEntre(orgId: string, inicio: Date, fim: Date): Promise<AgendamentoDoAviso[]>;
-  /** As entregas `para_o_resumo` ainda não contadas, com o agendamento de cada uma. */
-  represadasParaOResumo(orgId: string): Promise<Array<{ entrega: EntregaDeAgendamento; agendamento: AgendamentoDoAviso | null }>>;
+  /** As entregas `para_o_resumo` DESTE destino ainda não contadas, com o agendamento de cada uma. */
+  represadasParaOResumo(
+    orgId: string,
+    alvo: AlvoDaEntregaDeAgendamento,
+  ): Promise<Array<{ entrega: EntregaDeAgendamento; agendamento: AgendamentoDoAviso | null }>>;
   /** Marca as represadas como `no_resumo` depois que o resumo saiu. */
   marcaNoResumo(orgId: string, entregaIds: string[]): Promise<void>;
 }
@@ -201,6 +247,48 @@ const retry = (quando: Date, detail: string): DesfechoDoAvisoDeAgendamento => ({
   detail,
   retry_at: quando.toISOString(),
 });
+
+/**
+ * Um desfecho por destino vira um só para o dreno. Um destino que pede outra
+ * rodada a pede para todos — e o que já saiu volta como `ja_resolvido`, sem
+ * sair de novo, pela `unique` de cada entrega.
+ */
+export function juntaDesfechos(
+  porDestino: Array<{ alvo: AlvoDaEntregaDeAgendamento; desfecho: DesfechoDoAvisoDeAgendamento }>,
+): DesfechoDoAvisoDeAgendamento {
+  const [unico] = porDestino;
+  if (porDestino.length === 1 && unico) return unico.desfecho;
+  const detail = porDestino.map((d) => `${d.alvo}:${d.desfecho.detail}`).join(" | ");
+  const quandos = porDestino.flatMap((d) => (d.desfecho.retry_at ? [Date.parse(d.desfecho.retry_at)] : []));
+  if (quandos.length > 0) return retry(new Date(Math.min(...quandos)), detail);
+  if (porDestino.some((d) => d.desfecho.status === "ok")) return { status: "ok", detail };
+  return skipped(detail);
+}
+
+/**
+ * O grupo é destino EXTRA: um defeito no caminho dele (grupo que sumiu, leitura
+ * que lançou) adia só ele, e nunca vira `error` que levaria o número junto.
+ */
+async function porDestino(
+  destinos: DestinoDoAviso[],
+  agora: Date,
+  avisa: (d: DestinoDoAviso) => Promise<DesfechoDoAvisoDeAgendamento>,
+): Promise<DesfechoDoAvisoDeAgendamento> {
+  const desfechos: Array<{ alvo: AlvoDaEntregaDeAgendamento; desfecho: DesfechoDoAvisoDeAgendamento }> = [];
+  for (const d of destinos) {
+    if (d.alvo === "numero") {
+      desfechos.push({ alvo: d.alvo, desfecho: await avisa(d) });
+      continue;
+    }
+    try {
+      desfechos.push({ alvo: d.alvo, desfecho: await avisa(d) });
+    } catch (err) {
+      logger.warn("[aviso-de-agendamento] envio ao grupo falhou", { causa: err instanceof Error ? err.name : "erro" });
+      desfechos.push({ alvo: d.alvo, desfecho: retry(new Date(agora.getTime() + ADIAMENTO_DO_CANAL_MS), "grupo falhou") });
+    }
+  }
+  return juntaDesfechos(desfechos);
+}
 const textoOuNulo = (v: unknown): string | null => (typeof v === "string" && v.trim().length > 0 ? v : null);
 
 function ehEventoDoAviso(tipo: string): tipo is EventoDoAvisoDeAgendamento {
@@ -249,11 +337,11 @@ export async function aplicaAvisoDeAgendamento(
 
   // ── 1. Configuração — o caminho de toda instalação que nunca ligou ───────
   const cfg = await deps.db.carregaConfig(orgId);
-  if (!cfg || !cfg.ligado || !cfg.channel_session_id || !cfg.telefone_destino) {
+  const destinos = cfg ? destinosDe(cfg) : [];
+  if (!cfg || !cfg.ligado || !cfg.channel_session_id || destinos.length === 0) {
     return skipped(canceladas > 0 ? `cancelado=${canceladas}:sem_configuracao` : "sem_configuracao");
   }
   const channelSessionId = cfg.channel_session_id;
-  const destino = cfg.telefone_destino;
 
   // ── 2. Teto de idade do EVENTO ───────────────────────────────────────────
   if (passouDoTeto(row, agora)) return skipped("evento_velho");
@@ -265,14 +353,40 @@ export async function aplicaAvisoDeAgendamento(
     // Marcou e cancelou antes do dreno chegar: o cancelamento é a notícia.
     return skipped(`agendamento_${agendamento.status}`);
   }
-  if (evento === "appointment.cancelled" && canceladas > 0 && !(await deps.db.houveAvisoEnviado(orgId, appointmentId))) {
-    // O dono nunca soube deste horário: avisar que ele foi cancelado é ruído.
-    return { status: "ok", detail: `cancelado=${canceladas}:nada_a_avisar` };
-  }
 
   // ── 4. Madrugada: vai no resumo das 7h ───────────────────────────────────
   const fuso = await deps.db.fusoDaOrganizacao(orgId);
   const madrugada = ehMadrugada(partesNoFuso(agora, fuso).hora);
+
+  const ctx = { row, evento, orgId, appointmentId, agendamento, channelSessionId, fuso, madrugada, agora, canceladas };
+  return await porDestino(destinos, agora, (d) => avisaUmDestino(deps, { ...ctx, ...d }));
+}
+
+/** Os passos 5 → 14 para UM destino — o número e o grupo têm entregas próprias. */
+async function avisaUmDestino(
+  deps: AvisoDeAgendamentoDeps,
+  ctx: DestinoDoAviso & {
+    row: EventRow;
+    evento: EventoDoAvisoDeAgendamento;
+    orgId: string;
+    appointmentId: string;
+    agendamento: AgendamentoDoAviso;
+    channelSessionId: string;
+    fuso: string;
+    madrugada: boolean;
+    agora: Date;
+    canceladas: number;
+  },
+): Promise<DesfechoDoAvisoDeAgendamento> {
+  const { row, evento, orgId, appointmentId, agendamento, channelSessionId, fuso, madrugada, agora, alvo, destino, canceladas } =
+    ctx;
+
+  // Este destino nunca soube do horário (o aviso dele ainda estava na fila e o
+  // cancelamento o segurou): avisar que ele foi cancelado é ruído. A pergunta é
+  // POR DESTINO — o número pode ter recebido o "marcado" e o grupo não.
+  if (evento === "appointment.cancelled" && canceladas > 0 && !(await deps.db.houveAvisoEnviado(orgId, appointmentId, alvo))) {
+    return { status: "ok", detail: `cancelado=${canceladas}:nada_a_avisar` };
+  }
 
   // ── 5. REIVINDICA antes de tocar a rede ──────────────────────────────────
   const { criada, entrega } = await deps.db.reivindicaAviso({
@@ -280,6 +394,7 @@ export async function aplicaAvisoDeAgendamento(
     eventId: row.id,
     appointmentId,
     evento,
+    alvo,
     destino,
     channelSessionId,
     status: madrugada ? "para_o_resumo" : "pendente",
@@ -339,6 +454,9 @@ export async function aplicaAvisoDeAgendamento(
  *
  * Só age entre 7h e 10h no relógio da organização, e a entrega do dia é
  * única: a segunda rodada encontra o resumo enviado e sai sem tocar a rede.
+ *
+ * Com `resumo_so_com_agendamento` (#4988), o dia sem agendamento e sem
+ * mudança represada da madrugada não recebe resumo — ver `resumoParaUmDestino`.
  */
 export async function aplicaResumoDoDia(
   deps: Omit<AvisoDeAgendamentoDeps, "origemDoDreno">,
@@ -346,18 +464,71 @@ export async function aplicaResumoDoDia(
 ): Promise<DesfechoDoAvisoDeAgendamento> {
   const agora = deps.clock();
   const cfg = await deps.db.carregaConfig(orgId);
-  if (!cfg || !cfg.ligado || !cfg.channel_session_id || !cfg.telefone_destino) return skipped("sem_configuracao");
+  const destinos = cfg ? destinosDe(cfg) : [];
+  if (!cfg || !cfg.ligado || !cfg.channel_session_id || destinos.length === 0) return skipped("sem_configuracao");
+  const channelSessionId = cfg.channel_session_id;
 
   const fuso = await deps.db.fusoDaOrganizacao(orgId);
   const parede = partesNoFuso(agora, fuso);
   if (parede.hora < HORA_DO_RESUMO || parede.hora >= HORA_LIMITE_DO_RESUMO) return skipped("fora_da_hora");
 
+  const soComAgendamento = cfg.resumo_so_com_agendamento === true;
+  return await porDestino(destinos, agora, (d) =>
+    resumoParaUmDestino(deps, { ...d, orgId, channelSessionId, fuso, parede, agora, soComAgendamento }),
+  );
+}
+
+/** O resumo de UM destino: cada um tem a sua entrega do dia e as suas represadas. */
+async function resumoParaUmDestino(
+  deps: Omit<AvisoDeAgendamentoDeps, "origemDoDreno">,
+  ctx: DestinoDoAviso & {
+    orgId: string;
+    channelSessionId: string;
+    fuso: string;
+    parede: ReturnType<typeof partesNoFuso>;
+    agora: Date;
+    /** Dia vazio fica sem resumo (#4988). */
+    soComAgendamento: boolean;
+  },
+): Promise<DesfechoDoAvisoDeAgendamento> {
+  const { orgId, channelSessionId, fuso, parede, agora, alvo, destino, soComAgendamento } = ctx;
   const dia = diaLocalISO(agora, fuso);
+
+  // O dia local inteiro, de 00:00 a 00:00 do dia seguinte, em instantes —
+  // por `instanteDe`, que sabe o que fazer no dia em que o relógio muda.
+  const inicioDoDia = instanteDe({ ano: parede.ano, mes: parede.mes, dia: parede.dia }, fuso);
+  const amanha = partesNoFuso(new Date(inicioDoDia.getTime() + 36 * 60 * 60 * 1000), fuso);
+  const fimDoDia = instanteDe({ ano: amanha.ano, mes: amanha.mes, dia: amanha.dia }, fuso);
+  const lerODia = () =>
+    Promise.all([deps.db.agendaEntre(orgId, inicioDoDia, fimDoDia), deps.db.represadasParaOResumo(orgId, alvo)]);
+
+  // "Só quando houver agendamento" decide ANTES de reivindicar: o dia vazio
+  // não grava linha de entrega, então "Últimos avisos" não ganha uma linha por
+  // dia quieto. A represada da madrugada conta como dia não vazio — ela só
+  // vira `no_resumo` quando o resumo sai, e um horário cancelado de madrugada
+  // é notícia mesmo com a agenda de hoje vazia. A rodada seguinte (10 min)
+  // pergunta de novo: um horário marcado para hoje às 8h faz o resumo sair.
+  //
+  // O resumo JÁ reivindicado segue o caminho de sempre mesmo que o dia tenha
+  // esvaziado depois (o único horário foi cancelado enquanto o canal estava
+  // fora do ar): pular aqui deixaria a linha `pendente` para sempre em
+  // "Últimos avisos", como se ainda fosse sair.
+  const lidoAntes = soComAgendamento ? await lerODia() : null;
+  if (
+    lidoAntes &&
+    lidoAntes[0].length === 0 &&
+    lidoAntes[1].length === 0 &&
+    !(await deps.db.resumoJaReivindicado(orgId, dia, alvo))
+  ) {
+    return skipped("dia_vazio");
+  }
+
   const { criada, entrega } = await deps.db.reivindicaResumo({
     organizationId: orgId,
     dia,
-    destino: cfg.telefone_destino,
-    channelSessionId: cfg.channel_session_id,
+    alvo,
+    destino,
+    channelSessionId,
   });
   if (!entrega) return skipped("reivindicacao_sem_linha");
   if (!criada) {
@@ -369,14 +540,8 @@ export async function aplicaResumoDoDia(
     if (desdeOToque >= 0 && desdeOToque < JANELA_DE_REIVINDICACAO_MS) return skipped("outra rodada está enviando o resumo");
   }
 
-  // O dia local inteiro, de 00:00 a 00:00 do dia seguinte, em instantes —
-  // por `instanteDe`, que sabe o que fazer no dia em que o relógio muda.
-  const inicioDoDia = instanteDe({ ano: parede.ano, mes: parede.mes, dia: parede.dia }, fuso);
-  const amanha = partesNoFuso(new Date(inicioDoDia.getTime() + 36 * 60 * 60 * 1000), fuso);
-  const fimDoDia = instanteDe({ ano: amanha.ano, mes: amanha.mes, dia: amanha.dia }, fuso);
-  const [agendaBruta, represadas, marca] = await Promise.all([
-    deps.db.agendaEntre(orgId, inicioDoDia, fimDoDia),
-    deps.db.represadasParaOResumo(orgId),
+  const [[agendaBruta, represadas], marca] = await Promise.all([
+    lidoAntes ? Promise.resolve(lidoAntes) : lerODia(),
     deps.db.marcaDaOrganizacao(orgId),
   ]);
 
@@ -402,8 +567,8 @@ export async function aplicaResumoDoDia(
   const body = montarResumoDoDia({ marca: marca.nome, idioma: marca.idioma, fuso, dia: agora, agenda, daNoite });
   const desfecho = await entrega_(deps, {
     orgId,
-    channelSessionId: cfg.channel_session_id,
-    destino: cfg.telefone_destino,
+    channelSessionId,
+    destino,
     entrega,
     agora,
     body,
@@ -452,7 +617,7 @@ function criaCacheDeNomes(db: AvisoDeAgendamentoDb, orgId: string) {
  * O que fica de fora é o endereço público: esta mensagem não leva link, então
  * uma instalação sem domínio ainda consegue avisar o dono.
  */
-async function entrega_(
+export async function entrega_(
   deps: Omit<AvisoDeAgendamentoDeps, "origemDoDreno">,
   ctx: {
     orgId: string;
@@ -541,13 +706,13 @@ async function entrega_(
     action: "agenda.aviso_whatsapp_enviado",
     organizationId: orgId,
     resourceId: entrega.appointment_id ?? entrega.id,
-    metadata: { entrega_id: entrega.id, evento: entrega.evento, canal: channelSessionId, tentativas },
+    metadata: { entrega_id: entrega.id, evento: entrega.evento, alvo: entrega.alvo, canal: channelSessionId, tentativas },
   });
   return { status: "ok", detail: `enviado canal=${channelSessionId} tentativas=${tentativas}` };
 }
 
 /** A falha DEFINITIVA: grava o desfecho e audita. `skipped`, nunca `error`. */
-async function condena(
+export async function condena(
   deps: Pick<AvisoDeAgendamentoDeps, "db" | "audita">,
   orgId: string,
   entrega: EntregaDeAgendamento,
@@ -568,6 +733,7 @@ async function condena(
     metadata: {
       entrega_id: entrega.id,
       evento: entrega.evento,
+      alvo: entrega.alvo,
       erro_codigo: codigo,
       destino_mascarado: mascara(entrega.destino),
       quando: agora.toISOString(),
@@ -581,7 +747,7 @@ async function condena(
 // ---------------------------------------------------------------------------
 
 const COLUNAS_DA_ENTREGA =
-  "id, organization_id, appointment_id, evento, destino, status, tentativas, created_at, updated_at";
+  "id, organization_id, appointment_id, evento, alvo, destino, status, tentativas, created_at, updated_at";
 const COLUNAS_DO_AGENDAMENTO =
   "id, status, starts_at, contact_id, owner_user_id, event_type_id, title, created_by_kind";
 
@@ -625,7 +791,7 @@ export function createSupabaseAvisoDeAgendamentoDb(
     async carregaConfig(orgId) {
       const { data, error } = await admin
         .from("config_aviso_de_agendamento")
-        .select("organization_id, usa_numero_do_aviso_de_caso, channel_session_id, telefone_destino, ligado")
+        .select("organization_id, usa_numero_do_aviso_de_caso, channel_session_id, telefone_destino, grupo_destino, ligado, lembrar_antes, resumo_so_com_agendamento")
         .eq("organization_id", orgId)
         .maybeSingle();
       if (error) throw new Error(error.message);
@@ -634,7 +800,10 @@ export function createSupabaseAvisoDeAgendamentoDb(
         usa_numero_do_aviso_de_caso: boolean;
         channel_session_id: string | null;
         telefone_destino: string | null;
+        grupo_destino: string | null;
         ligado: boolean;
+        lembrar_antes: boolean | null;
+        resumo_so_com_agendamento: boolean | null;
       } | null;
       if (!linha) return null;
       if (!linha.usa_numero_do_aviso_de_caso) {
@@ -642,7 +811,10 @@ export function createSupabaseAvisoDeAgendamentoDb(
           organization_id: orgId,
           channel_session_id: linha.channel_session_id,
           telefone_destino: linha.telefone_destino,
+          grupo_destino: linha.grupo_destino,
           ligado: linha.ligado,
+          lembrar_antes: linha.lembrar_antes === true,
+          resumo_so_com_agendamento: linha.resumo_so_com_agendamento === true,
         };
       }
       // "Usar o mesmo número do aviso de caso": a conexão e o número são LIDOS
@@ -659,7 +831,10 @@ export function createSupabaseAvisoDeAgendamentoDb(
         organization_id: orgId,
         channel_session_id: deCaso?.channel_session_id ?? null,
         telefone_destino: deCaso?.telefone_destino ?? null,
+        grupo_destino: linha.grupo_destino,
         ligado: linha.ligado,
+        lembrar_antes: linha.lembrar_antes === true,
+        resumo_so_com_agendamento: linha.resumo_so_com_agendamento === true,
       };
     },
 
@@ -704,7 +879,7 @@ export function createSupabaseAvisoDeAgendamentoDb(
       return typeof nome === "string" && nome.trim() ? nome : null;
     },
 
-    reivindicaAviso({ organizationId, eventId, appointmentId, evento, destino, channelSessionId, status }) {
+    reivindicaAviso({ organizationId, eventId, appointmentId, evento, alvo, destino, channelSessionId, status }) {
       return inserirEntrega(
         {
           organization_id: organizationId,
@@ -712,26 +887,41 @@ export function createSupabaseAvisoDeAgendamentoDb(
           event_id: eventId,
           appointment_id: appointmentId,
           evento,
+          alvo,
           destino,
           channel_session_id: channelSessionId,
           status,
         },
-        { organization_id: organizationId, event_id: eventId },
+        { organization_id: organizationId, event_id: eventId, alvo },
       );
     },
 
-    reivindicaResumo({ organizationId, dia, destino, channelSessionId }) {
+    reivindicaResumo({ organizationId, dia, alvo, destino, channelSessionId }) {
       return inserirEntrega(
         {
           organization_id: organizationId,
           tipo: "resumo",
           dia,
+          alvo,
           destino,
           channel_session_id: channelSessionId,
           status: "pendente",
         },
-        { organization_id: organizationId, tipo: "resumo", dia },
+        { organization_id: organizationId, tipo: "resumo", dia, alvo },
       );
+    },
+
+    async resumoJaReivindicado(orgId, dia, alvo) {
+      const { data, error } = await admin
+        .from("entregas_de_aviso_de_agendamento")
+        .select("id")
+        .eq("organization_id", orgId)
+        .eq("tipo", "resumo")
+        .eq("dia", dia)
+        .eq("alvo", alvo)
+        .limit(1);
+      if (error) throw new Error(error.message);
+      return (data ?? []).length > 0;
     },
 
     async atualizaEntrega(orgId, entregaId, patch) {
@@ -756,12 +946,13 @@ export function createSupabaseAvisoDeAgendamentoDb(
       return (data ?? []).length;
     },
 
-    async houveAvisoEnviado(orgId, appointmentId) {
+    async houveAvisoEnviado(orgId, appointmentId, alvo) {
       const { data, error } = await admin
         .from("entregas_de_aviso_de_agendamento")
         .select("id")
         .eq("organization_id", orgId)
         .eq("appointment_id", appointmentId)
+        .eq("alvo", alvo)
         .in("status", ["enviado", "no_resumo"])
         .limit(1);
       if (error) throw new Error(error.message);
@@ -784,12 +975,13 @@ export function createSupabaseAvisoDeAgendamentoDb(
       return (data ?? []) as AgendamentoDoAviso[];
     },
 
-    async represadasParaOResumo(orgId) {
+    async represadasParaOResumo(orgId, alvo) {
       const { data, error } = await admin
         .from("entregas_de_aviso_de_agendamento")
         .select(COLUNAS_DA_ENTREGA)
         .eq("organization_id", orgId)
         .eq("tipo", "aviso")
+        .eq("alvo", alvo)
         .eq("status", "para_o_resumo")
         .order("created_at", { ascending: true })
         .limit(30);
