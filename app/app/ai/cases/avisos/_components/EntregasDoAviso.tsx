@@ -111,7 +111,9 @@ export function EntregasDoAviso({
                 >
                   {t(situacao(entrega.status))}
                 </span>
-                <span className="text-xs text-muted-foreground">{entrega.destino_mascarado}</span>
+                <span className="text-xs text-muted-foreground">
+                  {t(entrega.canal)} · {entrega.destino_exibicao}
+                </span>
                 <Link
                   href={`/app/ai/cases?caso=${entrega.case_id}`}
                   className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"

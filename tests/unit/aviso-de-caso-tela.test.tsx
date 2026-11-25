@@ -256,14 +256,15 @@ describe("a lista de entregas", () => {
     expect(screen.getByTestId("entregas-vazias").textContent).toContain("inclusive se ela falhar");
   });
 
-  it("mostra a situação, o destino MASCARADO e a frase do erro", () => {
+  it("mostra a situação, o canal, o destino MASCARADO e a frase do erro", () => {
     montar(
       estado({
         entregas: [
           {
-            id: "e1",
+            id: "whatsapp:e1",
             case_id: "c1",
-            destino_mascarado: "••••6398",
+            canal: "WhatsApp",
+            destino_exibicao: "••••6398",
             status: "falhou",
             erro_codigo: "teto_diario_do_numero",
             tentativas: 3,
@@ -274,10 +275,35 @@ describe("a lista de entregas", () => {
       }),
     );
     const lista = screen.getByTestId("lista-de-entregas");
+    expect(lista.textContent).toContain("WhatsApp");
     expect(lista.textContent).toContain("••••6398");
     expect(lista.textContent).toContain("limite diário do período de aquecimento");
     // O número inteiro nunca entra nesta lista: quem a lê pode ser `manager`.
     expect(lista.textContent).not.toContain("998966398");
+  });
+
+  it("mostra entregas do Telegram com o nome do grupo sem expor o chat id", () => {
+    montar(
+      estado({
+        entregas: [
+          {
+            id: "telegram:e1",
+            case_id: "c1",
+            canal: "Telegram",
+            destino_exibicao: "Equipe QA",
+            status: "enviado",
+            erro_codigo: null,
+            tentativas: 1,
+            enviado_em: "2026-09-17T10:00:00.000Z",
+            created_at: "2026-09-17T10:00:00.000Z",
+          },
+        ],
+      }),
+    );
+    const lista = screen.getByTestId("lista-de-entregas");
+    expect(lista.textContent).toContain("Telegram");
+    expect(lista.textContent).toContain("Equipe QA");
+    expect(lista.textContent).not.toContain("-5341004870");
   });
 });
 
