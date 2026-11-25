@@ -84361,9 +84361,10 @@ create trigger trg_tipo_segue_o_fuso_da_empresa
 -- hoje continua criando card em todo número. No Postgres 11+ um default
 -- não-volátil não reescreve a tabela, então a coluna entra sem varredura.
 --
--- Não cria função e não concede nada a `anon`: pode ficar depois da VARREDURA
--- anon. Reaplicável por `add column if not exists` — o `update.sh` roda o
--- apêndice inteiro a cada atualização (`tests/unit/baseline-reaplicavel.test.ts`).
+-- Não cria função e não concede nada a `anon`. Fica antes do marcador da 9243
+-- para permanecer fora da janela que compara o espelho dela; a varredura de
+-- segurança continua no fim do baseline. Reaplicável por `add column if not
+-- exists` — o `update.sh` roda o apêndice inteiro a cada atualização.
 alter table public.channel_sessions
   add column if not exists conversa_nova_cria_negocio boolean not null default true;
 
