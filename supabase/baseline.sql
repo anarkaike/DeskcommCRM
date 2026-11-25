@@ -84350,6 +84350,26 @@ create trigger trg_tipo_segue_o_fuso_da_empresa
   for each row
   execute function public.fn_tipo_segue_o_fuso_da_empresa();
 
+-- ---- a CONEXÃO decide se a conversa nova cria negócio (migration 9459) ----
+-- Espelho da 9459 (issue #4670); o porquê inteiro está no cabeçalho da migration.
+-- Coluna, e não `metadata`: a leitura acontece uma vez por card que nasce, no
+-- caminho quente da ingestão, e a ausência de chave em jsonb teria de significar
+-- LIGADO — o oposto da chave vizinha (`guardar_historico`, #999), que é a razão
+-- de a regra não poder morar num leitor que adivinha.
+--
+-- ⚠️ `default true` é o que torna a atualização invisível: toda instalação de
+-- hoje continua criando card em todo número. No Postgres 11+ um default
+-- não-volátil não reescreve a tabela, então a coluna entra sem varredura.
+--
+-- Não cria função e não concede nada a `anon`: pode ficar depois da VARREDURA
+-- anon. Reaplicável por `add column if not exists` — o `update.sh` roda o
+-- apêndice inteiro a cada atualização (`tests/unit/baseline-reaplicavel.test.ts`).
+alter table public.channel_sessions
+  add column if not exists conversa_nova_cria_negocio boolean not null default true;
+
+comment on column public.channel_sessions.conversa_nova_cria_negocio is
+  'Issue #4670: a conversa nova que chega por esta conexão abre negócio no funil padrão? true (DEFAULT, e o estado de toda instalação de antes) = sim, como sempre foi. false = a conversa e o contato nascem, o Inbox e a IA seguem, e só o card não nasce; criar à mão (crm_create_lead, painel da conversa, ficha do contato) continua igual.';
+
 -- ---- anonimizar alcança as fichas fundidas: a cascata (migration 9243) ----
 -- Espelho de supabase/migrations/20261107120001_9243_anonimizar_alcanca_fichas_fundidas.sql.
 -- O bloco de dados está no fim do arquivo: precisa de todos os gatilhos de anonimização criados.
@@ -89756,26 +89776,6 @@ comment on column public.channel_sessions.zernio_webhook_id is
   'Assinatura de webhook que entrega os eventos desta conta, registrada pela INSTALAÇÃO. Na conexão por um clique é o webhook ÚNICO da instalação (compartilhado, filtrado aos perfis das conexões ativas; id em platform_config): a remoção do canal tira o perfil do filtro e NÃO apaga a assinatura. Na chave própria é a assinatura do número (filtrada à conta), apagada na remoção. Nulo quando o operador configurou o webhook à mão. Migration 9093.';
 comment on column public.channel_sessions.zernio_credencial_da_instalacao is
   'true = a sessão fala com o provedor pela chave da INSTALAÇÃO (platform_config), resolvida na hora; zernio_token_encrypted fica nulo. false = chave própria da organização, cifrada em zernio_token_encrypted. Migration 9093.';
-
--- ---- a CONEXÃO decide se a conversa nova cria negócio (migration 9459) ----
--- Espelho da 9459 (issue #4670); o porquê inteiro está no cabeçalho da migration.
--- Coluna, e não `metadata`: a leitura acontece uma vez por card que nasce, no
--- caminho quente da ingestão, e a ausência de chave em jsonb teria de significar
--- LIGADO — o oposto da chave vizinha (`guardar_historico`, #999), que é a razão
--- de a regra não poder morar num leitor que adivinha.
---
--- ⚠️ `default true` é o que torna a atualização invisível: toda instalação de
--- hoje continua criando card em todo número. No Postgres 11+ um default
--- não-volátil não reescreve a tabela, então a coluna entra sem varredura.
---
--- Não cria função e não concede nada a `anon`: pode ficar depois da VARREDURA
--- anon. Reaplicável por `add column if not exists` — o `update.sh` roda o
--- apêndice inteiro a cada atualização (`tests/unit/baseline-reaplicavel.test.ts`).
-alter table public.channel_sessions
-  add column if not exists conversa_nova_cria_negocio boolean not null default true;
-
-comment on column public.channel_sessions.conversa_nova_cria_negocio is
-  'Issue #4670: a conversa nova que chega por esta conexão abre negócio no funil padrão? true (DEFAULT, e o estado de toda instalação de antes) = sim, como sempre foi. false = a conversa e o contato nascem, o Inbox e a IA seguem, e só o card não nasce; criar à mão (crm_create_lead, painel da conversa, ficha do contato) continua igual.';
 
 -- ---- llm_calls: passos e composição da chamada (migration 9105) ----
 alter table public.llm_calls add column if not exists passos smallint;

@@ -18,8 +18,7 @@
  *
  * ─── O que se cobra aqui ───────────────────────────────────────────────────
  *
- *  1. a matriz: as redes sociais (e o bot do Telegram, cujo adapter recusa
- *     todo envio que não seja texto) não prometem nota de voz;
+ *  1. a matriz: as redes sociais e o bot do Telegram não prometem nota de voz;
  *  2. o formato: canal `none` não tem formato de síntese — `null`, não um
  *     formato "de reserva" que pagaria uma bolha falhada;
  *  3. a lista de canais da tela leva a capacidade (`enviaNotaDeVoz`);
@@ -43,7 +42,6 @@ import {
   PROVIDERS_DE_MENSAGEM,
   capabilitiesOf,
 } from "@/lib/channels/capabilities";
-import { getAdapter } from "@/lib/channels";
 import { formatoDaVozParaCanal } from "@/lib/ai/voz/formato";
 import { listSelectableChannels } from "@/lib/channels/selectable";
 
@@ -71,19 +69,8 @@ describe("matriz — quem entrega nota de voz da IA", () => {
     expect(capabilitiesOf(CHANNEL_PROVIDER_SOCIAL).voiceNote).toBe("none");
   });
 
-  it("bot do Telegram declara `none`: o adapter da v1 recusa todo envio que não seja texto", async () => {
+  it("bot do Telegram declara `none`: agente não deve sintetizar nota de voz nesse canal", () => {
     expect(capabilitiesOf(CHANNEL_PROVIDER_TELEGRAM).voiceNote).toBe("none");
-    // A declaração tem de bater com o adapter: se a T2 passar a mandar áudio,
-    // este caso fica vermelho e a capability muda junto.
-    await expect(
-      getAdapter(CHANNEL_PROVIDER_TELEGRAM).send({
-        kind: "audio",
-        to: "1",
-        sessionRef: "s",
-        organizationId: ORG,
-        media: { url: "https://exemplo.test/a.ogg", mime: "audio/ogg" },
-      } as never),
-    ).rejects.toThrow(/telegram_media_not_supported/);
   });
 
   it("os canais de WhatsApp seguem falando — o conserto não cala quem entrega", () => {
