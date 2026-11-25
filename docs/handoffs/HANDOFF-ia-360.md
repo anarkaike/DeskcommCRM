@@ -544,7 +544,10 @@ da pessoa.
 ```
 
 Evidência visual em `.superpowers/evidence/ia-360-w3/` (5 arquivos; o diretório é
-gitignored por convenção do repo).
+gitignored por convenção do repo). As duas capturas versionadas da central são:
+
+- `evidence/ia-360-w3/06-central-de-avisos-capacidades.png`
+- `evidence/ia-360-w3/07-central-aviso-resolvido.png`
 
 **Sabotagem do E2E** — as duas que importam, cada uma com rebuild completo:
 

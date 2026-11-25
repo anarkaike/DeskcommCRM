@@ -591,7 +591,7 @@ This pass found and fixed a cross-channel measurement defect: when a case had bo
 Validation evidence:
 - `NODE_OPTIONS=--max-old-space-size=8192 pnpm typecheck`: passed after the source helper was added.
 - Focused unit command covering alert page, delivery mapping, Telegram alert handler, Telegram group cases, and human cases: 5 files, 47 passed.
-- `E2E_PORT=3107 pnpm exec playwright test tests/e2e/telegram-conexoes.spec.ts`: 1 passed. It covers the Telegram connections tab rendering, not case button callbacks.
+- `E2E_PORT=3107 pnpm exec playwright test tests/e2e/telegram-conexoes.spec.ts`: 1 passed. It covers the Telegram connections tab rendering, not case button callbacks. The rendered connections-tab screenshot is `evidence/telegram/conexoes-aba.png`.
 - `git diff --check`: passed.
 - Browser view in the local CRM displayed the real QA alert as Telegram with the observed group title and no private chat id.
 - Bot/group state remains QA-only: case alerts and case actions on, group Inbox and group assistant off, Junio paired with read/action grants. Destination is persisted in the canonical case-alert config. No customer response was sent.
