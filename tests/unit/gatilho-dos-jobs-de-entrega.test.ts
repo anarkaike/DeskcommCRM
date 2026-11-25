@@ -199,7 +199,8 @@ const GATILHO_ESPERADO: Record<string, { condicao: string | null; efeito: string
       "São as duas majors que este repo diz suportar: pg15 é o PISO real do `baseline.sql` " +
       "(`security_invoker` em view) e onde quem digita `pnpm test:db` na própria máquina cai por " +
       "padrão; pg17 é de onde o `pg_dump` do baseline saiu e o que o Supabase entrega a projeto " +
-      "novo. Cada perna roda `test:db` E `test:db:update`: o segundo era um script que nenhum " +
+      "novo. Cada major divide `test:db` em dois shards sem omitir arquivos e roda " +
+      "`test:db:update` uma vez sobre banco com dados. O segundo era um script que nenhum " +
       "workflow chamava desde 2026-08-27, e `test:db` sozinho mede um banco VAZIO — constraint " +
       "que só quebra com linha existente passava verde.",
   },
