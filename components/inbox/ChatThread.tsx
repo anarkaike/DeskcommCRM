@@ -328,7 +328,10 @@ export function ChatThread({
     );
   }
 
-  if (q.isError) {
+  // Uma falha de atualização não deve apagar o histórico que já estava na tela.
+  // React Query mantém os dados em cache durante erro de refetch; nesse caso,
+  // renderizamos a conversa e deixamos o erro transitório para o toast/retry.
+  if (q.isError && items.length === 0) {
     return (
       <div
         {...sinalDoCanal}

@@ -57,12 +57,14 @@ function makeClient(priorStatus?: string) {
     if (sql.includes("select d.id::text,d.status"))
       return {
         rows: priorStatus
-          ? [{
-              id: "delivery-1",
-              status: priorStatus,
-              updated_at: new Date().toISOString(),
-              ...destination,
-            }]
+          ? [
+              {
+                id: "delivery-1",
+                status: priorStatus,
+                updated_at: new Date().toISOString(),
+                ...destination,
+              },
+            ]
           : [],
       };
     if (sql.includes("insert into telegram_case_alert_deliveries"))
@@ -82,10 +84,38 @@ describe("Telegram case alert event handler", () => {
     vi.clearAllMocks();
     mocks.admin.mockReturnValue(makeAdmin());
     mocks.decrypt.mockResolvedValue("telegram-token");
-    mocks.send.mockResolvedValue({ messageId: "telegram-message-99", chatId: destination.group_chat_id, date: 1 });
+    mocks.send.mockResolvedValue({
+      messageId: "telegram-message-99",
+      chatId: destination.group_chat_id,
+      date: 1,
+    });
     mocks.query.mockImplementation(async (sql: string) => {
       if (sql.includes("select t.id::text group_setting_id")) return { rows: [destination] };
-      if (sql.includes("select status from agent_cases")) return { rows: [{ status: "awaiting_human" }] };
+      if (sql.includes("select status from agent_cases"))
+        return { rows: [{ status: "awaiting_human" }] };
+      if (sql.includes("from agent_cases ac join conversations"))
+        return {
+          rows: [
+            {
+              cliente: "Raissa de Almeida",
+              agente: "Vendedor IA",
+              roteador: "Roteador Vendas",
+              canal: "telegram",
+              telefone: "+5534991234567",
+              titulo: "Pedido de uniforme",
+              contexto: "Cliente quer uniforme para escola.",
+              bloqueio: "Confirmar modelo e tamanhos.",
+              conversation_id: "55555555-5555-4555-8555-555555555555",
+            },
+          ],
+        };
+      if (sql.includes("from messages where organization_id"))
+        return {
+          rows: [
+            { direction: "inbound", sent_via: "crm", body: "Preciso de uniforme para meu filho." },
+            { direction: "outbound", sent_via: "ai", body: "Qual escola?" },
+          ],
+        };
       return { rows: [], rowCount: 1 };
     });
   });
@@ -95,26 +125,45 @@ describe("Telegram case alert event handler", () => {
     const result = await telegramCaseAlertHandler.handle(event as never);
     expect(result).toMatchObject({ status: "ok", detail: "telegram_case_alert_sent" });
     expect(mocks.send).toHaveBeenCalledTimes(1);
-    expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({
-      token: "telegram-token",
-      chatId: destination.group_chat_id,
-      text: expect.stringContaining(caseId.slice(0, 8)),
-      inlineKeyboard: expect.arrayContaining([
-        expect.arrayContaining([expect.objectContaining({ text: "Orientar resposta ao cliente" })]),
-        expect.arrayContaining([expect.objectContaining({ text: "Ver casos abertos" })]),
-      ]),
-    }));
+    expect(mocks.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: "telegram-token",
+        chatId: destination.group_chat_id,
+        text: expect.stringContaining("APOIO DA EQUIPE"),
+        inlineKeyboard: expect.arrayContaining([
+          expect.arrayContaining([
+            expect.objectContaining({ text: "Orientar resposta ao cliente" }),
+          ]),
+          expect.arrayContaining([expect.objectContaining({ text: "Ver casos abertos" })]),
+        ]),
+      }),
+    );
     const body = mocks.send.mock.calls.at(0)?.[0]?.text ?? "";
     const bodyWithoutLinks = body.replace(/https?:\/\/\S+/g, "");
+    expect(body).toContain("Cliente: Raissa de Almeida");
+    expect(body).toContain("Agente: Vendedor IA");
+    expect(body).toContain("Roteador: Roteador Vendas");
+    expect(body).toContain("Canal: Telegram · telefone final 4567");
+    expect(body).toContain("CONTEXTO");
+    expect(body).toContain("ÚLTIMAS MENSAGENS");
+    expect(body).toContain("Cliente: Preciso de uniforme");
+    expect(body).toContain("IA: Qual escola?");
+    expect(body).toContain("Abrir no CRM:");
     expect(bodyWithoutLinks).not.toMatch(/\+?\d{10,}/);
     expect(body).not.toMatch(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
     expect(body).not.toContain("context_snapshot");
+    const callbackInsert = mocks.query.mock.calls.find(([sql]) =>
+      String(sql).includes("insert into telegram_case_interactions"),
+    );
+    expect(callbackInsert?.[0]).toContain("now()+interval '7 days'");
     expect(client.query).toHaveBeenCalledWith(
       expect.stringContaining("insert into telegram_case_alert_deliveries"),
       [org, caseId, groupSettingId, connectionId],
     );
     expect(mocks.query).toHaveBeenCalledWith(
-      expect.stringContaining("update telegram_case_alert_deliveries set status='sent',message_id=$2"),
+      expect.stringContaining(
+        "update telegram_case_alert_deliveries set status='sent',message_id=$2",
+      ),
       ["delivery-1", "telegram-message-99"],
     );
   });
@@ -122,7 +171,10 @@ describe("Telegram case alert event handler", () => {
   it("does not send a second alert after the existing delivery is sent", async () => {
     makeClient("sent");
     const result = await telegramCaseAlertHandler.handle(event as never);
-    expect(result).toMatchObject({ status: "skipped", detail: "telegram_case_alert_already_delivered" });
+    expect(result).toMatchObject({
+      status: "skipped",
+      detail: "telegram_case_alert_already_delivered",
+    });
     expect(mocks.send).not.toHaveBeenCalled();
   });
 
@@ -142,11 +194,31 @@ describe("Telegram case alert event handler", () => {
     makeClient();
     mocks.query.mockImplementation(async (sql: string) => {
       if (sql.includes("select t.id::text group_setting_id")) return { rows: [] };
-      if (sql.includes("select status from agent_cases")) return { rows: [{ status: "awaiting_human" }] };
+      if (sql.includes("select status from agent_cases"))
+        return { rows: [{ status: "awaiting_human" }] };
+      if (sql.includes("from agent_cases ac join conversations"))
+        return {
+          rows: [
+            {
+              cliente: "Cliente",
+              agente: null,
+              roteador: null,
+              canal: "telegram",
+              telefone: null,
+              titulo: "Caso",
+              contexto: "Contexto",
+              bloqueio: null,
+              conversation_id: "55555555-5555-4555-8555-555555555555",
+            },
+          ],
+        };
       return { rows: [], rowCount: 1 };
     });
     const result = await telegramCaseAlertHandler.handle(event as never);
-    expect(result).toMatchObject({ status: "skipped", detail: "telegram_case_alert_not_configured" });
+    expect(result).toMatchObject({
+      status: "skipped",
+      detail: "telegram_case_alert_not_configured",
+    });
     expect(mocks.send).not.toHaveBeenCalled();
   });
 });

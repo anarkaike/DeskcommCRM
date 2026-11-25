@@ -126,9 +126,13 @@ export function EntregasDoAviso({
                   {t(situacao(entrega.status))}
                 </span>
                 <span className="text-xs text-muted-foreground">
-                  {t(entrega.update_event_id ? "Resposta do cliente" : "Abertura")}
+                  {t(entrega.canal)} · {entrega.destino_exibicao}
                 </span>
-                <span className="text-xs text-muted-foreground">{entrega.destino_mascarado}</span>
+                {entrega.canal === "WhatsApp" ? (
+                  <span className="text-xs text-muted-foreground">
+                    {t(entrega.update_event_id ? "Resposta do cliente" : "Abertura")}
+                  </span>
+                ) : null}
                 <Link
                   href={`/app/ai/cases?caso=${entrega.case_id}`}
                   className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"

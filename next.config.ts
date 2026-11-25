@@ -17,7 +17,7 @@ const nextConfig: NextConfig = {
   // com ENOENT next-server.js.nft.json (#96646).
   output: process.env.VERCEL ? undefined : "standalone",
   // Permite que o Chrome local carregue recursos do servidor Next dev pelo túnel WSL.
-  allowedDevOrigins: ["127.0.0.1"],
+  allowedDevOrigins: ["127.0.0.1", "deskcommcrm.local"],
   /**
    * O `standalone` copia SÓ o que o file tracing detecta — e ele não detecta
    * tudo de `@swc/helpers`.

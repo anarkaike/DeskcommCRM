@@ -27,8 +27,12 @@ vi.mock("@/lib/agent-engine/agent/human-cases", () => ({
   markAwaitingLead: mocks.ask,
 }));
 vi.mock("@/lib/agent-engine/queue/queue", () => ({ enqueueJob: mocks.enqueue }));
-vi.mock("@/lib/agent-engine/agent/conversa-do-caso", () => ({ responderSobreOCaso: mocks.assistant }));
-vi.mock("@/lib/agent-engine/edge/llm/credentials", () => ({ llmEdgeConfigFromEnv: vi.fn(() => ({})) }));
+vi.mock("@/lib/agent-engine/agent/conversa-do-caso", () => ({
+  responderSobreOCaso: mocks.assistant,
+}));
+vi.mock("@/lib/agent-engine/edge/llm/credentials", () => ({
+  llmEdgeConfigFromEnv: vi.fn(() => ({})),
+}));
 vi.mock("@/lib/agent-engine/env", () => ({ loadEnv: vi.fn(() => ({})) }));
 
 const org = "11111111-1111-4111-8111-111111111111";
@@ -62,11 +66,20 @@ describe("Telegram human case group callbacks", () => {
     mocks.decrypt.mockResolvedValue("bot-token");
     mocks.answer.mockResolvedValue(undefined);
     mocks.send.mockResolvedValue({ messageId: "88", chatId: "-100123456789", date: 1 });
-    mocks.assistant.mockResolvedValue({ texto: "O caso aguarda retorno humano.", callId: "llm-1", agentId: null });
+    mocks.assistant.mockResolvedValue({
+      texto: "O caso aguarda retorno humano.",
+      callId: "llm-1",
+      agentId: null,
+    });
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("lets ordinary group messages fall through to the allowlisted inbox adapter", async () => {
+  it("lets ordinary group messages fall through when no case guidance is pending", async () => {
+    mocks.query.mockResolvedValue({ rows: [] });
+    mocks.connect.mockResolvedValue({
+      query: vi.fn().mockResolvedValue({ rows: [] }),
+      release: vi.fn(),
+    });
     const result = await handleTelegramGroupCaseUpdate(admin, {
       organizationId: org,
       connectionId: connection,
@@ -81,9 +94,120 @@ describe("Telegram human case group callbacks", () => {
       },
     });
     expect(result).toBe(false);
+    expect(mocks.connect).toHaveBeenCalledOnce();
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+
+  it("does not consume Telegram slash commands as pending case guidance", async () => {
+    mocks.query.mockResolvedValue({ rows: [] });
+    const result = await handleTelegramGroupCaseUpdate(admin, {
+      organizationId: org,
+      connectionId: connection,
+      update: {
+        update_id: 124,
+        message: {
+          message_id: 10,
+          text: "/casos@DiskUniformesVendaDev_bot",
+          chat: { id: "-100123456789", type: "supergroup" },
+          from: { id: 987654321 },
+        },
+      },
+    });
+    expect(result).toBe(false);
     expect(mocks.query).not.toHaveBeenCalled();
     expect(mocks.connect).not.toHaveBeenCalled();
-    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.resolve).not.toHaveBeenCalled();
+    expect(mocks.ask).not.toHaveBeenCalled();
+  });
+
+  it("associates an unquoted natural-language answer with the sole pending case action", async () => {
+    const tx = vi.fn(async (sql: string) => {
+      if (sql.includes("select id::text from telegram_team_group_settings"))
+        return { rows: [{ id: group }] };
+      if (sql.includes("select c.status,conv.contact_id::text"))
+        return { rows: [{ status: "awaiting_human", contact_id: "contact-1" }] };
+      return { rows: [], rowCount: 1 };
+    });
+    mocks.connect.mockResolvedValue({ query: tx, release: vi.fn() });
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("i.update_id=$4 and i.status=$5")) return { rows: [] };
+      if (sql.includes("join agent_cases c"))
+        return { rows: [{ id: interactionId, organization_id: org, connection_id: connection,
+          group_setting_id: group, case_id: caseId, action: "guide_reply",
+          telegram_user_id: "987654321", actor_user_id: "user-1", group_message_id: "88" }] };
+      if (sql.includes("select o.id::text"))
+        return { rows: [{ id: "operator", user_id: "user-1" }] };
+      return { rows: [], rowCount: 1 };
+    });
+    mocks.resolve.mockResolvedValue(true);
+
+    const result = await handleTelegramGroupCaseUpdate(admin, {
+      organizationId: org,
+      connectionId: connection,
+      update: {
+        update_id: 129,
+        message: {
+          message_id: 15,
+          text: "A escola confirmou que pode retirar o uniforme na sexta-feira.",
+          chat: { id: "-100123456789", type: "supergroup" },
+          from: { id: 987654321 },
+        },
+      },
+    });
+
+    expect(result).toBe(true);
+    expect(mocks.resolve).toHaveBeenCalledWith(
+      expect.anything(), org, caseId, "user-1",
+      "A escola confirmou que pode retirar o uniforme na sexta-feira.",
+    );
+    expect(mocks.enqueue).toHaveBeenCalledWith(expect.anything(), org, expect.objectContaining({
+      kind: "case_reply_turn",
+      leadId: "contact-1",
+      payload: expect.objectContaining({ case_id: caseId, action: "resolved" }),
+    }));
+    expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("Orientação registrada"),
+      replyToMessageId: "15",
+    }));
+    expect(tx.mock.calls.map(([sql]) => String(sql))).toContain("commit");
+  });
+
+  it("asks for a quote instead of guessing when multiple case actions are pending", async () => {
+    mocks.connect.mockResolvedValue({
+      query: vi.fn().mockResolvedValue({ rows: [{ id: group }] }),
+      release: vi.fn(),
+    });
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("i.update_id=$4 and i.status=$5")) return { rows: [] };
+      if (sql.includes("join agent_cases c"))
+        return { rows: [
+          { id: interactionId, case_id: caseId, action: "guide_reply" },
+          { id: "another-interaction", case_id: "another-case", action: "guide_question" },
+        ] };
+      return { rows: [], rowCount: 1 };
+    });
+
+    const result = await handleTelegramGroupCaseUpdate(admin, {
+      organizationId: org,
+      connectionId: connection,
+      update: {
+        update_id: 130,
+        message: {
+          message_id: 16,
+          text: "Pode informar que entregamos na sexta.",
+          chat: { id: "-100123456789", type: "supergroup" },
+          from: { id: 987654321 },
+        },
+      },
+    });
+
+    expect(result).toBe(true);
+    expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("mais de um caso"),
+    }));
+    expect(mocks.resolve).not.toHaveBeenCalled();
+    expect(mocks.ask).not.toHaveBeenCalled();
   });
 
   it("acknowledges replay of a completed case reply without ingesting it into Inbox", async () => {
@@ -165,7 +289,7 @@ describe("Telegram human case group callbacks", () => {
       if (sql.includes("update telegram_case_interactions set status='completed'"))
         return { rowCount: 1, rows: [{ id: interactionId }] };
       if (sql.includes("select id::text,title from agent_cases"))
-        return { rows: [{ id: caseId, title: "Pedido de uniforme" }] };
+        return { rows: [{ id: caseId, title: "Pedido de uniforme escolar ".repeat(8) }] };
       return { rowCount: 1, rows: [] };
     });
     await expect(
@@ -184,7 +308,9 @@ describe("Telegram human case group callbacks", () => {
     )?.[0] as string;
     expect(actorAuthorization).toContain("m.can_read_cases=true");
     expect(actorAuthorization).toContain("m.can_act_on_cases=true");
-    expect(actorAuthorization).toContain("$5::text='read' or $5::text='approve' or g.case_actions_enabled=true");
+    expect(actorAuthorization).toContain(
+      "$5::text='read' or $5::text='approve' or g.case_actions_enabled=true",
+    );
     expect(actorAuthorization).toContain("c.capability='read_cases'");
     expect(actorAuthorization).toContain("c.capability='reply_to_cases'");
     const actorAuthorizationParams = mocks.query.mock.calls.find(([sql]) =>
@@ -194,22 +320,68 @@ describe("Telegram human case group callbacks", () => {
     expect(mocks.send).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: "-100123456789",
-        text: expect.stringContaining("Casos abertos"),
+        text: "Casos aguardando a equipe. Selecione um para ver o resumo.",
         inlineKeyboard: [
           [
             expect.objectContaining({
-              text: expect.stringContaining(caseId.slice(0, 8)),
+              text: expect.stringContaining("Ver caso: Pedido de uniforme escolar"),
               callbackData: expect.any(String),
             }),
           ],
         ],
       }),
     );
+    const caseButton = mocks.send.mock.calls[0]?.[0].inlineKeyboard[0][0];
+    expect(caseButton.text.length).toBeLessThanOrEqual(64);
+    expect(caseButton.text).not.toContain(caseId.slice(0, 8));
     const insert = mocks.query.mock.calls.find(([sql]) =>
       String(sql).includes("insert into telegram_case_interactions"),
     );
+    expect(insert?.[0]).toContain("now()+interval '7 days'");
     expect(insert?.[1]).toEqual(
       expect.arrayContaining([org, connection, group, caseId, "view_case"]),
+    );
+  });
+
+  it("restores a list callback when local Telegram validation rejects the response before sending", async () => {
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("select i.id::text"))
+        return {
+          rows: [
+            {
+              id: interactionId,
+              organization_id: org,
+              connection_id: connection,
+              group_setting_id: group,
+              case_id: null,
+              action: "list_open",
+              telegram_user_id: "0",
+              actor_user_id: null,
+              group_message_id: "42",
+            },
+          ],
+        };
+      if (sql.includes("select o.id::text"))
+        return { rows: [{ id: "operator", user_id: "user-1" }] };
+      if (sql.includes("update telegram_case_interactions set status='completed'"))
+        return { rowCount: 1, rows: [{ id: interactionId }] };
+      if (sql.includes("select id::text,title from agent_cases"))
+        return { rows: [{ id: caseId, title: "Uniforme escolar" }] };
+      return { rowCount: 1, rows: [] };
+    });
+    mocks.send.mockRejectedValueOnce(new Error("telegram_inline_keyboard_invalid"));
+
+    await expect(
+      handleTelegramGroupCaseUpdate(admin, {
+        organizationId: org,
+        connectionId: connection,
+        update: callback(),
+      }),
+    ).rejects.toThrow("telegram_inline_keyboard_invalid");
+
+    expect(mocks.query).toHaveBeenCalledWith(
+      expect.stringContaining("set status='received',telegram_user_id='0'"),
+      [interactionId, org, 987],
     );
   });
 
@@ -337,18 +509,24 @@ describe("Telegram human case group callbacks", () => {
     mocks.query.mockImplementation(async (sql: string) => {
       if (sql.includes("i.update_id=$4 and i.status=$5")) return { rows: [] };
       if (sql.includes("select i.id::text interaction_id"))
-        return { rows: [{
-          interaction_id: interactionId,
-          case_id: caseId,
-          contact_id: "contact-1",
-          title: "Pedido do cliente",
-          kind: "Uniforme escolar",
-          status: "awaiting_human",
-          summary: "A escola informou o prazo de entrega.",
-          blocker: null,
-        }] };
-      if (sql.includes("insert into telegram_case_interactions")) return { rows: [{ id: "assistant-interaction" }] };
-      if (sql.includes("select paired_user_id::text user_id")) return { rows: [{ user_id: "operator-1" }] };
+        return {
+          rows: [
+            {
+              interaction_id: interactionId,
+              case_id: caseId,
+              contact_id: "contact-1",
+              title: "Pedido do cliente",
+              kind: "Uniforme escolar",
+              status: "awaiting_human",
+              summary: "A escola informou o prazo de entrega.",
+              blocker: null,
+            },
+          ],
+        };
+      if (sql.includes("insert into telegram_case_interactions"))
+        return { rows: [{ id: "assistant-interaction" }] };
+      if (sql.includes("select paired_user_id::text user_id"))
+        return { rows: [{ user_id: "operator-1" }] };
       return { rows: [], rowCount: 1 };
     });
 
@@ -379,63 +557,94 @@ describe("Telegram human case group callbacks", () => {
         historico: [],
       }),
     );
-    expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({
-      chatId: "-100123456789",
-      text: "O caso aguarda retorno humano.",
-      replyToMessageId: "12",
-    }));
+    expect(mocks.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "-100123456789",
+        text: "O caso aguarda retorno humano.",
+        replyToMessageId: "12",
+      }),
+    );
     expect(mocks.resolve).not.toHaveBeenCalled();
     expect(mocks.ask).not.toHaveBeenCalled();
     expect(mocks.enqueue).not.toHaveBeenCalled();
-    expect(mocks.audit).toHaveBeenCalledWith(expect.objectContaining({
-      action: "telegram.team_group_assistant_replied",
-      resourceId: caseId,
-    }));
+    expect(mocks.audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "telegram.team_group_assistant_replied",
+        resourceId: caseId,
+      }),
+    );
   });
 
   it("lets a separately authorized paired operator approve an unknown member without case-read access", async () => {
     const transactionQuery = vi.fn(async (sql: string, params?: unknown[]) => {
-      if (sql.includes("update telegram_team_group_members")) return { rowCount: 1, rows: [{ telegram_user_id: "2222" }] };
-      if (sql.includes("update telegram_case_interactions set status='completed'")) return { rowCount: 1, rows: [{ id: interactionId }] };
+      if (sql.includes("update telegram_team_group_members"))
+        return { rowCount: 1, rows: [{ telegram_user_id: "2222" }] };
+      if (sql.includes("update telegram_case_interactions set status='completed'"))
+        return { rowCount: 1, rows: [{ id: interactionId }] };
       return { rowCount: 1, rows: [] };
     });
     const release = vi.fn();
     mocks.connect.mockResolvedValue({ query: transactionQuery, release });
     mocks.query.mockImplementation(async (sql: string) => {
-      if (sql.includes("select i.id::text")) return { rows: [{
-        id: interactionId, organization_id: org, connection_id: connection,
-        group_setting_id: group, case_id: null, target_telegram_user_id: "2222",
-        action: "approve_member", telegram_user_id: "0", actor_user_id: null,
-        group_message_id: "42",
-      }] };
-      if (sql.includes("select o.id::text")) return { rows: [{ id: "operator", user_id: "user-1" }] };
+      if (sql.includes("select i.id::text"))
+        return {
+          rows: [
+            {
+              id: interactionId,
+              organization_id: org,
+              connection_id: connection,
+              group_setting_id: group,
+              case_id: null,
+              target_telegram_user_id: "2222",
+              action: "approve_member",
+              telegram_user_id: "0",
+              actor_user_id: null,
+              group_message_id: "42",
+            },
+          ],
+        };
+      if (sql.includes("select o.id::text"))
+        return { rows: [{ id: "operator", user_id: "user-1" }] };
       return { rowCount: 1, rows: [] };
     });
 
-    await expect(handleTelegramGroupCaseUpdate(admin, {
-      organizationId: org,
-      connectionId: connection,
-      update: callback(),
-    })).resolves.toBe(true);
+    await expect(
+      handleTelegramGroupCaseUpdate(admin, {
+        organizationId: org,
+        connectionId: connection,
+        update: callback(),
+      }),
+    ).resolves.toBe(true);
 
-    const authorization = mocks.query.mock.calls.find(([sql]) => String(sql).includes("select o.id::text"));
+    const authorization = mocks.query.mock.calls.find(([sql]) =>
+      String(sql).includes("select o.id::text"),
+    );
     expect(authorization?.[0]).toContain("$5::text='approve' or m.can_read_cases=true");
     expect(authorization?.[1]).toEqual([org, connection, group, "987654321", "approve"]);
-    expect(transactionQuery.mock.calls.map(([sql]) => String(sql))).toEqual(expect.arrayContaining([
-      "begin",
-      expect.stringContaining("approval_state=$5"),
-      expect.stringContaining("set status='completed'"),
-      "commit",
-    ]));
+    expect(transactionQuery.mock.calls.map(([sql]) => String(sql))).toEqual(
+      expect.arrayContaining([
+        "begin",
+        expect.stringContaining("approval_state=$5"),
+        expect.stringContaining("set status='completed'"),
+        "commit",
+      ]),
+    );
     expect(transactionQuery.mock.calls[1]?.[1]).toEqual([org, group, "2222", "user-1", "observer"]);
     expect(release).toHaveBeenCalledOnce();
-    expect(mocks.audit).toHaveBeenCalledWith(expect.objectContaining({
-      action: "telegram.team_group_settings_updated",
-      metadata: expect.objectContaining({ decision: "observer", target_telegram_user_id: "2222" }),
-    }));
-    expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining("somente como observador"),
-    }));
+    expect(mocks.audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "telegram.team_group_settings_updated",
+        metadata: expect.objectContaining({
+          decision: "observer",
+          target_telegram_user_id: "2222",
+        }),
+      }),
+    );
+    expect(mocks.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("somente como observador"),
+      }),
+    );
     expect(mocks.resolve).not.toHaveBeenCalled();
     expect(mocks.ask).not.toHaveBeenCalled();
     expect(mocks.enqueue).not.toHaveBeenCalled();
@@ -450,43 +659,55 @@ describe("Telegram human case group callbacks", () => {
     mocks.query.mockImplementation(async (sql: string) => {
       if (sql.includes("i.update_id=$4 and i.status=$5")) return { rows: [] };
       if (sql.includes("select i.id::text interaction_id"))
-        return { rows: [{
-          interaction_id: interactionId,
-          case_id: caseId,
-          contact_id: "contact-1",
-          title: "Pedido do cliente",
-          kind: "Uniforme escolar",
-          status: "awaiting_human",
-          summary: "A escola informou o prazo de entrega.",
-          blocker: null,
-        }] };
-      if (sql.includes("insert into telegram_case_interactions")) return { rows: [{ id: "assistant-interaction" }] };
-      if (sql.includes("select paired_user_id::text user_id")) return { rows: [{ user_id: "operator-1" }] };
+        return {
+          rows: [
+            {
+              interaction_id: interactionId,
+              case_id: caseId,
+              contact_id: "contact-1",
+              title: "Pedido do cliente",
+              kind: "Uniforme escolar",
+              status: "awaiting_human",
+              summary: "A escola informou o prazo de entrega.",
+              blocker: null,
+            },
+          ],
+        };
+      if (sql.includes("insert into telegram_case_interactions"))
+        return { rows: [{ id: "assistant-interaction" }] };
+      if (sql.includes("select paired_user_id::text user_id"))
+        return { rows: [{ user_id: "operator-1" }] };
       return { rows: [], rowCount: 1 };
     });
 
-    await expect(handleTelegramGroupCaseUpdate(admin, {
-      organizationId: org,
-      connectionId: connection,
-      update: {
-        update_id: 128,
-        message: {
-          message_id: 14,
-          text: "Qual e o prazo?",
-          chat: { id: "-100123456789", type: "supergroup" },
-          from: { id: 987654321 },
-          reply_to_message: { message_id: 88 },
+    await expect(
+      handleTelegramGroupCaseUpdate(admin, {
+        organizationId: org,
+        connectionId: connection,
+        update: {
+          update_id: 128,
+          message: {
+            message_id: 14,
+            text: "Qual e o prazo?",
+            chat: { id: "-100123456789", type: "supergroup" },
+            from: { id: 987654321 },
+            reply_to_message: { message_id: 88 },
+          },
         },
-      },
-    })).resolves.toBe(true);
+      }),
+    ).resolves.toBe(true);
 
     expect(mocks.send).toHaveBeenCalledTimes(1);
-    expect(mocks.query.mock.calls.some(([sql]) =>
-      String(sql).includes("set status='completed',group_message_id=$3"),
-    )).toBe(true);
-    expect(mocks.query.mock.calls.some(([sql]) =>
-      String(sql).includes("set status='rejected',consumed_at=now()"),
-    )).toBe(false);
+    expect(
+      mocks.query.mock.calls.some(([sql]) =>
+        String(sql).includes("set status='completed',group_message_id=$3"),
+      ),
+    ).toBe(true);
+    expect(
+      mocks.query.mock.calls.some(([sql]) =>
+        String(sql).includes("set status='rejected',consumed_at=now()"),
+      ),
+    ).toBe(false);
   });
 
   it("does not invoke the assistant when a reply is not linked to a case card", async () => {

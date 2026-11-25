@@ -49,6 +49,7 @@ export function useMessagesRealtime(
       try {
         return await apiClient.get<MessagesResponse>(
           `/api/v1/conversations/${conversationId}/messages?${qs.toString()}`,
+          { timeoutMs: 60_000 },
         );
       } catch (err) {
         showApiError(err);

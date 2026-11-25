@@ -217,7 +217,7 @@ function CreateRouterDialog({
                 ))}
                 {channelSessions.length === 0 ? (
                   <SelectItem value="__none__" disabled>
-                    {t("Nenhum número conectado")}
+                    {t("Nenhum canal conectado")}
                   </SelectItem>
                 ) : null}
               </SelectContent>

@@ -419,6 +419,11 @@ export const PROVIDERS_DE_TELEFONE = [
   "datafy",
 ] as const satisfies readonly Exclude<(typeof PROVIDERS_DE_MENSAGEM)[number], "zernio_social" | "telegram" | "webchat">[];
 
+/** `channel_sessions` que representam uma conexão WhatsApp com número. */
+export function isWhatsAppChannel(provider: string | null | undefined): boolean {
+  return (PROVIDERS_DE_TELEFONE as readonly string[]).includes(provider ?? "");
+}
+
 /**
  * `true` quando a linha de `channel_sessions` é um canal de mensagem.
  *

@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getRequestPool } from "@/lib/agent-engine/db/request-pool";
 import { decryptWebhookSecret } from "@/lib/webhooks/secrets";
 import { sendTelegramText } from "@/lib/channels/telegram/bot-api";
+import { formatTelegramCaseAlertCard } from "./telegram-case-alert-card";
 
 const KEY = "escalacao-aviso-de-caso-telegram.v1";
 const retry = (detail: string): HandlerResult => ({
@@ -39,6 +40,30 @@ async function opened(row: EventRow, caseId: string): Promise<HandlerResult> {
   );
   if (current.rows[0]?.status !== "awaiting_human")
     return result("skipped", "case_no_longer_awaiting_human");
+  const caseInfoResult = await pool.query<{
+    cliente: string | null;
+    agente: string | null;
+    roteador: string | null;
+    canal: string | null;
+    telefone: string | null;
+    titulo: string | null;
+    contexto: string | null;
+    bloqueio: string | null;
+    conversation_id: string;
+  }>(
+    "select coalesce(nullif(btrim(ct.display_name),''),nullif(btrim(ct.name),'')) cliente,ag.name agente,r.name roteador,conv.channel canal,cs.phone_number telefone,ac.title titulo,ac.summary contexto,ac.blocker bloqueio,conv.id::text conversation_id from agent_cases ac join conversations conv on conv.organization_id=ac.organization_id and conv.id=ac.conversation_id left join contacts ct on ct.organization_id=conv.organization_id and ct.id=conv.contact_id left join channel_sessions cs on cs.organization_id=conv.organization_id and cs.id=conv.channel_session_id left join ai_agents ag on ag.organization_id=ac.organization_id and ag.id=ac.agent_id left join ai_routers r on r.organization_id=conv.organization_id and r.channel_session_id=conv.channel_session_id and r.is_active=true where ac.organization_id=$1 and ac.id=$2 limit 1",
+    [row.organization_id, caseId],
+  );
+  const caseInfo = caseInfoResult.rows[0];
+  if (!caseInfo) return result("skipped", "telegram_case_alert_case_missing");
+  const recentResult = await pool.query<{
+    direction: string;
+    sent_via: string;
+    body: string;
+  }>(
+    "select direction,sent_via,body from messages where organization_id=$1 and conversation_id=$2 and type='text' and body is not null and btrim(body)<>'' and status<>'failed' order by sent_at desc limit 4",
+    [row.organization_id, caseInfo.conversation_id],
+  );
   const client = await pool.connect();
   let deliveryId: string | null = null;
   let destination: typeof configured = null;
@@ -181,7 +206,7 @@ async function opened(row: EventRow, caseId: string): Promise<HandlerResult> {
   try {
     for (const c of callbacks)
       await pool.query(
-        "insert into telegram_case_interactions(id,organization_id,connection_id,group_setting_id,update_id,telegram_user_id,case_id,action,status,callback_token_hash,expires_at) values($1,$2,$3,$4,null,'0',$5,$6,'received',$7,now()+interval '15 minutes')",
+        "insert into telegram_case_interactions(id,organization_id,connection_id,group_setting_id,update_id,telegram_user_id,case_id,action,status,callback_token_hash,expires_at) values($1,$2,$3,$4,null,'0',$5,$6,'received',$7,now()+interval '7 days')",
         [
           c.id,
           row.organization_id,
@@ -196,13 +221,11 @@ async function opened(row: EventRow, caseId: string): Promise<HandlerResult> {
     const sent = await sendTelegramText({
       token,
       chatId: destination.group_chat_id,
-      text:
-        "A IA solicitou apoio da equipe em um caso humano. Caso " +
-        caseId.slice(0, 8) +
-        ". Abra o DeskcommCRM para ver o contexto autorizado: " +
-        base +
-        "/app/ai/cases?caso=" +
-        encodeURIComponent(caseId),
+      text: formatTelegramCaseAlertCard({
+        ...caseInfo,
+        mensagens: recentResult.rows.reverse(),
+        crmUrl: base + "/app/ai/cases?caso=" + encodeURIComponent(caseId),
+      }),
       inlineKeyboard: [
         callbacks.slice(0, 2).map((c) => ({ text: c.label, callbackData: c.token })),
         callbacks.slice(2).map((c) => ({ text: c.label, callbackData: c.token })),

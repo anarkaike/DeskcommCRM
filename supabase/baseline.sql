@@ -91507,7 +91507,7 @@ create policy telegram_bot_surface_capabilities_select_tenant
   using (organization_id in (select public.fn_user_org_ids()));
 
 
--- Reconciled private fork source: supabase/migrations/20261026215900_9709_telegram_team_groups.sql
+-- Reconciled private fork source: supabase/migrations/20261026220001_9709_telegram_team_groups.sql
 -- manifest: Configura capacidades internas independentes por grupo Telegram sem alterar a allowlist da Inbox.
 create unique index if not exists channel_session_groups_org_id_uidx
   on public.channel_session_groups (organization_id, id);
