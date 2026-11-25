@@ -392,6 +392,11 @@ export const PROVIDERS_DE_MENSAGEM = [
   "webchat",
 ] as const satisfies readonly ProviderDeMensagem[];
 
+/** Providers habilitados para envio automatizado, derivados da matriz única. */
+export const PROVIDERS_DE_ENVIO_AUTOMATIZADO = PROVIDERS_DE_MENSAGEM.filter(
+  (provider) => CHANNEL_CAPABILITIES[provider].automatedOutbound,
+);
+
 /**
  * Os providers que alcançam um APARELHO: o endereço é o TELEFONE.
  *
