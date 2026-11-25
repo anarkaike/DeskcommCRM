@@ -230,7 +230,12 @@ describe("GET /api/v1/cron/handoff-devolucao", () => {
     const [deps, input] = devolver.mock.calls[0] as [Record<string, unknown>, Record<string, unknown>];
     expect(deps.organizationId).toBe(ORG);
     expect(deps.actor).toEqual({ type: "webhook_source", id: "cron:handoff-devolucao" });
-    expect(input).toEqual({ conversationId: VENCIDA, origem: { automatica: { minutos: 60 } } });
+    expect(input).toEqual({
+      conversationId: VENCIDA,
+      origem: { automatica: { minutos: 60 } },
+      expectedAssignee: null,
+      semSinalHumanoDesde: expect.any(String),
+    });
 
     expect(auditar).toHaveBeenCalledTimes(1);
     expect(auditar.mock.calls[0]?.[0]).toMatchObject({
@@ -256,6 +261,40 @@ describe("GET /api/v1/cron/handoff-devolucao", () => {
     expect(res.status).toBe(200);
     expect(devolver).not.toHaveBeenCalled();
     expect(auditar).not.toHaveBeenCalled();
+  });
+
+  /**
+   * PRAZO LIVRE ACIMA DE 24 HORAS (#3313, item 3) — o fim da cadeia.
+   *
+   * A cadeia inteira do cron tem de aceitar o prazo que a tela salva: o
+   * predicado jsonb escolhe a organização, `lerPrazoDeDevolucaoMinutos` a aceita
+   * e `avaliarDevolucao` devolve a conversa parada há mais que o prazo. Um teto
+   * de 24 h em QUALQUER elo apaga a organização da varredura sem log e sem
+   * auditoria, com a rodada respondendo `organizacoes: 0` — falha que não parece
+   * falha. 5.000 minutos são três dias e meio; a conversa parada há 5 dias é o
+   * caso medido pela agência que abriu a issue.
+   *
+   * ─── SABOTAGEM ────────────────────────────────────────────────────────────
+   *   - voltar o teto de 24 h no leitor: `organizacoes` cai para 0, `devolvidas`
+   *     para 0 e a rodada nem audita — os três expects abaixo acusam.
+   */
+  it("prazo de 5.000 minutos (mais de três dias): a conversa parada há 5 dias é devolvida", async () => {
+    banco.organizations = [{ id: ORG, settings: { routing: { handoff_return_after_minutes: 5000 } } }];
+    banco.conversations = [conversa(VENCIDA, 5 * 24 * 60)];
+
+    const res = await chamar();
+    expect(res.status).toBe(200);
+    const corpo = (await res.json()) as { data: Record<string, number> };
+    expect(corpo.data).toMatchObject({ organizacoes: 1, devolvidas: 1, falhas: 0 });
+
+    expect(devolver).toHaveBeenCalledTimes(1);
+    expect(devolver.mock.calls[0]?.[1]).toEqual({
+      conversationId: VENCIDA,
+      origem: { automatica: { minutos: 5000 } },
+      expectedAssignee: null,
+      semSinalHumanoDesde: expect.any(String),
+    });
+    expect(auditar).toHaveBeenCalledTimes(1);
   });
 
   it("organização sem o prazo: nem lê as conversas (IA-06 de sempre)", async () => {
@@ -316,6 +355,45 @@ describe("GET /api/v1/cron/handoff-devolucao", () => {
     });
   });
 
+  /**
+   * A CONVERSA MUDA DE DONO ENTRE A VARREDURA E A ESCRITA.
+   *
+   * O cron decide sobre a leitura da varredura; um atendente que assume a
+   * conversa segundos depois tem de ganhar. Quem confere é
+   * `devolverAtendimentoAoAgente`, sob o lock da linha, e só confere o que o
+   * cron mandar: o dublê abaixo cumpre o contrato da função (precondição de
+   * dono → `assignment_conflict` sem detalhe), e o que se prova aqui é que o
+   * cron a manda, com o dono que leu, e o corte do prazo.
+   *
+   * ─── SABOTAGEM ────────────────────────────────────────────────────────────
+   *   - tirar `expectedAssignee` da chamada: o dublê devolve, `devolvidas` vira 1
+   *     e a rodada audita.
+   */
+  it("atendente assumiu depois da varredura: a conversa NÃO volta à IA, e a rodada não é falha", async () => {
+    const LIDO = "77777777-7777-4777-8777-777777777777";
+    const QUEM_ASSUMIU = "88888888-8888-4888-8888-888888888888";
+    banco.conversations = [{ ...conversa(VENCIDA, 61), assigned_to_user_id: LIDO }];
+    const donoAgora = QUEM_ASSUMIU;
+    devolver.mockImplementation(async (_deps: unknown, input: { expectedAssignee?: string | null }) =>
+      input.expectedAssignee !== undefined && input.expectedAssignee !== donoAgora
+        ? { ok: false, erro: "assignment_conflict" }
+        : { ok: true, conversationId: VENCIDA, jaEstavaComOAgente: false },
+    );
+
+    const antes = Date.now();
+    const corpo = (await (await chamar()).json()) as { data: Record<string, number> };
+
+    expect(devolver).toHaveBeenCalledTimes(1);
+    const input = devolver.mock.calls[0]?.[1] as { expectedAssignee?: unknown; semSinalHumanoDesde?: string };
+    expect(input.expectedAssignee).toBe(LIDO);
+    // O corte é "agora − prazo": sinal humano depois dele desfaz a devolução.
+    const corte = new Date(input.semSinalHumanoDesde ?? "").getTime();
+    expect(Math.abs(corte - (antes - 60 * 60_000))).toBeLessThan(5_000);
+    expect(corpo.data).toMatchObject({ devolvidas: 0, falhas: 0 });
+    expect(auditar).not.toHaveBeenCalled();
+    expect(erroDeLog).not.toHaveBeenCalled();
+  });
+
   // #2379: o contato "sempre atendimento humano" recusa a devolução a cada tick,
   // de propósito. Contá-lo como falha faria o cron reclamar para sempre de um
   // estado que a operação pediu.
@@ -359,7 +437,19 @@ describe("o predicado que escolhe as organizações", () => {
   const ACEITAS_PELO_LEITOR: Array<{ nome: string; settings: unknown }> = [
     { nome: "prazo no piso da faixa", settings: { routing: { handoff_return_after_minutes: 5 } } },
     { nome: "prazo no meio da faixa", settings: { routing: { handoff_return_after_minutes: 60 } } },
-    { nome: "prazo no teto da faixa", settings: { routing: { handoff_return_after_minutes: 1440 } } },
+    { nome: "prazo valendo 24 horas", settings: { routing: { handoff_return_after_minutes: 1440 } } },
+    {
+      // #3313: o teto de 24 h saiu do prazo de devolução — o predicado do banco
+      // NÃO PODE cortar a organização que escolheu dias. Este caso é o que
+      // prende o outro lado do conserto: o leitor aceita (`lerPrazo...` abaixo)
+      // e o predicado entrega a linha.
+      nome: "prazo livre, acima das 24 horas do teto antigo",
+      settings: { routing: { handoff_return_after_minutes: 5000 } },
+    },
+    {
+      nome: "prazo no teto novo, 30 dias",
+      settings: { routing: { handoff_return_after_minutes: 30 * 24 * 60 } },
+    },
     {
       nome: "prazo ao lado de outras chaves de routing",
       settings: { routing: { handoff_return_after_minutes: 30, modo: "round_robin" }, branding: {} },

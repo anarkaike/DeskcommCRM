@@ -27,6 +27,8 @@ type Detalhe = {
   notes: string | null;
   location_kind: string | null;
   location_details: string | null;
+  service_space_id: string | null;
+  calendar_resources: { name: string } | { name: string }[] | null;
   starts_at: string;
   ends_at: string;
   time_zone: string;
@@ -170,6 +172,14 @@ export function DetalheDoCompromisso({
                 {rotuloDoLocal(a.location_kind, a.location_details)}
               </p>
             ) : null}
+            {(() => {
+              const spaceName = Array.isArray(a.calendar_resources)
+                ? (a.calendar_resources[0]?.name ?? null)
+                : a.calendar_resources?.name ?? null;
+              return spaceName && a.service_space_id ? (
+                <p data-testid="compromisso-lugar">{t("Lugar")}: {spaceName}</p>
+              ) : null;
+            })()}
             {a.description?.trim() ? (
               <p data-testid="compromisso-observacao" className="whitespace-pre-wrap">
                 {a.description}
@@ -209,8 +219,14 @@ export function DetalheDoCompromisso({
               <p>{t("Compromisso pessoal, sem cliente vinculado.")}</p>
             )}
             {a.outcome_recorded_at ? (
-              <p>
-                {t("Presença registrada pela equipe")}:{" "}
+              <p data-testid="compromisso-autoria-da-presenca">
+                {/* #4515: `api_token` é o carimbo do RPC de comparecimento por
+                    token. Dizer "pela equipe" ali atribuiria a uma pessoa o que
+                    uma integração declarou. */}
+                {a.outcome_source_kind === "api_token"
+                  ? t("Presença registrada por uma integração (token de API)")
+                  : t("Presença registrada pela equipe")}
+                :{" "}
                 {formatoDeData.format(new Date(a.outcome_recorded_at))}
               </p>
             ) : (

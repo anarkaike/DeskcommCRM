@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it } from "vitest";
 
+import { PROVIDER_EM_QUE_O_NUMERO_E_A_CONEXAO as QR } from "@/lib/channels/capabilities";
 import { bancoFalso, filtros } from "@/tests/helpers/banco-falso-da-cobranca";
 
 import { excedenteDoPlano, lerUsoDaOrganizacao } from "./uso";
@@ -33,8 +34,23 @@ describe("lerUsoDaOrganizacao — a mesma contagem dos gatilhos de limite (spec 
     expect(filtros(canais)).toEqual([
       ["eq", "organization_id", "org-1"],
       ["is", "archived_at", null],
-      ["neq", "provider", "wacalls"],
+      ["not", "provider", "in", "(wacalls,webchat)"],
+      // #3416: a vaga é do NÚMERO. Um `.or` só, porque o PostgREST encadeia com
+      // AND — "tem número" E "não está morta" não é a régua (o canal pareado e
+      // caído continua ocupando a vaga, que é exatamente o controle da issue).
+      // A isenção da linha morta sem número é só do canal pareado por QR: nos
+      // outros provedores o número não identifica a conexão.
+      ["or", `provider.neq.${QR},phone_number.not.is.null,status.not.in.(FAILED,STOPPED)`],
     ]);
+  });
+
+  it("conexão de chat no site (webchat) não conta no uso, como a voz", async () => {
+    const b = bancoFalso((c) => ({ count: c.tabela === "user_organizations" ? 0 : 1 }));
+    await lerUsoDaOrganizacao(b.cliente as unknown as SupabaseClient, "org-1");
+    const canais = b.cadeias.find((c) => c.tabela === "channel_sessions")!;
+    // O filtro é do PROVEDOR inteiro: a voz e o chat saem juntos da conta de números.
+    expect(filtros(canais)).toContainEqual(["not", "provider", "in", "(wacalls,webchat)"]);
+    expect(filtros(canais)).not.toContainEqual(["neq", "provider", "wacalls"]);
   });
 
   it("leitura que falha devolve null: quem chama responde 500, nunca 'cabe'", async () => {
@@ -63,9 +79,25 @@ describe("a contagem do app é a dos gatilhos", () => {
     expect(c).toContain("not uo.provisional_until_handover");
   });
 
-  it("canais: não arquivado e não wacalls", () => {
+  it("canais: não arquivado, não wacalls nem webchat, e a linha morta sem número fora da conta (#3416)", () => {
     const c = corpo("fn_trava_canais_do_plano");
     expect(c).toContain("cs.archived_at is null");
-    expect(c).toContain("cs.provider <> 'wacalls'");
+    expect(c).toContain("cs.provider not in ('wacalls', 'webchat')");
+    // A vaga é do NÚMERO: número pareado ocupa (FAILED inclusive — a queda não
+    // devolve o slot), e a conexão em curso/WORKING sem número ainda conta.
+    expect(c).toContain(`cs.provider <> '${QR}' or cs.phone_number is not null or cs.status not in ('FAILED', 'STOPPED')`);
+    // E a linha nova que nasce morta e sem número não é recusada pelo teto.
+    expect(c).toContain(`new.provider = '${QR}' and new.phone_number is null and new.status in ('FAILED', 'STOPPED')`);
+  });
+
+  it("reviver: a mesma régua, e só a linha morta sem número do canal pareado por QR passa pela conferência", () => {
+    const inicio = baseline.lastIndexOf("create or replace function public.fn_vaga_ao_reviver_canal(");
+    expect(inicio, "fn_vaga_ao_reviver_canal sumiu do baseline").toBeGreaterThan(-1);
+    const c = baseline.slice(inicio, baseline.indexOf("$$;", inicio));
+    expect(c).toContain(`cs.provider <> '${QR}' or cs.phone_number is not null or cs.status not in ('FAILED', 'STOPPED')`);
+    expect(c).toContain(`or v_canal.provider <> '${QR}'`);
+    // As três contas excluem voz e chat: o reviver não pode contar o webchat.
+    expect(c).toContain("and cs.provider not in ('wacalls', 'webchat')");
+    expect(c).not.toContain("cs.provider <> 'wacalls'");
   });
 });

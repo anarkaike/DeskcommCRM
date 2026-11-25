@@ -11,8 +11,12 @@ const deps = vi.hoisted(() => ({
   checkRateLimit: vi.fn(),
   pool: vi.fn(),
   activate: vi.fn(),
+  arquivar: vi.fn(),
+  desarquivar: vi.fn(),
   generate: vi.fn(),
   warn: vi.fn(),
+  validateConfig: vi.fn(),
+  assertCanalLivre: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/require-role", () => ({ requireRole: vi.fn() }));
@@ -31,9 +35,12 @@ vi.mock("@/lib/mcp/auth", async () => {
 });
 vi.mock("@/lib/prospecting/store", () => ({
   activateCampaign: deps.activate,
+  arquivarCampanha: deps.arquivar,
+  desarquivarCampanha: deps.desarquivar,
   configureCredential: vi.fn(),
   createSearch: vi.fn(),
-  validateConfig: vi.fn(),
+  validateConfig: deps.validateConfig,
+  assertCanalLivre: deps.assertCanalLivre,
   withProspectingLock: vi.fn(),
 }));
 vi.mock("@/lib/agent-engine/agent/abordagem-de-formulario", () => ({
@@ -44,6 +51,9 @@ import { GET, POST } from "./route";
 import { gerarAbordagemDeFormulario } from "@/lib/agent-engine/agent/abordagem-de-formulario";
 import { requireRole } from "@/lib/auth/require-role";
 import { audit } from "@/lib/audit";
+import { ProspectingError } from "@/lib/prospecting/provider";
+import { retomarCampanhasNaJanela } from "@/lib/prospecting/janela-da-campanha";
+import { withProspectingLock } from "@/lib/prospecting/store";
 
 const ID = "11111111-1111-4111-8111-111111111111";
 
@@ -83,16 +93,260 @@ describe("POST /api/v1/prospecting por token", () => {
   it.each([
     ["start", { action: "start", id: ID, config: CONFIG }],
     ["resume", { action: "resume", id: ID }],
+    // Spec 27: trocar as etiquetas de contato de uma campanha segue a régua do ritmo — fechada ao token.
+    ["adjust_tags", { action: "adjust_tags", id: ID, contact_tags: ["estetica"] }],
+    // #4570: editar o texto da campanha também é ato de quem está na tela.
+    [
+      "edit_briefing",
+      {
+        action: "edit_briefing",
+        id: ID,
+        instruction: "Ofereça uma auditoria gratuita do site.",
+        qualification: "Confirmou que recebe pedidos pelo WhatsApp.",
+        ofertas: ["site"],
+      },
+    ],
+    ["completar_fichas", { action: "completar_fichas", id: ID }],
+    // #4359: arquivar ESCONDE uma campanha da lista. Por token, esconderia uma
+    // campanha que a pessoa nunca abriu — o gesto é de quem lê a tela.
+    ["arquivar", { action: "arquivar", id: ID }],
+    ["desarquivar", { action: "desarquivar", id: ID }],
   ])("%s responde 403 sem tocar no banco", async (_nome, body) => {
     const res = await POST(tokenPost(body));
     expect(res.status).toBe(403);
     expect(deps.pool).not.toHaveBeenCalled();
     expect(deps.activate).not.toHaveBeenCalled();
+    expect(deps.arquivar).not.toHaveBeenCalled();
+    expect(deps.desarquivar).not.toHaveBeenCalled();
   });
 
   it("pause segue aberto ao token", async () => {
     const res = await POST(tokenPost({ action: "pause", id: ID }));
     expect(res.status).toBe(200);
+  });
+
+  /**
+   * #4847 — a campanha que a JANELA pausou pode ser pausada pela PESSOA.
+   *
+   * O simulador abaixo aplica o SQL do `update` da rota pelo que ele diz — o
+   * `where` decide quem é aceito, o `set` decide o que muda — em vez de devolver
+   * linha fixa. É isso que faz o teste morrer junto com o conserto: sem a
+   * cláusula `or (status='paused' and pausada_pela_janela)` no `where`, a
+   * campanha pausada pela janela não é aceita e a rota devolve 404 como hoje;
+   * sem o `pausada_pela_janela=false` no `set`, a marca sobrevive e o tick a
+   * retoma na abertura seguinte.
+   */
+  type LinhaPause = { status: string; pausada_pela_janela: boolean; error: string | null };
+  /** O `where` do update, interpretado contra o estado da linha (de verdade). */
+  function linhaAceita(onde: string, estado: LinhaPause): boolean {
+    if (/\(status='running' or \(status='paused' and pausada_pela_janela\)\)/.test(onde))
+      return (
+        estado.status === "running" ||
+        (estado.status === "paused" && estado.pausada_pela_janela)
+      );
+    if (/and status='running'/.test(onde)) return estado.status === "running";
+    if (/and status='paused'/.test(onde)) {
+      // A retomada AUTOMÁTICA da janela é guardada pela marca (sem ela, o tick
+      // reabriria até a pausa da pessoa). A da ROTA não tem a marca no where:
+      // quem aperta Retomar na tela retoma as duas.
+      const soComMarca = /and pausada_pela_janela/.test(onde);
+      return estado.status === "paused" && (!soComMarca || estado.pausada_pela_janela);
+    }
+    return true;
+  }
+  function bancoPause(estado: LinhaPause) {
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.startsWith("select") && sql.includes("pausada_pela_janela and coalesce")) {
+        // A varredura da retomada no tick: só quem tem a marca volta sozinha.
+        return {
+          rows:
+            estado.pausada_pela_janela && estado.status === "paused"
+              ? [
+                  {
+                    id: ID,
+                    name: "Manhã",
+                    channel_session_id: ID,
+                    config: { janela: { dias: [1, 2, 3, 4, 5], inicio: 7, fim: 12 } },
+                  },
+                ]
+              : [],
+        };
+      }
+      if (sql.startsWith("select") && sql.includes("and status='paused'")) {
+        // A leitura que a ROTA faz antes de retomar: a campanha pausada, com
+        // configuração (a `validateConfig` da loja é dublê neste arquivo).
+        return { rows: [{ id: ID, status: "paused", config: { instruction: "x" } }], rowCount: 1 };
+      }
+      if (!sql.startsWith("update prospecting_campaigns")) return { rows: [], rowCount: 0 };
+      const onde = sql.slice(sql.indexOf(" where "));
+      const set = sql.slice(sql.indexOf(" set "), sql.indexOf(" where "));
+      if (!linhaAceita(onde, estado)) return { rows: [], rowCount: 0 };
+      // `SET` vê o valor ANTIGO da linha (regra do Postgres): o `case` do erro
+      // depende do estado de ANTES das escritas do mesmo update.
+      if (
+        /then null else error end/.test(set) &&
+        estado.status === "paused" &&
+        estado.pausada_pela_janela
+      )
+        estado.error = null;
+      if (/set status='paused'/.test(set)) estado.status = "paused";
+      if (/set status='running'/.test(set)) estado.status = "running";
+      if (/pausada_pela_janela=false/.test(set)) estado.pausada_pela_janela = false;
+      if (/pausada_pela_janela=true/.test(set)) estado.pausada_pela_janela = true;
+      void params;
+      return { rows: [{ id: ID }], rowCount: 1 };
+    });
+    return { estado, query };
+  }
+
+  const PAUSA_DA_JANELA: LinhaPause = {
+    status: "paused",
+    pausada_pela_janela: true,
+    error: "Fora do horário da campanha. Ela volta sozinha na próxima abertura.",
+  };
+
+  it("A1: PAUSE numa campanha pausada pela janela responde 200 e grava a marca false", async () => {
+    const banco = bancoPause({ ...PAUSA_DA_JANELA });
+    deps.pool.mockReturnValue({ query: banco.query });
+    const res = await POST(tokenPost({ action: "pause", id: ID }));
+    expect(res.status).toBe(200);
+    // A pausa é DEFINITIVA: a marca da volta automática cai, e o motivo que
+    // prometia "volta sozinha na próxima abertura" sai do cartão.
+    expect(banco.estado.pausada_pela_janela).toBe(false);
+    expect(banco.estado.status).toBe("paused");
+    expect(banco.estado.error).toBeNull();
+  });
+
+  it("A1: CONTROLE — pausar uma running segue aceitando pelo mesmo update", async () => {
+    const banco = bancoPause({ status: "running", pausada_pela_janela: false, error: null });
+    deps.pool.mockReturnValue({ query: banco.query });
+    const res = await POST(tokenPost({ action: "pause", id: ID }));
+    expect(res.status).toBe(200);
+    expect(banco.estado.status).toBe("paused");
+  });
+
+  it("A1: CONTROLE — campanha pausada SEM a marca (pausa da pessoa) não é reaceita: 404 como sempre", async () => {
+    const banco = bancoPause({ status: "paused", pausada_pela_janela: false, error: null });
+    deps.pool.mockReturnValue({ query: banco.query });
+    const res = await POST(tokenPost({ action: "pause", id: ID }));
+    expect(res.status).toBe(404);
+  });
+
+  it("A3: o RESUME da rota limpa a marca — retomar por clique apaga a volta automática", async () => {
+    // A retomada roda dentro do lock (dublê, como no `completar_fichas`), mas o
+    // UPDATE é o CÓDIGO REAL da rota aplicado pelo simulador do A1: no fim, a
+    // campanha voltou a `running` SEM a marca da janela.
+    vi.mocked(requireRole).mockResolvedValue({
+      ok: true,
+      user: { id: "u-1", idioma: "pt" },
+      org: { orgId: "99999999-9999-4999-8999-999999999999" },
+    } as never);
+    deps.validateConfig.mockResolvedValue({ channel_session_id: ID });
+    deps.assertCanalLivre.mockResolvedValue(undefined);
+    const banco = bancoPause({ ...PAUSA_DA_JANELA });
+    vi.mocked(withProspectingLock).mockImplementation(
+      (async (_p: unknown, _o: unknown, fn: (d: unknown) => Promise<unknown>) =>
+        fn({ query: banco.query })) as never,
+    );
+    const res = await POST(
+      new NextRequest("http://localhost/api/v1/prospecting", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "resume", id: ID }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(banco.estado.status).toBe("running");
+    expect(banco.estado.pausada_pela_janela).toBe(false);
+  });
+
+  it("A2: a pausa manual de campanha pausada pela janela NÃO volta sozinha na varredura do tick seguinte", async () => {
+    // Terça 9h: DENTRO da janela seg-sex 7h-12h. Se a marca sobreviver à pausa
+    // manual, a varredura de retomada do tick (`retomarCampanhasNaJanela`, o
+    // módulo REAL, pelo mesmo UPDATE que o tick roda) devolve a campanha a
+    // `running` — exatamente o que a pessoa tentou impedir ao apertar Pausar.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-17T09:00:00-03:00"));
+    try {
+      const banco = bancoPause({ ...PAUSA_DA_JANELA });
+      deps.pool.mockReturnValue({ query: banco.query });
+      const res = await POST(tokenPost({ action: "pause", id: ID }));
+      expect(res.status).toBe(200);
+      await retomarCampanhasNaJanela(
+        { query: banco.query } as never,
+        "99999999-9999-4999-8999-999999999999",
+        new Date(),
+        "America/Sao_Paulo",
+      );
+      // A campanha continua pausada: sem a marca, a varredura nem a enxerga.
+      expect(banco.estado.status).toBe("paused");
+      expect(banco.estado.pausada_pela_janela).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("A1-CONTROLE: uma campanha SEM pausa manual, pausada pela janela, volta sozinha na varredura (a marca é o sujeito)", async () => {
+    // O lado que NÃO pode quebrar: a pausa da janela continua reversível só.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-17T09:00:00-03:00"));
+    try {
+      const banco = bancoPause({ ...PAUSA_DA_JANELA });
+      deps.assertCanalLivre.mockResolvedValue(undefined);
+      await retomarCampanhasNaJanela(
+        { query: banco.query } as never,
+        "99999999-9999-4999-8999-999999999999",
+        new Date(),
+        "America/Sao_Paulo",
+      );
+      expect(banco.estado.status).toBe("running");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("A4: o GET da lista devolve a coluna pausada_pela_janela no JSON da campanha", async () => {
+    // O fake PROJETA a linha: devolve só as colunas que o SQL pede (checadas
+    // pelo nome). Assim o teste é vermelho antes do conserto de verdade — sem
+    // `c.pausada_pela_janela` no SELECT, o campo some do JSON como hoje.
+    const LINHA = {
+      id: ID,
+      name: "Manhã",
+      search: {},
+      config: {},
+      status: "paused",
+      search_status: "succeeded",
+      run_id: null,
+      cost_usd: "0",
+      result_count: 0,
+      skipped_count: 0,
+      error: null,
+      next_send_at: "2026-11-17T10:00:00Z",
+      created_at: "2026-11-10T10:00:00Z",
+      channel_session_id: ID,
+      pausada_pela_janela: true,
+    };
+    deps.pool.mockReturnValue({
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("from prospecting_settings")) return { rows: [{ organization_id: ID }] };
+        if (sql.includes("from organizations")) return { rows: [{ settings: {}, locale: null }] };
+        if (sql.includes("from prospecting_campaigns c"))
+          return {
+            rows: [Object.fromEntries(Object.entries(LINHA).filter(([k]) => sql.includes(k)))],
+          };
+        return { rows: [] };
+      }),
+    });
+    const res = await GET(
+      new NextRequest("http://localhost/api/v1/prospecting", {
+        headers: { authorization: "Bearer dsk_abc" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: { campaigns: Record<string, unknown>[] };
+    };
+    expect(body.data.campaigns[0]).toHaveProperty("pausada_pela_janela", true);
   });
 });
 
@@ -392,5 +646,206 @@ describe("GET /api/v1/prospecting: configured segue o provedor (#2942)", () => {
   it("escolha desconhecida sem chave: configured=false e a lista responde 200", async () => {
     deps.pool.mockReturnValue(poolCom(false, { prospecting: { provider: "nao-existe" } }));
     expect(await configured()).toBe(false);
+  });
+});
+
+describe("POST /api/v1/prospecting completar_fichas (sessão de admin)", () => {
+  const ORG = "99999999-9999-4999-8999-999999999999";
+  const CAMPANHA = "22222222-2222-4222-8222-222222222222";
+  const COM_REDES = { website: "https://clinica.test/", socials: ["https://instagram.com/clinica"] };
+  const SO_SITE = { website: "https://ja.test/" };
+
+  type Chamada = { text: string; params: unknown[] };
+
+  /**
+   * Banco de mentira do lock: devolve os candidatos da campanha e diz, por contato, se o
+   * `update` escreveria (`precisam`). Registra cada SQL com os parâmetros, para o teste
+   * provar o filtro de organização pelo que foi chamado.
+   */
+  function bancoDeCompletar(
+    candidatos: { contact_id: string; data: object }[],
+    precisam: Set<string>,
+  ): Chamada[] {
+    const chamadas: Chamada[] = [];
+    const db = {
+      query: vi.fn(async (text: string, params: unknown[] = []) => {
+        chamadas.push({ text, params });
+        if (text.includes("from prospecting_candidates"))
+          return { rows: candidatos, rowCount: candidatos.length };
+        if (text.includes("update public.contacts"))
+          return { rows: [], rowCount: precisam.has(params[1] as string) ? 1 : 0 };
+        if (text.includes("select 1 from public.contacts"))
+          return {
+            rows: precisam.has(params[1] as string) ? [{ "?column?": 1 }] : [],
+            rowCount: 0,
+          };
+        return { rows: [], rowCount: 0 };
+      }),
+    };
+    vi.mocked(withProspectingLock).mockImplementation(
+      (async (_pool: unknown, _org: unknown, fn: (d: unknown) => Promise<unknown>) =>
+        fn(db)) as never,
+    );
+    return chamadas;
+  }
+
+  function completar(corpo: Record<string, unknown> = {}) {
+    return new NextRequest("http://localhost/api/v1/prospecting", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "completar_fichas", id: CAMPANHA, ...corpo }),
+    });
+  }
+
+  beforeEach(() => {
+    vi.mocked(requireRole).mockResolvedValue({
+      ok: true,
+      user: { id: "u-1", idioma: "pt" },
+      org: { orgId: ORG },
+    } as never);
+  });
+
+  it("aceita por sessão de admin e devolve as contagens", async () => {
+    bancoDeCompletar(
+      [
+        { contact_id: "contato-1", data: COM_REDES },
+        { contact_id: "contato-2", data: SO_SITE },
+        { contact_id: "contato-3", data: {} },
+      ],
+      new Set(["contato-1"]),
+    );
+    const res = await POST(completar());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: unknown };
+    expect(body.data).toEqual({ completadas: 1, ja_completas: 1, sem_links: 1, faltam: 0 });
+    expect(vi.mocked(audit)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "prospecting.changed",
+        organizationId: ORG,
+        resourceId: CAMPANHA,
+        metadata: { operation: "completar_fichas", completadas: 1, ja_completas: 1, sem_links: 1 },
+      }),
+    );
+  });
+
+  it("a trilha de auditoria não leva endereço nenhum", async () => {
+    bancoDeCompletar([{ contact_id: "contato-1", data: COM_REDES }], new Set(["contato-1"]));
+    await POST(completar());
+    const trilha = JSON.stringify(vi.mocked(audit).mock.calls[0]![0]);
+    expect(trilha).not.toContain("https://");
+    expect(trilha).not.toContain("instagram.com");
+  });
+
+  it("com 101 contatos que precisam: grava 100 e devolve faltam 1", async () => {
+    const candidatos = Array.from({ length: 101 }, (_, i) => ({
+      contact_id: `contato-${i}`,
+      data: SO_SITE,
+    }));
+    const chamadas = bancoDeCompletar(
+      candidatos,
+      new Set(candidatos.map((c) => c.contact_id)),
+    );
+    const res = await POST(completar());
+    const body = (await res.json()) as { data: unknown };
+    expect(body.data).toEqual({ completadas: 100, ja_completas: 0, sem_links: 0, faltam: 1 });
+    expect(chamadas.filter((c) => c.text.includes("update public.contacts"))).toHaveLength(100);
+  });
+
+  it("toda leitura e escrita de contato filtra organization_id, vindo da sessão", async () => {
+    const candidatos = Array.from({ length: 101 }, (_, i) => ({
+      contact_id: `contato-${i}`,
+      data: SO_SITE,
+    }));
+    const chamadas = bancoDeCompletar(
+      candidatos,
+      new Set(candidatos.map((c) => c.contact_id)),
+    );
+    await POST(completar());
+    const contatos = chamadas.filter(
+      (c) => c.text.includes("public.contacts") || c.text.includes("prospecting_candidates"),
+    );
+    expect(contatos.length).toBeGreaterThan(100);
+    for (const c of contatos) {
+      expect(c.text).toContain("organization_id");
+      expect(c.params[0]).toBe(ORG);
+    }
+    const lista = chamadas.find((c) => c.text.includes("from prospecting_candidates"));
+    expect(lista?.params).toEqual([ORG, CAMPANHA]);
+  });
+
+  it("organization_id no corpo é recusado com 422 e não toca no banco", async () => {
+    const chamadas = bancoDeCompletar([], new Set());
+    const res = await POST(completar({ organization_id: "outra-org" }));
+    expect(res.status).toBe(422);
+    expect(chamadas).toHaveLength(0);
+  });
+});
+
+/**
+ * #4359 — ARQUIVAR PELA TELA (sessão), NUNCA PELO TOKEN.
+ *
+ * A ação em si mora na loja (`arquivarCampanha`), onde está a prova de que nada é
+ * apagado e de que a campanha rodando para. Aqui só se prova o CONTRATO da rota:
+ * organização vem da sessão, o id vai como veio, e a trilha diz se houve mudança
+ * de estado — "alguém arquivou" sem o nome da campanha não deixa conferir depois.
+ */
+describe("POST /api/v1/prospecting arquivar/desarquivar por sessão", () => {
+  const ORG = "99999999-9999-4999-8999-999999999999";
+  const CAMPANHA = "22222222-2222-4222-8222-222222222222";
+
+  function pedido(action: "arquivar" | "desarquivar") {
+    return new NextRequest("http://localhost/api/v1/prospecting", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, id: CAMPANHA }),
+    });
+  }
+
+  beforeEach(() => {
+    vi.mocked(requireRole).mockResolvedValue({
+      ok: true,
+      user: { id: "u-1", idioma: "pt" },
+      org: { orgId: ORG },
+    } as never);
+  });
+
+  it("arquivar chama a loja com a organização da SESSÃO e audita", async () => {
+    deps.arquivar.mockResolvedValue({
+      arquivada: true,
+      ja_estava: false,
+      status: "paused",
+      arquivada_em: "2026-11-11T12:00:00.000Z",
+    });
+    const res = await POST(pedido("arquivar"));
+    expect(res.status).toBe(200);
+    expect(deps.arquivar).toHaveBeenCalledWith(deps.pool(), ORG, CAMPANHA);
+    expect(vi.mocked(audit)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "prospecting.changed",
+        organizationId: ORG,
+        resourceId: CAMPANHA,
+        metadata: expect.objectContaining({ operation: "arquivar", ja_estava: false }),
+      }),
+    );
+  });
+
+  it("desarquivar devolve a campanha à lista (arquivada:false)", async () => {
+    deps.desarquivar.mockResolvedValue({
+      arquivada: false,
+      ja_estava: false,
+      status: "paused",
+      arquivada_em: null,
+    });
+    const res = await POST(pedido("desarquivar"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { arquivada: boolean } };
+    expect(body.data.arquivada).toBe(false);
+    expect(deps.desarquivar).toHaveBeenCalledWith(deps.pool(), ORG, CAMPANHA);
+  });
+
+  it("campanha de outra organização: 404 da loja chega como 404, não como 500", async () => {
+    deps.arquivar.mockRejectedValue(new ProspectingError("Campanha não encontrada.", 404));
+    const res = await POST(pedido("arquivar"));
+    expect(res.status).toBe(404);
   });
 });

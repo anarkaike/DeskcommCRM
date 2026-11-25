@@ -73,18 +73,17 @@ export const TOOLS_ATENDIMENTO = declararTools([
     // Nenhum dos dois gerou conflito de texto — o `tsc` é que reprovou no merge.
     rotulo: "Anotar dado que o cliente informou",
     explicacao:
-      "Quando o cliente diz o e-mail, o nome ou o telefone dele na conversa, guarda essa informação para uma pessoa " +
-      "conferir antes de entrar na ficha — exceto o telefone de um cadastro sem número, quando a empresa liga a " +
-      "opção em Configurações › Distribuição de atendimento: aí ele entra na hora, em formato E.164, sem " +
-      "sobrescrever quem já tem número.",
+      "Guarda o dado informado para revisão humana. A empresa pode permitir, em Configurações › Distribuição " +
+      "de atendimento, preencher telefone vazio ou nome vazio. Nome exige mensagem real do próprio contato " +
+      "neste atendimento; nome preexistente diferente e e-mail continuam aguardando confirmação.",
     oQueToca: "Cadastro de clientes",
-    // `atencao`, não `critico`: nada sai para o cliente, e o ÚNICO dado que
-    // entra na ficha por conta desta ferramenta é o telefone de um cadastro
-    // SEM número (#2593) — sozinho, sem sobrescrever nada, com auditoria e
-    // rastro na linha do tempo, E SÓ COM A OPÇÃO DA ORGANIZAÇÃO LIGADA (vem
-    // desligada). O resto continua esperando a confirmação humana, que é onde o
-    // peso mora. Marcar `critico` aqui faria a tela pedir cerimônia para uma
-    // anotação.
+    // `atencao`, não `critico`: nada sai para o cliente, e os ÚNICOS dados que
+    // entram na ficha por conta desta ferramenta são o telefone de um cadastro
+    // SEM número (#2593) e o nome de um cadastro SEM nome (#3784) — sozinhos,
+    // sem sobrescrever nada, com auditoria e rastro na linha do tempo, E SÓ COM
+    // A OPÇÃO DA ORGANIZAÇÃO LIGADA (as duas vêm desligadas). O resto continua
+    // esperando a confirmação humana, que é onde o peso mora. Marcar `critico`
+    // aqui faria a tela pedir cerimônia para uma anotação.
     risco: "atencao",
     // ⚠️ FORA de "atender", e a razão é o TETO — não o valor da capacidade.
     //
@@ -106,6 +105,29 @@ export const TOOLS_ATENDIMENTO = declararTools([
     pacotes: ["vender"],
   },
   {
+    name: "crm_update_contact",
+    category: "write",
+    // O RÓTULO É A PROMESSA, não a ferramenta: diz o que muda na ficha do
+    // cliente e nada sobre MCP, token ou escopo — o gate de catálogo reprova
+    // jargão e conta os 60 caracteres.
+    rotulo: "Corrigir os dados do cliente",
+    explicacao:
+      "Atualiza o cadastro do cliente: nome, como prefere ser chamado, e-mail, telefone, nascimento, " +
+      "tipo e endereço. Se a integração tiver a permissão de editar cadastro, a correção entra na " +
+      "hora; sem ela, fica como proposta esperando alguém confirmar — e só nome, e-mail, telefone e " +
+      "nascimento podem entrar assim.",
+    oQueToca: "Cadastro de clientes",
+    // `atencao`, e não `critico`: não sai mensagem para o cliente, a alteração
+    // é auditada com o token que a fez e é reversível pela própria tela (o
+    // histórico da ficha guarda o valor anterior). Grava por cima, sim — é o
+    // motivo de o escopo ser separado e de a tela de tokens mostrar a linha.
+    risco: "atencao",
+    // "vender" pela mesma aritmética do `crm_propose_contact_field` logo acima:
+    // "atender" é o pacote no teto, e corrigir cadastro não é trabalho de
+    // atendimento em curso. Continua alcançável pelo modo avançado.
+    pacotes: ["vender"],
+  },
+  {
     name: "crm_list_conversations",
     category: "read",
     rotulo: "Listar conversas",
@@ -113,6 +135,70 @@ export const TOOLS_ATENDIMENTO = declararTools([
       "Mostra as conversas em andamento, quem está cuidando de cada uma e a posição de cada cliente na fila de espera.",
     oQueToca: "Atendimento",
     risco: "seguro",
+    pacotes: ["atender", "escalar"],
+  },
+  {
+    name: "crm_count_conversations",
+    category: "read",
+    rotulo: "Contar conversas",
+    explicacao:
+      "Conta quantas conversas existem, no total e por situação (abertas, pendentes, com a IA, encerradas), sem abrir nenhuma delas: devolve só números.",
+    oQueToca: "Atendimento",
+    risco: "seguro",
+    // "escalar" e não "atender": "atender" já está no teto de 31 capacidades
+    // (tests/unit/pacote-reserva-vaga-da-critica.test.ts), e ligar mais uma ali
+    // faria o pacote deixar de caber. Continua alcançável pelo modo avançado.
+    pacotes: ["escalar"],
+  },
+  {
+    name: "crm_pause_ai",
+    category: "write",
+    rotulo: "Pausar a IA nesta conversa",
+    explicacao:
+      "Desliga o atendimento automático de uma conversa: a IA deixa de responder o cliente até " +
+      "alguém retomar. O responsável pela conversa e o dono do negócio não mudam — pausar não " +
+      "transfere o atendimento para ninguém.",
+    oQueToca: "Atendimento",
+    // `atencao`: o efeito é visível para o cliente (ele deixa de ser respondido), mas
+    // é reversível num clique e NÃO mexe em dono, negócio nem cadastro.
+    risco: "atencao",
+    pacotes: ["atender", "escalar"],
+  },
+  {
+    name: "crm_resume_ai",
+    category: "write",
+    rotulo: "Deixar a IA responder de novo",
+    explicacao:
+      "Religa o atendimento automático de uma conversa pausada. Se uma pessoa é responsável pela " +
+      "conversa, a IA continua sem responder e o retorno avisa — retomar aqui não tira a conversa " +
+      "de quem está com ela.",
+    oQueToca: "Atendimento",
+    risco: "atencao",
+    pacotes: ["atender", "escalar"],
+  },
+  {
+    name: "crm_close_conversation",
+    category: "write",
+    rotulo: "Encerrar a conversa",
+    explicacao:
+      "Encerra o atendimento de uma conversa, igual ao botão da tela: registra o fim, libera a " +
+      "fila e para de contar o tempo de espera. A conversa pode ser reaberta depois, e reabrir é " +
+      "uma ferramenta separada.",
+    oQueToca: "Atendimento",
+    // `atencao`, não `critico`: encerrar é o gesto mais comum do dia e é reversível
+    // pela própria ferramenta de reabrir. `critico` seria encerrar SEM poder voltar.
+    risco: "atencao",
+    pacotes: ["atender", "escalar"],
+  },
+  {
+    name: "crm_reopen_conversation",
+    category: "write",
+    rotulo: "Reabrir conversa encerrada",
+    explicacao:
+      "Reabre uma conversa que tinha sido encerrada, igual ao botão da tela. O atendimento volta a " +
+      "contar a partir de agora e a conversa volta para a fila de quem estava com ela.",
+    oQueToca: "Atendimento",
+    risco: "atencao",
     pacotes: ["atender", "escalar"],
   },
   {
@@ -143,6 +229,26 @@ export const TOOLS_ATENDIMENTO = declararTools([
       "Envia uma mensagem de WhatsApp para o cliente. Ele recebe de verdade, no celular dele, e não dá para desfazer.",
     oQueToca: "Atendimento",
     risco: "critico",
+    pacotes: ["atender"],
+  },
+  {
+    name: "crm_send_material",
+    category: "write",
+    rotulo: "Enviar material da empresa",
+    explicacao:
+      "Envia um material da empresa já cadastrado — catálogo em PDF, tabela de preços, ficha — " +
+      "como documento no WhatsApp, com a legenda que acompanha. O arquivo sai do material " +
+      "cadastrado, não de um link: nada é lido nem consultado pela IA.",
+    oQueToca: "Atendimento",
+    // `critico` como `crm_send_whatsapp_message`: alcança o cliente de verdade e
+    // não dá para desfazer. Crítica não entra por pacote (`entraPorPacote`), então
+    // ligar "Atender e responder" não dá ao agente o direito de mandar arquivo.
+    risco: "critico",
+    // `atender` é a jornada do envio, e o pacote tem vaga para a crítica: a conta
+    // dele vai de 21 para 22 vagas com esta capacidade, contra o teto de 27
+    // (`tests/unit/pacote-reserva-vaga-da-critica.test.ts`). Fica FORA de
+    // `evoluir` de propósito — era o único pacote que ainda cabia a partir do
+    // onboarding, e uma capacidade a mais ali fecharia o beco que a #162 mede.
     pacotes: ["atender"],
   },
   {

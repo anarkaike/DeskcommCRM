@@ -6,6 +6,9 @@ import { ensureTenantForUser } from "@/lib/auth/provision";
 import { decidirConviteDoSignup } from "@/lib/auth/convite-no-signup";
 import { modoDeCadastro } from "@/lib/auth/politica-de-cadastro";
 import { aplicarConvite } from "@/lib/auth/aplicar-convite";
+import { respostaDePonte } from "@/lib/auth/ponte-de-volta";
+import { marcaDaSaida } from "@/lib/branding/saida";
+import { invalidarUsuario } from "@/lib/auth/cache-curto";
 import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
 
@@ -94,7 +97,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(continuar);
   }
 
-  return confirmar({ tokenHash: null, code, type: type as EmailOtpType | null, request, status: 307 });
+  return confirmar({ tokenHash: null, code, type: type as EmailOtpType | null, request, status: 307, pelaPonte: true });
 }
 
 /** O botão "Continuar" de `/login/continuar` — o único caminho que gasta o `token_hash`. */
@@ -111,6 +114,10 @@ export async function POST(request: NextRequest) {
     type: campo("type") as EmailOtpType | null,
     request,
     status: 303,
+    // O POST vem do formulário de `/login/continuar`, isto é, de um documento
+    // NOSSO: a cadeia de navegação já é same-site e o cookie Strict viaja no
+    // 303. A ponte é só de quem chega de fora (o GET com `code`, abaixo).
+    pelaPonte: false,
   });
 }
 
@@ -120,12 +127,15 @@ async function confirmar({
   type,
   request,
   status,
+  pelaPonte,
 }: {
   tokenHash: string | null;
   code: string | null;
   type: EmailOtpType | null;
   request: NextRequest;
   status: 303 | 307;
+  /** `true` = esta volta chegou por navegação vinda de OUTRO site (issue #4335). */
+  pelaPonte: boolean;
 }) {
   const requestId = request.headers.get("x-request-id");
 
@@ -133,6 +143,27 @@ async function confirmar({
   // pode entregar como o bind interno (ex.: 0.0.0.0:3000) em vez do domínio
   // público — o link de recovery quebra silenciosamente para o usuário final.
   const redirectTo = (path: string) => NextResponse.redirect(new URL(path, env.NEXT_PUBLIC_APP_URL), status);
+
+  // ─── A VOLTA DE FORA NÃO SAI POR 3xx PARA TELA QUE EXIGE SESSÃO (#4335) ────
+  //
+  // O GET com `code` é o formato do template PADRÃO do Supabase: o e-mail linka
+  // o `/auth/v1/verify` do GoTrue, que valida e SÓ ENTÃO manda o navegador para
+  // cá. Essa cadeia começou num clique em cliente de e-mail — outro site —, e o
+  // cookie de sessão do produto é `sameSite: "strict"`: ele não viaja numa
+  // navegação com initiator cross-site. Um 302 daqui para `/app`,
+  // `/onboarding/welcome`, `/get-started` ou `/login/reset` continuaria a MESMA
+  // cadeia, o `proxy.ts` não enxergaria usuário e mandaria a pessoa para
+  // `/login` — com a sessão já criada. É a classe da #1646, e a mesma correção:
+  // um documento same-origin (a ponte) cujo `location.replace` é disparado por
+  // um documento nosso, onde o cookie Strict volta a viajar.
+  //
+  // O 3xx permanece onde é legítimo: nas telas PÚBLICAS (`/login` e o aceite de
+  // convite), e no POST de `/login/continuar`, que parte de um documento nosso.
+  const paraTelaAutenticada = async (path: string) => {
+    const marca = await marcaDaSaida(null);
+    return respostaDePonte(path, marca.nome, "Voltando para o sistema…");
+  };
+  const sair = async (path: string) => (pelaPonte ? paraTelaAutenticada(path) : redirectTo(path));
 
   if (!(tokenHash && type) && !code) {
     return redirectTo("/login?error=link_invalido");
@@ -184,6 +215,11 @@ async function confirmar({
     return redirectTo(viaTokenHash ? "/login?error=link_invalido" : "/login?error=template_padrao");
   }
 
+  // Entrar de novo é o jeito que a pessoa tem de "atualizar" o que vê. O cache
+  // curto de autorização só é derrubado por quem escreve PELO APP; vínculo
+  // gravado por fora (seed, worker, SQL) esperaria o TTL. Um MISS por login.
+  invalidarUsuario(usuario.id);
+
   if (sessaoPreservada) {
     // O link falhou — isso continua sendo fato e continua auditado. O que muda
     // é o desfecho: seguimos com a sessão que já existia, e o `formato` mais o
@@ -203,7 +239,7 @@ async function confirmar({
   }
 
   if (type === "recovery") {
-    return redirectTo("/login/reset");
+    return await sair("/login/reset");
   }
 
   // Foi convidado? Então NÃO ganha organização própria. Sem esta bifurcação,
@@ -241,7 +277,7 @@ async function confirmar({
       payload: decisao.payload,
       requestId,
     });
-    if (aceite.ok) return redirectTo("/app");
+    if (aceite.ok) return await sair("/app");
 
     // Convite revogado, ou banco fora: a tela de aceite continua existindo e
     // sabe explicar cada caso. Degradar para ela preserva exatamente o
@@ -271,10 +307,15 @@ async function confirmar({
   // enviado em `/get-started`, que é onde já chega quem ficou sem empresa por
   // qualquer outro caminho — uma porta só, e a trava mora na action dela
   // (`recoverOrganization`), não nesta rota.
-  if (modo === "com_aprovacao") return redirectTo("/get-started");
+  if (modo === "com_aprovacao") return await sair("/get-started");
 
   try {
-    await ensureTenantForUser(usuario);
+    // O idioma e o fuso de quem se cadastrou já vêm no `user_metadata` (gravados
+    // pelo `signUp`); o `Accept-Language` deste clique é a pista de reserva para
+    // contas criadas antes de o cadastro guardá-los.
+    await ensureTenantForUser(usuario, {
+      pistas: { acceptLanguage: request.headers.get("accept-language") },
+    });
   } catch (e) {
     await audit({
       action: "auth.signup_provision_failed",
@@ -285,7 +326,7 @@ async function confirmar({
     // A sessão JÁ está firmada (o `verifyOtp`/`exchangeCodeForSession` acima
     // passou). Mandar para `/login` deixava a pessoa logada e sem organização,
     // sem nenhum caminho de volta — ver `app/actions/auth/recoverOrganization.ts`.
-    return redirectTo("/get-started");
+    return await sair("/get-started");
   }
 
   void audit({
@@ -295,5 +336,5 @@ async function confirmar({
     requestId,
   });
 
-  return redirectTo("/onboarding/welcome");
+  return await sair("/onboarding/welcome");
 }

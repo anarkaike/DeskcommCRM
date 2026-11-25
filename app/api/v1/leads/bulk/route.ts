@@ -14,7 +14,7 @@ import { type NextRequest } from "next/server";
 import { audit, isServiceRoleConfigured } from "@/lib/audit";
 import { ApiError } from "@/lib/api/types";
 import { ok, fail } from "@/lib/api/wrappers";
-import { requireRole } from "@/lib/auth/require-role";
+import { resolveAuthDual, tetoDeEscritaDoToken } from "@/lib/api/auth-dual";
 import { resolveOwnerPatch } from "@/lib/leads/owner-patch";
 import { emitLeadActivity, stageChangeReason } from "@/lib/leads/activity-emitter";
 import { registraFalhaDeAtividade } from "@/lib/leads/activity-write-failure";
@@ -29,16 +29,17 @@ import {
   modoDeReabertura,
   recusaReabertura,
 } from "@/lib/leads/reabertura";
+import { settingsDoFunil } from "@/lib/leads/campos-exigidos";
 import {
-  camposComAnexo,
-  recusaDeCamposObrigatorios,
-  settingsDoFunil,
-  validaCamposExigidos,
-} from "@/lib/leads/campos-exigidos";
-import { createClient } from "@/lib/supabase/server";
+  recusaDeCamposDoLote,
+  type NegocioDoLote,
+} from "@/lib/leads/campos-obrigatorios-em-lote";
 import { observeServiceOrigin } from "@/lib/atendimento/origem";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { moveARecorrenciaNoFecho } from "@/lib/financeiro/recorrencia-do-fecho";
+import { RECUSA_DE_TROCA_DE_FUNIL } from "@/lib/leads/clonar-para-funil";
 import { traduzir } from "@/lib/i18n/dicionario";
+import { IDIOMA_PADRAO } from "@/lib/i18n/idiomas";
 
 export const dynamic = "force-dynamic";
 
@@ -56,13 +57,31 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (supportDenied) return supportDenied;
 
   const requestId = randomUUID();
-  const supabase = await createClient();
 
-  // spec 13 §4: escrita é agent+ (viewer é read-only).
-  const authz = await requireRole("agent", { requestId, resource: "crm_leads" });
+  // Lê o corpo de um clone só para descobrir a ação e definir o piso de papel
+  // ANTES de chamar resolveAuthDual (o token não passa por requireRole interno).
+  const actionDoBody = await req.clone().json().catch(() => null);
+  const acaoDoLote = (actionDoBody as { action?: unknown } | null)?.action;
+  const roleDoLote = acaoDoLote === "assign" ? "manager" : ("agent" as const);
+
+  // spec 13 §4: escrita é agent+ (viewer é read-only). assign exige manager.
+  // O token não tem a RLS de visibilidade do `agent` (alcança a organização
+  // inteira) e nenhuma ferramenta MCP apaga negócio: apagar em lote por token
+  // exige `manager`, a mesma régua do radar (`leads/at-risk`).
+  const authz = await resolveAuthDual(req, {
+    requestId,
+    resource: "crm_leads",
+    role: roleDoLote,
+    scope: "mcp:write",
+    ...(acaoDoLote === "delete" ? { tokenRole: "manager" as const } : {}),
+  });
   if (!authz.ok) return authz.response;
-  const t = (texto: string) => traduzir(texto, authz.user.idioma);
-  const user = authz.user;
+  const teto = await tetoDeEscritaDoToken(authz, "leads_bulk", requestId);
+  if (teto) return teto;
+  const supabase = authz.supabase;
+  const { organizationId, actor, idioma } = authz;
+  const t = (texto: string) => traduzir(texto, idioma ?? IDIOMA_PADRAO);
+  const userId = actor.type === "user" ? actor.id : null;
 
   let input;
   try {
@@ -81,17 +100,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     return fail("bulk_too_large", `${t("Máximo")} ${MAX_BULK} ${t("leads por bulk.")}`, 422, { requestId });
   }
 
-  // G3-04: assign é reatribuição de dono em lote → piso ≥manager (spec 04 §6.5,
-  // INB-03). Gate por-action: move/tag/delete continuam agent+ (piso acima);
-  // só o assign exige manager. Reusa o helper (nada de ROLE_RANK na mão).
+  // Novo dono tem que ser membro ativo agent+ da MESMA org (org de fonte
+  // confiável = authz, nunca body). owner_user_id null = desatribuir (válido).
+  // A RLS de user_organizations só mostra o próprio membership a um manager,
+  // por isso o admin client filtrado pela org resolvida.
   if (input.action === "assign") {
-    const mgr = await requireRole("manager", { requestId, resource: "crm_leads" });
-    if (!mgr.ok) return mgr.response;
-
-    // Novo dono tem que ser membro ativo agent+ da MESMA org (org de fonte
-    // confiável = authz, nunca body). owner_user_id null = desatribuir (válido).
-    // A RLS de user_organizations só mostra o próprio membership a um manager,
-    // por isso o admin client filtrado pela org resolvida.
     const ownerId = input.params.owner_user_id;
     if (ownerId !== null) {
       // INB-09 nota 1: fail-closed. A validação de membership só roda com service
@@ -110,7 +123,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       const { data: member, error: memberErr } = await admin
         .from("user_organizations")
         .select("role")
-        .eq("organization_id", authz.org.orgId)
+        .eq("organization_id", organizationId)
         .eq("user_id", ownerId)
         .is("revoked_at", null)
         .maybeSingle();
@@ -130,7 +143,6 @@ export async function POST(req: NextRequest): Promise<Response> {
   // inferida do 1º lead. A RLS já escopa por org do membro, mas um ator em 2+
   // orgs veria leads de ambas — o filtro explícito garante que o bulk só toca a
   // org ativa (mesmo padrão do gate de owner acima).
-  const organizationId = authz.org.orgId;
   // `lost_reason` entra no select por causa da decisão de perda (issue #917): o
   // motivo que o negócio JÁ tem é metade da pergunta "esta escrita o deixa perdido
   // sem motivo?" — e perguntar card a card depois custaria N consultas.
@@ -140,7 +152,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const { data: scoped } = await supabase
     .from("crm_leads")
     .select(
-      "id, organization_id, tags, stage_id, pipeline_id, contact_id, lost_reason, custom_fields, won_reason, status",
+      "id, organization_id, tags, stage_id, pipeline_id, contact_id, lost_reason, custom_fields, won_reason, status, recurring_value_cents, recurring_months, created_at",
     )
     .eq("organization_id", organizationId)
     .in("id", input.lead_ids);
@@ -173,12 +185,31 @@ export async function POST(req: NextRequest): Promise<Response> {
       // etapa de perda não é uma perda nova.
       const { data: etapaDeDestino, error: etapaErr } = await supabase
         .from("crm_stages")
-        .select("id, name, is_lost, is_won")
+        .select("id, name, pipeline_id, is_lost, is_won")
         .eq("id", input.params.stage_id)
+        .eq("organization_id", organizationId)
         .maybeSingle();
       if (etapaErr) return fail("internal_error", etapaErr.message, 500, { requestId });
       if (!etapaDeDestino) {
         return fail("not_found", t("Stage não encontrado."), 404, { requestId });
+      }
+
+      // ── P-01: O LOTE NÃO TROCA O NEGÓCIO DE FUNIL ──────────────────────────
+      //
+      // `fn_mover_leads_em_lote` grava o `pipeline_id` da etapa de destino
+      // (migration 9466, #4802): sem esta recusa, uma etapa de outro funil no
+      // lote levaria o negócio para lá sem a cópia. A recusa é a MESMA do arrasto
+      // (`/move`) e do `moveLeadHandler`. O único caminho que muda de funil é a
+      // transferência do arquivar/excluir (`/pipelines/[id]/negocios`), que só
+      // leva negócio em andamento e não passa por aqui.
+      const deOutroFunil = visible
+        .filter((linha) => linha.pipeline_id !== etapaDeDestino.pipeline_id)
+        .map((linha) => linha.id);
+      if (deOutroFunil.length > 0) {
+        return fail("pipeline_immutable_use_clone", t(RECUSA_DE_TROCA_DE_FUNIL), 422, {
+          requestId,
+          details: { lead_ids: deOutroFunil, use: "/api/v1/leads/{id}/clone" },
+        });
       }
 
       const motivoDoLote = input.params.lost_reason ?? null;
@@ -189,7 +220,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           etapaDeDestino,
           motivo: motivoDoLote,
           motivoAtual: linha.lost_reason ?? null,
-          idioma: user.idioma,
+          idioma,
         });
         if (!veredito.ok) {
           recusaDoMotivo ??= { codigo: veredito.codigo, mensagem: veredito.mensagem };
@@ -218,7 +249,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       for (const linha of visible) {
         const funilId = (linha as { pipeline_id?: string | null }).pipeline_id ?? "";
         if (!settingsPorFunil.has(funilId)) {
-          settingsPorFunil.set(funilId, await settingsDoFunil(supabase, funilId || null));
+          settingsPorFunil.set(funilId, await settingsDoFunil(supabase, funilId || null, organizationId));
         }
       }
       let recusaDeReabertura: { codigo: string; mensagem: string } | null = null;
@@ -228,7 +259,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           modo: modoDeReabertura(settingsPorFunil.get(linha.pipeline_id ?? "")),
           statusAtual: linha.status,
           etapaDestino: etapaDeDestino,
-          idioma: user.idioma,
+          idioma,
         });
         if (veredito) {
           recusaDeReabertura ??= veredito;
@@ -253,39 +284,28 @@ export async function POST(req: NextRequest): Promise<Response> {
       // `details.faltando`, por card.
       // O lote pode cruzar funis: a régua é a do funil de CADA card (cache
       // montado acima), nunca a do primeiro da lista.
-      const leadIdsSemCampos: string[] = [];
-      const faltandoPorCard: Record<string, { chave: string; rotulo: string }[]> = {};
-      for (const linha of visible) {
-        const funilId = (linha as { pipeline_id?: string | null }).pipeline_id ?? null;
-        const settingsDaLinha = settingsPorFunil.get(funilId ?? "") ?? null;
-        const veredito = validaCamposExigidos({
-          lead: linha as unknown as Record<string, unknown>,
-          settingsDoFunil: settingsDaLinha,
-          // ponytail: uma ida ao banco por card, e só em funil com campo de arquivo exigível.
-          camposComAnexo: await camposComAnexo(supabase, settingsDaLinha, organizationId, linha.id),
-          destino: {
-            stageId: etapaDeDestino.id,
-            desfecho: etapaDeDestino.is_won
-              ? "won"
-              : etapaDeDestino.is_lost
-                ? "lost"
-                : null,
-          },
-          motivoDeGanho: (linha as { won_reason?: string | null }).won_reason ?? null,
-        });
-        if (veredito.faltando.length > 0) {
-          leadIdsSemCampos.push(linha.id);
-          faltandoPorCard[linha.id] = veredito.faltando;
-        }
-      }
-      if (leadIdsSemCampos.length > 0) {
-        const recusa = recusaDeCamposObrigatorios(
-          Object.values(faltandoPorCard).flat(),
-          user.idioma,
-        );
-        return fail(recusa.codigo, recusa.mensagem, 422, {
+      const camposDoLote = await recusaDeCamposDoLote({
+        supabase,
+        organizationId,
+        negocios: visible as unknown as NegocioDoLote[],
+        settingsDoFunilDe: (funilId) => settingsPorFunil.get(funilId ?? "") ?? null,
+        destino: {
+          stageId: etapaDeDestino.id,
+          desfecho: etapaDeDestino.is_won
+            ? "won"
+            : etapaDeDestino.is_lost
+              ? "lost"
+              : null,
+        },
+        idioma,
+      });
+      if (camposDoLote.recusa) {
+        return fail(camposDoLote.recusa.codigo, camposDoLote.recusa.mensagem, 422, {
           requestId,
-          details: { lead_ids: leadIdsSemCampos, faltando: faltandoPorCard },
+          details: {
+            lead_ids: camposDoLote.recusa.lead_ids,
+            faltando: camposDoLote.faltandoPorCard,
+          },
         });
       }
 
@@ -315,7 +335,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         // Rede de segurança (#917): a recusa do banco por motivo da perda (o
         // motivo veio, mas não é do vocabulário deste funil) vira recusa de
         // negócio. Qualquer outro erro continua 500 com o texto do Postgres.
-        const recusaDoBanco = recusaDeMotivoDaPerdaPeloBanco(error, user.idioma);
+        const recusaDoBanco = recusaDeMotivoDaPerdaPeloBanco(error, idioma);
         if (recusaDoBanco) {
           return fail(recusaDoBanco.codigo, recusaDoBanco.mensagem, 422, { requestId });
         }
@@ -333,6 +353,49 @@ export async function POST(req: NextRequest): Promise<Response> {
       // mova o card entre a leitura e a atualização e a timeline conte a
       // transição errada.
       const movidos = movidosNoBanco.filter((r) => r.from_stage_id !== input.params.stage_id);
+
+      // ── O FINANCEIRO DO FECHO (#3602, fatia 5) ─────────────────────────────
+      //
+      // O lote é uma porta de fecho de verdade: `fn_mover_leads_em_lote` escreve
+      // `stage_id` direto no banco e o gatilho fecha os negócios que entram numa
+      // etapa `is_won`/`is_lost`. Sem esta laço, mover 30 cards para "Ganho"
+      // fechava 30 negócios e não criava molde nenhum.
+      //
+      // `movidos` já exclui quem não trocou de etapa (reordenar em lote dentro
+      // da coluna Ganho não cria molde), e a idempotência é das funções do
+      // financeiro — o mesmo card em dois lotes não gera dois moldes.
+      //
+      // Falha BAIXA card a card: o lote inteiro já moveu quando isto roda, e o
+      // `moveARecorrenciaNoFecho` não lança nem deixa de contabilizar o erro.
+      if (etapaDeDestino.is_won === true || etapaDeDestino.is_lost === true) {
+        const porId = new Map(visible.map((linha) => [linha.id, linha]));
+        for (const movido of movidos) {
+          const linha = porId.get(movido.lead_id) as
+            | {
+                pipeline_id?: string | null;
+                recurring_value_cents?: number | string | null;
+                recurring_months?: number | null;
+                created_at?: string | null;
+              }
+            | undefined;
+          if (!linha) continue;
+          await moveARecorrenciaNoFecho({
+            organizationId,
+            leadId: movido.lead_id,
+            pipelineId: linha.pipeline_id ?? null,
+            etapa: {
+              is_won: etapaDeDestino.is_won === true,
+              is_lost: etapaDeDestino.is_lost === true,
+            },
+            valorRecorrente: linha.recurring_value_cents ?? null,
+            meses: linha.recurring_months ?? null,
+            criadoEm: linha.created_at ?? null,
+            userId,
+            origem: "leads/bulk",
+            requestId,
+          });
+        }
+      }
 
       // Wave 3 (CORE 2): mover 30 cards de uma vez é 30 mudanças de estado —
       // cada uma entra no barramento, senão o lote inteiro fica invisível na
@@ -368,6 +431,9 @@ export async function POST(req: NextRequest): Promise<Response> {
       // O discriminador é o MESMO do banco e da `/lose`: o `status` lido ANTES
       // da escrita — `visible`, a leitura que `decideMotivoDaPerda` já usa.
       const statusDoCard = new Map(visible.map((l) => [l.id, l.status]));
+      // O contato vai na linha: é por ele que a anonimização (LGPD) alcança o
+      // histórico de um negócio apagado (migration 9466).
+      const contatoDoCard = new Map(visible.map((l) => [l.id, l.contact_id ?? null]));
       const motivoDoCard = new Map(visible.map((l) => [l.id, l.lost_reason ?? null]));
       // Perda NOVA é a que a etapa de destino fecha AGORA: etapa de perda e card
       // que não estava perdido. Quem já estava perdido só troca de etapa.
@@ -386,6 +452,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           const r = await emitLeadActivity(supabase, {
             organizationId,
             leadId: row.lead_id,
+            contactId: contatoDoCard.get(row.lead_id) ?? null,
             // ⚠️ O TIPO SEGUE `stage_changed`, e isso é decisão declarada, não
             // esquecimento: `crm_lead_activities.type = 'stage_changed'` é a
             // fonte de `lib/metrics/taxa-da-etapa.ts` e da rota `win-rates`
@@ -398,7 +465,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             type: "stage_changed",
             sourceModule: "crm",
             sourceId: row.lead_id,
-            actor: { type: "user", id: user.id },
+            actor,
             reason:
               perdaNova && motivo.length > 0
                 ? razaoDaPerdaNaTimeline(motivo)
@@ -438,7 +505,8 @@ export async function POST(req: NextRequest): Promise<Response> {
             // o da perda de cada negócio.
             await audit({
               action: "lead.lost",
-              actorUserId: user.id,
+              actorUserId: authz.actor.type === "user" ? authz.actor.id : null,
+              actorApiTokenId: authz.apiTokenId ?? null,
               organizationId,
               resourceType: "crm_lead",
               resourceId: row.lead_id,
@@ -465,7 +533,7 @@ export async function POST(req: NextRequest): Promise<Response> {
                 from_stage_id: row.from_stage_id,
                 to_stage_id: input.params.stage_id,
               },
-              p_metadata: { request_id: requestId, actor_user_id: user.id },
+              p_metadata: { request_id: requestId, actor_user_id: userId },
               p_organization_id: organizationId,
             })
             .then(({ error: emitError }) => {
@@ -500,6 +568,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         .from("crm_leads")
         .update(patch)
         .in("id", visibleIds)
+        .eq("organization_id", organizationId)
         .select("id");
       if (error) return fail("internal_error", error.message, 500, { requestId });
       updatedCount = data?.length ?? 0;
@@ -518,7 +587,8 @@ export async function POST(req: NextRequest): Promise<Response> {
         const { error } = await supabase
           .from("crm_leads")
           .update({ tags: next, updated_at: nowIso })
-          .eq("id", row.id);
+          .eq("id", row.id)
+          .eq("organization_id", organizationId);
         if (error) return fail("internal_error", error.message, 500, { requestId });
         updatedCount += 1;
 
@@ -532,7 +602,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               p_entity_kind: "crm_lead",
               p_entity_id: row.id,
               p_payload: { added_tags: addedTags, tags: next, service_origin: tagServiceOrigin },
-              p_metadata: { request_id: requestId, actor_user_id: user.id },
+              p_metadata: { request_id: requestId, actor_user_id: userId },
               p_organization_id: organizationId,
             })
             .then(({ error: emitError }) => {
@@ -548,6 +618,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         .from("crm_leads")
         .delete()
         .in("id", visibleIds)
+        .eq("organization_id", organizationId)
         .select("id");
       if (error) return fail("internal_error", error.message, 500, { requestId });
       updatedCount = data?.length ?? 0;
@@ -575,7 +646,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         lead_ids: visibleIds,
         params: "params" in input ? input.params : {},
       },
-      p_metadata: { request_id: requestId, actor_user_id: user.id },
+      p_metadata: { request_id: requestId, actor_user_id: userId },
       p_organization_id: organizationId,
     })
     .then(({ error }) => {
@@ -586,7 +657,8 @@ export async function POST(req: NextRequest): Promise<Response> {
   // mantêm o code genérico. Uma única entrada por chamada, com a contagem.
   await audit({
     action: input.action === "assign" ? "leads.bulk_assigned" : "lead.bulk_action",
-    actorUserId: user.id,
+    actorUserId: authz.actor.type === "user" ? authz.actor.id : null,
+    actorApiTokenId: authz.apiTokenId ?? null,
     organizationId,
     resourceType: "crm_lead",
     resourceId: null,

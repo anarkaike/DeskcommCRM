@@ -46,6 +46,7 @@ import { devolverAtendimentoAoAgente } from "@/lib/escalacao/retomada";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { autorizaCron } from "@/lib/auth/cron-auth";
+import { recursoOcioso } from "@/lib/cron/piso-ocioso";
 
 export const dynamic = "force-dynamic";
 
@@ -141,7 +142,7 @@ export async function devolverHandoffsVencidos(
   const { data, error } = await admin
     .from("conversations")
     .select(
-      "id, organization_id, channel_session_id, status, assignee_kind, assigned_to_user_id, assigned_at, bot_silenced_until, last_handoff_at, last_outbound_at, status_changed_at",
+      "id, organization_id, channel_session_id, status, assignee_kind, assigned_to_user_id, assigned_at, bot_silenced_until, last_handoff_at, last_outbound_at, status_changed_at, metadata",
     )
     .in("organization_id", orgIds)
     .in("status", ["open", "pending", "claimed", "ai_handling"])
@@ -164,20 +165,27 @@ export async function devolverHandoffsVencidos(
   for (const { conversa, minutos } of vencidas) {
     const r = await devolverAtendimentoAoAgente(
       { supabase: admin, organizationId: conversa.organization_id, actor: ATOR_DO_CRON, requestId },
-      { conversationId: conversa.id, origem: { automatica: { minutos } } },
+      {
+        conversationId: conversa.id,
+        origem: { automatica: { minutos } },
+        // A decisão foi tomada sobre a leitura da varredura. Quem assumiu ou
+        // respondeu desde então ganha: a função recusa sob o lock da linha.
+        expectedAssignee: conversa.assigned_to_user_id,
+        semSinalHumanoDesde: new Date(agora.getTime() - minutos * 60_000).toISOString(),
+      },
     );
     if (r.ok) {
       devolvidas++;
       continue;
     }
-    // `assignment_conflict` sai de QUATRO pontos de `devolverAtendimentoAoAgente`
-    // e só UM deles é corrida: o UPDATE que casou 0 linhas porque alguém assumiu
-    // entre a leitura e a escrita — a pessoa ganhou, e é o desfecho certo. Os
-    // outros três (release que falhou, erro no UPDATE, erro ao limpar
-    // `force_human`) carregam a mensagem do banco em `detalhe`; a corrida volta
-    // SEM ela. O discriminador é esse, e é o próprio `retomada.ts` que o produz.
+    // `assignment_conflict` SEM `detalhe` é corrida: a conversa mudou de dono ou
+    // recebeu sinal humano depois da varredura (a precondição recusou, ou o
+    // UPDATE casou 0 linhas) — a pessoa ganhou, e é o desfecho certo. Erro de
+    // banco (release que falhou, erro no UPDATE, erro ao limpar `force_human`)
+    // carrega a mensagem em `detalhe`. O discriminador é esse, e é o próprio
+    // `retomada.ts` que o produz.
     //
-    // Engolir os quatro escondia defeito real com cara de disputa benigna: a
+    // Engolir todos escondia defeito real com cara de disputa benigna: a
     // rodada reportava `falhas: 0` sem auditar nada enquanto o banco recusava
     // a devolução.
     if (r.erro === "assignment_conflict" && r.detalhe === undefined) continue;
@@ -208,12 +216,35 @@ export async function devolverHandoffsVencidos(
   return { organizacoes: prazoPorOrg.size, examinadas: conversas.length, devolvidas, falhas };
 }
 
+/**
+ * O QUE RODA DEPOIS DO PORTÃO DO PISO OCIOSO (#3773), na ordem do arquivo.
+ *
+ * O portão abaixo é saída antecipada da ROTA INTEIRA: em instalação ociosa a
+ * rota sai antes de tudo isto. `tests/unit/cron-passa-pelo-portao.test.ts` lê o
+ * AST deste arquivo e reprova quando o que está de fato abaixo do portão diverge
+ * desta lista — passo novo que não roda na instalação parada não pode nascer
+ * sem alguém ver.
+ */
+const PASSOS_DEPOIS_DO_PORTAO = [
+  "let resultado",
+  "try",
+  "if (resultado.devolvidas > 0 || resultado.falhas > 0)",
+  "return",
+] as const;
+void PASSOS_DEPOIS_DO_PORTAO;
+
 async function handle(req: NextRequest): Promise<Response> {
   const requestId = randomUUID();
 
   if (!autorizaCron(req)) {
     return fail("forbidden", "Cron secret missing or invalid.", 403, { requestId });
   }
+
+  // O PISO OCIOSO (#3731): Sem conversa em atendimento humano não há handoff para devolver.
+  // A saída vem antes de qualquer consulta da rodada, e o portão responde de um
+  // retrato em memória (`lib/cron/piso-ocioso.ts`): esta rota ia ao PostgREST a
+  // cada batida só para descobrir que a fila está vazia.
+  if (await recursoOcioso("devolucao_de_handoff")) return ok({ pulado: "recurso_ocioso" }, { requestId });
 
   let resultado: DevolucaoResultado;
   try {

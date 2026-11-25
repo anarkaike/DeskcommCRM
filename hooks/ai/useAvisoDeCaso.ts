@@ -29,7 +29,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiClient } from "@/lib/api/client";
 import { ApiError } from "@/lib/api/types";
-import type { AvisoDaTela, ConexaoParaAviso } from "@/lib/escalacao/estado-do-aviso";
+import type { AvisoDaTela, ConexaoParaAviso, MembroDoAvisoNaTela } from "@/lib/escalacao/estado-do-aviso";
 import type { MotivoDoTeste } from "@/lib/escalacao/aviso-de-teste";
 import type { EntregaNaTela } from "@/lib/escalacao/tela-do-aviso";
 import type { LacoDoAviso } from "@/lib/escalacao/laco-do-aviso";
@@ -42,11 +42,30 @@ export interface ConfigDoAvisoNaTela {
   rotulo: string | null;
   ligado: boolean;
   resposta_whatsapp_habilitada: boolean;
+  /** O modelo aprovado que leva o aviso pela conexão que só manda modelo (9094). */
+  modelo_id?: string | null;
   atualizado_em: string;
+  /** `fixo` (o número da empresa) ou `responsavel` (#3803). */
+  destino_modo: "fixo" | "responsavel";
 }
 
 export interface EstadoDoAviso {
   config: ConfigDoAvisoNaTela | null;
+  /** A equipe e o WhatsApp de cada um (#3803). */
+  equipe: MembroDoAvisoNaTela[];
+  /**
+   * `true` = a leitura dos números da equipe falhou, e `equipe` está vazia por
+   * isso. Opcional porque um pacote de JS antigo no navegador de alguém não tem
+   * o campo — e `undefined` vale como "leu" (#3935).
+   */
+  equipe_indisponivel?: boolean;
+  /**
+   * `true` = a marca "Não enviar aviso de caso" (#4989) não pôde ser lida: a
+   * tela trava os interruptores. Opcional pelo mesmo motivo de cima.
+   */
+  nao_avisar_indisponivel?: boolean;
+  /** Algum membro ativo está com a marca (#4989), medido no servidor. */
+  algum_membro_sem_aviso?: boolean;
   conexoes: ConexaoParaAviso[];
   avisos: AvisoDaTela[];
   pode_ligar: boolean;
@@ -112,6 +131,45 @@ export interface EntradaDoSalvar {
   resposta_whatsapp_habilitada: boolean;
   /** `true` = "eu sei que esse número é um cliente meu, e quero mesmo assim". */
   confirma_contato?: boolean;
+  /** COMO escolher quem recebe (#3803). Ausente = `fixo`, o default do banco. */
+  destino_modo?: "fixo" | "responsavel";
+  /**
+   * O WhatsApp de cada pessoa da equipe. Três estados, e a diferença entre eles
+   * é a diferença entre salvar e apagar (#3935):
+   *
+   * · chave `whatsapp` AUSENTE = "a tela não falou deste membro" → o banco não
+   *   toca no número gravado;
+   * · `null` = "esta pessoa não tem número" → apaga o número gravado;
+   * · string = o número novo.
+   *
+   * A lista inteira omitida também não toca em nada.
+   */
+  responsaveis?: Array<{ user_id: string; whatsapp?: string | null }>;
+  /** `null` = sem modelo (texto livre). Ver a rota. */
+  modelo_id?: string | null;
+  /**
+   * "Não enviar aviso de caso" (#4989): SÓ os membros cujo interruptor a
+   * pessoa mudou. Ausente = não mexe em ninguém.
+   */
+  nao_avisar?: Array<{ user_id: string; nao_avisar: boolean }>;
+}
+
+/**
+ * SÓ a marca "Não enviar aviso de caso" (#4989) — o `PATCH`, que não passa
+ * pelo RPC e por isso não invalida os avisos de resposta já enfileirados. A
+ * tela usa quando a marca é a única coisa que mudou.
+ */
+export function useSalvarMarcasDoAviso() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (entrada: { nao_avisar: Array<{ user_id: string; nao_avisar: boolean }> }) =>
+      apiClient
+        .patch<{ data: EstadoDoAviso }>("/api/v1/ai/cases/alerta", entrada)
+        .then((r) => r.data),
+    onSuccess: (estado) => {
+      qc.setQueryData(CHAVE_DO_AVISO, estado);
+    },
+  });
 }
 
 export function useSalvarAvisoDeCaso() {

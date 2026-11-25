@@ -52,6 +52,8 @@ export function ConexaoCaidaBanner({ caidas }: { caidas: ConexaoCaida[] }) {
   const precisaEscanear = caidas.some((c) => c.status === "SCAN_QR_CODE");
   const provedores = new Set(caidas.map((conexao) => isWhatsAppChannel(conexao.provider) ? "WhatsApp" : "Telegram"));
   const rotuloDoCanal = provedores.size === 1 ? [...provedores][0] : "canais";
+  // O clique em "Escanear o QR" abre a sessão que precisa parear diretamente.
+  const escanearAgora = caidas.find((c) => c.status === "SCAN_QR_CODE");
 
   return (
     <div
@@ -83,7 +85,7 @@ export function ConexaoCaidaBanner({ caidas }: { caidas: ConexaoCaida[] }) {
         </span>
       </div>
       {podeAbrirConexoes ? <Link
-        href="/app/connections"
+        href={precisaEscanear && escanearAgora ? `/app/connections?qr=${escanearAgora.id}` : "/app/connections"}
         className="rounded-md border border-red-400 bg-white/70 px-3 py-1 font-medium max-md:inline-flex max-md:min-h-11 max-md:items-center text-red-950 hover:bg-white dark:border-red-700 dark:bg-red-900/40 dark:text-red-50 dark:hover:bg-red-900/70"
       >
         {precisaEscanear ? t("Escanear o QR") : t("Ver conexões")}

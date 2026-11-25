@@ -62,17 +62,20 @@ describe("o vocabulário do canal é derivado, não copiado", () => {
     }
   });
 
+  // `telegram` é o ÚNICO id que existe nos dois mundos: no catálogo social é a
+  // rede do PARCEIRO (inbox: false); em CANAIS_DE_CONVERSA é o bot nativo do
+  // @BotFather — outro provider, outra ingestão, outro adapter (ver o
+  // comentário de `canais-de-conversa.ts`). A colisão é de NOME no vocabulário
+  // do banco, não uma rede sem inbox virando canal de conversa.
+  const HOMONIMO_DO_BOT_NATIVO = new Set(["telegram"]);
+
   it("nenhuma rede SEM inbox entrou na lista", () => {
-    for (const rede of SOCIAL_NETWORKS.filter((r) => !r.inbox && r.id !== "telegram")) {
+    for (const rede of SOCIAL_NETWORKS.filter((r) => !r.inbox && !HOMONIMO_DO_BOT_NATIVO.has(r.id))) {
       expect(
         (CANAIS_DE_CONVERSA as readonly string[]).includes(rede.id),
         `${rede.id} não tem inbox e mesmo assim é canal de conversa`,
       ).toBe(false);
     }
-  });
-
-  it("Telegram tem Inbox própria mesmo sem ser uma rede de Inbox do Zernio", () => {
-    expect(CANAIS_DE_CONVERSA).toContain("telegram");
   });
 
   it("`whatsapp` está lá — é o membro que não vem do catálogo social", () => {

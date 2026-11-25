@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { invalidarAppDaMeta } from "@/lib/channels/meta/app";
 import { audit } from "@/lib/audit";
+import { respostaParaOperador } from "@/lib/erros/para-operador";
 import { ipDoCliente } from "@/lib/http/ip-do-cliente";
 import { logger } from "@/lib/logger";
 import { escritaDeAdminOuRecusa } from "@/lib/auth/escritaDeAdminOuRecusa";
@@ -111,7 +112,13 @@ async function gravar(
     // tela diria "salvo" e nada seria gravado. É o modo de falha que a issue #144
     // mediu em `organizations`, e a defesa é não escrever a query que o permite.
     .upsert({ id: 1, ...valores }, { onConflict: "id" });
-  if (error) return { ok: false, error: error.message };
+  // #3747: mesma régua da irmã `updateGoogleOAuth` — a tela recebe a frase do
+  // operador e o cru fica no log.
+  if (error) {
+    return respostaParaOperador(error, {
+      contexto: "[meta.app] falha ao gravar o app da instalação",
+    });
+  }
 
   // No MESMO processo que renderiza (na VPS há um processo de app só), então a
   // credencial nova vale na próxima entrega sem esperar o TTL de 30s.
@@ -298,4 +305,41 @@ export async function rotacionarVerifyTokenDaMeta(): Promise<UpdateMetaAppResult
   if (!r.ok) return r;
 
   return { ok: true, verifyToken };
+}
+
+/**
+ * App ID e Configuration ID do Embedded Signup (#4074).
+ *
+ * Separado de `updateMetaApp` de propósito: os dois IDs não são segredo e não
+ * mexem no verify token — juntá-los ao save da chave arriscaria o ramo que gera
+ * token novo. Vazio apaga (desliga o botão em Conexões), porque aqui apagar não
+ * derruba entrega nenhuma: o webhook continua conferido pela chave secreta.
+ */
+const embeddedSchema = z.object({
+  app_id: z.string().trim().regex(/^\d{5,30}$/).or(z.literal("")),
+  config_id: z.string().trim().regex(/^\d{5,30}$/).or(z.literal("")),
+});
+
+export type EmbeddedSignupInput = z.infer<typeof embeddedSchema>;
+
+export async function updateEmbeddedSignupDaMeta(input: EmbeddedSignupInput): Promise<UpdateMetaAppResult> {
+  const escrita = await escritaDeAdminOuRecusa();
+  if (!escrita.ok) return escrita;
+  const { user: authUser } = escrita.ctx;
+
+  const parsed = embeddedSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "embedded_invalido", details: parsed.error.flatten() };
+  }
+
+  return gravar(
+    authUser,
+    {
+      app_id: parsed.data.app_id || null,
+      config_id: parsed.data.config_id || null,
+      updated_by: authUser.id,
+    },
+    "platform_meta_app.updated",
+    { campos: ["app_id", "config_id"], embedded_signup: Boolean(parsed.data.app_id && parsed.data.config_id) },
+  );
 }

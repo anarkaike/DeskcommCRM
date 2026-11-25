@@ -40,9 +40,15 @@ interface Mundo {
   pacing: DecisaoDePacing;
   destinoProprio: boolean;
   anonimizado: boolean;
-  entregas: Map<string, EntregaDeAgendamento & { event_id?: string; dia?: string }>;
+  entregas: Map<string, EntregaDeAgendamento & { event_id?: string; dia?: string; alvo?: string }>;
   enviadas: string[];
+  /** O endereço de cada envio, na mesma ordem de `enviadas`. */
+  para: string[];
+  /** O grupo recusa o envio (saiu do grupo, grupo apagado). */
+  grupoFalha: boolean;
   auditadas: string[];
+  /** O `metadata` de cada auditoria, na mesma ordem de `auditadas`. */
+  auditMeta: Array<Record<string, unknown>>;
   envioFalha: boolean;
   /** O relógio da rodada, visível ao fake da reivindicação. */
   relogio: Date;
@@ -50,7 +56,13 @@ interface Mundo {
 
 function novoMundo(): Mundo {
   return {
-    config: { organization_id: ORG, channel_session_id: CANAL, telefone_destino: "+5531999998888", ligado: true },
+    config: {
+      organization_id: ORG,
+      channel_session_id: CANAL,
+      telefone_destino: "+5531999998888",
+      grupo_destino: null,
+      ligado: true,
+    },
     agendamento: {
       id: AG,
       status: "confirmed",
@@ -67,7 +79,10 @@ function novoMundo(): Mundo {
     anonimizado: false,
     entregas: new Map(),
     enviadas: [],
+    para: [],
+    grupoFalha: false,
     auditadas: [],
+    auditMeta: [],
     envioFalha: false,
     relogio: TARDE,
   };
@@ -77,7 +92,7 @@ let mundo: Mundo;
 let seq = 0;
 
 function db(): AvisoDeAgendamentoDb {
-  const nova = (campos: Partial<EntregaDeAgendamento> & { event_id?: string; dia?: string }) => {
+  const nova = (campos: Partial<EntregaDeAgendamento> & { event_id?: string; dia?: string; alvo?: string }) => {
     seq += 1;
     const agora = new Date().toISOString();
     const e = {
@@ -85,6 +100,7 @@ function db(): AvisoDeAgendamentoDb {
       organization_id: ORG,
       appointment_id: null,
       evento: null,
+      alvo: "numero" as const,
       destino: "+5531999998888",
       status: "pendente",
       tentativas: 0,
@@ -107,7 +123,7 @@ function db(): AvisoDeAgendamentoDb {
     nomeDoServico: async () => "Limpeza",
     nomeDoProfissional: async () => "Ana Lima",
     reivindicaAviso: async (e) => {
-      const ja = [...mundo.entregas.values()].find((x) => x.event_id === e.eventId);
+      const ja = [...mundo.entregas.values()].find((x) => x.event_id === e.eventId && x.alvo === e.alvo);
       if (ja) return { criada: false, entrega: ja };
       return {
         criada: true,
@@ -115,6 +131,7 @@ function db(): AvisoDeAgendamentoDb {
           event_id: e.eventId,
           appointment_id: e.appointmentId,
           evento: e.evento,
+          alvo: e.alvo,
           destino: e.destino,
           status: e.status,
           created_at: mundo.relogio.toISOString(),
@@ -122,10 +139,15 @@ function db(): AvisoDeAgendamentoDb {
       };
     },
     reivindicaResumo: async (e) => {
-      const ja = [...mundo.entregas.values()].find((x) => x.dia === e.dia);
+      const ja = [...mundo.entregas.values()].find((x) => x.dia === e.dia && x.alvo === e.alvo);
       if (ja) return { criada: false, entrega: ja };
-      return { criada: true, entrega: nova({ dia: e.dia, created_at: mundo.relogio.toISOString() }) };
+      return {
+        criada: true,
+        entrega: nova({ dia: e.dia, alvo: e.alvo, destino: e.destino, created_at: mundo.relogio.toISOString() }),
+      };
     },
+    resumoJaReivindicado: async (_o, dia, alvo) =>
+      [...mundo.entregas.values()].some((x) => x.dia === dia && x.alvo === alvo),
     atualizaEntrega: async (_o, id, patch) => {
       const e = mundo.entregas.get(id);
       if (e) Object.assign(e, patch, { updated_at: mundo.relogio.toISOString() });
@@ -141,12 +163,14 @@ function db(): AvisoDeAgendamentoDb {
       }
       return n;
     },
-    houveAvisoEnviado: async (_o, appointmentId) =>
-      [...mundo.entregas.values()].some((e) => e.appointment_id === appointmentId && e.status === "enviado"),
+    houveAvisoEnviado: async (_o, appointmentId, alvo) =>
+      [...mundo.entregas.values()].some(
+        (e) => e.appointment_id === appointmentId && e.alvo === alvo && (e.status === "enviado" || e.status === "no_resumo"),
+      ),
     agendaEntre: async () => (mundo.agendamento ? [mundo.agendamento] : []),
-    represadasParaOResumo: async () =>
+    represadasParaOResumo: async (_o, alvo) =>
       [...mundo.entregas.values()]
-        .filter((e) => e.status === "para_o_resumo")
+        .filter((e) => e.status === "para_o_resumo" && e.alvo === alvo)
         .map((entrega) => ({ entrega, agendamento: mundo.agendamento })),
     marcaNoResumo: async (_o, ids) => {
       for (const id of ids) {
@@ -163,10 +187,11 @@ function deps(agora: Date, origem: "worker" | "request" = "worker"): AvisoDeAgen
     db: db(),
     transporte: {
       configurado: async () => true,
-      resolveDestino: async (_o, _c, tel) => `${tel.replace("+", "")}@c.us`,
-      envia: async (_o, _c, _to, body) => {
-        if (mundo.envioFalha) throw new Error("recusado");
+      resolveDestino: async (_o, _c, tel) => (tel.endsWith("@g.us") ? tel : `${tel.replace("+", "")}@c.us`),
+      envia: async (_o, _c, to, body) => {
+        if (mundo.envioFalha || (mundo.grupoFalha && to.endsWith("@g.us"))) throw new Error("recusado");
         mundo.enviadas.push(body);
+        mundo.para.push(to);
         return { externalId: `x${mundo.enviadas.length}` };
       },
     },
@@ -175,6 +200,7 @@ function deps(agora: Date, origem: "worker" | "request" = "worker"): AvisoDeAgen
     origemDoDreno: () => origem,
     audita: (a) => {
       mundo.auditadas.push(a.action);
+      mundo.auditMeta.push(a.metadata);
     },
   };
 }
@@ -392,5 +418,224 @@ describe("aplicaResumoDoDia", () => {
     const r = await aplicaResumoDoDia(deps(SETE_E_DEZ), ORG);
     expect(r.status).toBe("retry");
     expect(mundo.enviadas).toHaveLength(0);
+  });
+});
+
+describe("aplicaResumoDoDia — só quando houver agendamento (#4988)", () => {
+  it("desligado (o padrão): o dia vazio continua recebendo o resumo com Total: 0", async () => {
+    mundo.agendamento = null;
+    const r = await aplicaResumoDoDia(deps(SETE_E_DEZ), ORG);
+    expect(r.status).toBe("ok");
+    expect(mundo.enviadas).toHaveLength(1);
+    expect(mundo.enviadas[0]).toContain("Nenhum agendamento para hoje.");
+  });
+
+  it("ligado e dia vazio: não envia e não grava entrega do dia", async () => {
+    mundo.config = { ...mundo.config!, resumo_so_com_agendamento: true };
+    mundo.agendamento = null;
+    const r = await aplicaResumoDoDia(deps(SETE_E_DEZ), ORG);
+    expect(r).toEqual({ status: "skipped", detail: "dia_vazio" });
+    expect(mundo.enviadas).toHaveLength(0);
+    // Sem linha: "Últimos avisos" não ganha uma linha por dia quieto.
+    expect(mundo.entregas.size).toBe(0);
+  });
+
+  it("ligado e dia com agendamento: o resumo sai como sempre, e só uma vez", async () => {
+    mundo.config = { ...mundo.config!, resumo_so_com_agendamento: true };
+    const r = await aplicaResumoDoDia(deps(SETE_E_DEZ), ORG);
+    expect(r.status).toBe("ok");
+    expect(mundo.enviadas).toHaveLength(1);
+    expect(mundo.enviadas[0]).toContain("Total: 1");
+
+    const segunda = await aplicaResumoDoDia(deps(new Date(SETE_E_DEZ.getTime() + 10 * 60 * 1000)), ORG);
+    expect(segunda).toEqual({ status: "skipped", detail: "ja_resolvido:enviado" });
+    expect(mundo.enviadas).toHaveLength(1);
+  });
+
+  it("ligado, agenda de hoje vazia, mas houve mudança de madrugada: o resumo sai e conta a mudança", async () => {
+    mundo.config = { ...mundo.config!, resumo_so_com_agendamento: true };
+    // Marcado às 23h para outro dia: entra represado, e a agenda de HOJE fica vazia.
+    await aplicaAvisoDeAgendamento(deps(NOITE), evento("appointment.created", "ev1", NOITE));
+    const d = deps(SETE_E_DEZ);
+    d.db.agendaEntre = async () => [];
+    const r = await aplicaResumoDoDia(d, ORG);
+    expect(r.status).toBe("ok");
+    expect(mundo.enviadas).toHaveLength(1);
+    expect(mundo.enviadas[0]).toContain("Nenhum agendamento para hoje.");
+    expect(mundo.enviadas[0]).toContain("Durante a noite (22h às 7h):");
+    expect([...mundo.entregas.values()].find((e) => e.event_id === "ev1")?.status).toBe("no_resumo");
+  });
+
+  it("ligado: vazio às 7h10, e um horário marcado para hoje antes das 10h faz o resumo sair na rodada seguinte", async () => {
+    mundo.config = { ...mundo.config!, resumo_so_com_agendamento: true };
+    const agendamento = mundo.agendamento;
+    mundo.agendamento = null;
+    expect(await aplicaResumoDoDia(deps(SETE_E_DEZ), ORG)).toEqual({ status: "skipped", detail: "dia_vazio" });
+
+    mundo.agendamento = agendamento;
+    const r = await aplicaResumoDoDia(deps(new Date(SETE_E_DEZ.getTime() + 10 * 60 * 1000)), ORG);
+    expect(r.status).toBe("ok");
+    expect(mundo.enviadas).toHaveLength(1);
+  });
+
+  it("ligado: o resumo já reivindicado que esperava o canal sai mesmo se o dia esvaziou, e não fica pendente", async () => {
+    mundo.config = { ...mundo.config!, resumo_so_com_agendamento: true };
+    mundo.canal = { ...mundo.canal!, status: "STOPPED" };
+    const primeira = await aplicaResumoDoDia(deps(SETE_E_DEZ), ORG);
+    expect(primeira.status).toBe("retry");
+    expect(mundo.entregas.size).toBe(1);
+
+    // O único horário foi cancelado enquanto o canal estava fora do ar.
+    mundo.agendamento = null;
+    mundo.canal = { ...mundo.canal!, status: "WORKING" };
+    const r = await aplicaResumoDoDia(deps(new Date(SETE_E_DEZ.getTime() + 20 * 60 * 1000)), ORG);
+    expect(r.status).toBe("ok");
+    expect(mundo.enviadas).toHaveLength(1);
+    expect([...mundo.entregas.values()][0]?.status).toBe("enviado");
+  });
+
+  it("ligado, com grupo: cada destino decide pelas próprias represadas", async () => {
+    mundo.config = { ...mundo.config!, grupo_destino: "120363000000000001@g.us", resumo_so_com_agendamento: true };
+    const d = deps(SETE_E_DEZ);
+    d.db.agendaEntre = async () => [];
+    // Só o número tem uma represada (o grupo foi ligado depois da madrugada).
+    mundo.entregas.set("r1", {
+      id: "r1",
+      organization_id: ORG,
+      appointment_id: AG,
+      evento: "appointment.created",
+      event_id: "ev-noite",
+      alvo: "numero",
+      destino: "+5531999998888",
+      status: "para_o_resumo",
+      tentativas: 0,
+      created_at: NOITE.toISOString(),
+      updated_at: NOITE.toISOString(),
+    });
+    const r = await aplicaResumoDoDia(d, ORG);
+    expect(r.status).toBe("ok");
+    expect(r.detail).toContain("grupo:dia_vazio");
+    expect(mundo.para).toEqual(["5531999998888@c.us"]);
+  });
+});
+
+describe("aviso também no grupo do WhatsApp", () => {
+  const GRUPO = "120363025246125486@g.us";
+  const NUMERO = "5531999998888@c.us";
+
+  beforeEach(() => {
+    mundo.config = { ...mundo.config!, grupo_destino: GRUPO };
+  });
+
+  it.each(["appointment.created", "appointment.rescheduled"])(
+    "%s: uma entrega para o número e uma para o grupo, cada uma uma vez só",
+    async (tipo) => {
+      const r = await aplicaAvisoDeAgendamento(deps(TARDE), evento(tipo, "ev1", TARDE));
+      expect(r.status).toBe("ok");
+      expect(mundo.para).toEqual([NUMERO, GRUPO]);
+
+      const segunda = await aplicaAvisoDeAgendamento(deps(TARDE), evento(tipo, "ev1", TARDE));
+      expect(segunda.status).toBe("skipped");
+      expect(mundo.para).toHaveLength(2);
+      expect([...mundo.entregas.values()].map((e) => e.alvo)).toEqual(["numero", "grupo"]);
+      expect(mundo.auditMeta.map((m) => m.alvo)).toEqual(["numero", "grupo"]);
+    },
+  );
+
+  it("cancelado depois de avisado: o cancelamento vai para os dois, uma vez cada", async () => {
+    await aplicaAvisoDeAgendamento(deps(TARDE), evento("appointment.created", "ev1", TARDE));
+    mundo.agendamento = { ...mundo.agendamento!, status: "cancelled" };
+    const r = await aplicaAvisoDeAgendamento(deps(TARDE), evento("appointment.cancelled", "ev2", TARDE));
+    await aplicaAvisoDeAgendamento(deps(TARDE), evento("appointment.cancelled", "ev2", TARDE));
+    expect(r.status).toBe("ok");
+    expect(mundo.para).toEqual([NUMERO, GRUPO, NUMERO, GRUPO]);
+    expect(mundo.enviadas[3]).toContain("agendamento cancelado");
+  });
+
+  it("cancelado quando só o número tinha recebido: o grupo não recebe cancelamento de horário que não viu", async () => {
+    mundo.grupoFalha = true;
+    const primeiro = await aplicaAvisoDeAgendamento(deps(TARDE), evento("appointment.created", "ev1", TARDE));
+    expect(primeiro.status).toBe("retry");
+    expect(mundo.para).toEqual([NUMERO]);
+
+    mundo.grupoFalha = false;
+    mundo.agendamento = { ...mundo.agendamento!, status: "cancelled" };
+    const depois = new Date(TARDE.getTime() + 3 * 60 * 1000);
+    const cancel = await aplicaAvisoDeAgendamento(deps(depois), evento("appointment.cancelled", "ev2", depois));
+    expect(cancel.status).toBe("ok");
+    expect(cancel.detail).toContain("grupo:cancelado=1:nada_a_avisar");
+    expect(mundo.para).toEqual([NUMERO, NUMERO]);
+    expect(mundo.enviadas[1]).toContain("agendamento cancelado");
+
+    // A retomada do primeiro evento acha a entrega do grupo cancelada e não envia.
+    await aplicaAvisoDeAgendamento(deps(depois), evento("appointment.created", "ev1", TARDE));
+    expect(mundo.para).toEqual([NUMERO, NUMERO]);
+  });
+
+  it("só o grupo, sem número: o aviso sai para o grupo", async () => {
+    mundo.config = { ...mundo.config!, telefone_destino: null };
+    const r = await aplicaAvisoDeAgendamento(deps(TARDE), evento("appointment.created", "ev1", TARDE));
+    expect(r.status).toBe("ok");
+    expect(mundo.para).toEqual([GRUPO]);
+  });
+
+  it("de madrugada o grupo também espera, e o resumo das 7h sai para os dois uma vez", async () => {
+    const r = await aplicaAvisoDeAgendamento(deps(NOITE), evento("appointment.created", "ev1", NOITE));
+    expect(r.status).toBe("skipped");
+    expect(mundo.para).toHaveLength(0);
+    expect([...mundo.entregas.values()].map((e) => `${e.alvo}:${e.status}`)).toEqual([
+      "numero:para_o_resumo",
+      "grupo:para_o_resumo",
+    ]);
+
+    const resumo = await aplicaResumoDoDia(deps(SETE_E_DEZ), ORG);
+    expect(resumo.status).toBe("ok");
+    expect(mundo.para).toEqual([NUMERO, GRUPO]);
+    for (const corpo of mundo.enviadas) expect(corpo).toContain("Durante a noite (22h às 7h):");
+    expect([...mundo.entregas.values()].filter((e) => e.event_id).map((e) => e.status)).toEqual([
+      "no_resumo",
+      "no_resumo",
+    ]);
+
+    await aplicaResumoDoDia(deps(new Date(SETE_E_DEZ.getTime() + 10 * 60 * 1000)), ORG);
+    expect(mundo.para).toHaveLength(2);
+  });
+
+  it("grupo que recusa o envio adia só o grupo: o número sai, e não sai de novo", async () => {
+    mundo.grupoFalha = true;
+    const r = await aplicaAvisoDeAgendamento(deps(TARDE), evento("appointment.created", "ev1", TARDE));
+    expect(r.status).toBe("retry");
+    expect(mundo.para).toEqual([NUMERO]);
+
+    mundo.grupoFalha = false;
+    const depois = new Date(TARDE.getTime() + 3 * 60 * 1000);
+    const retomada = await aplicaAvisoDeAgendamento(deps(depois), evento("appointment.created", "ev1", TARDE));
+    expect(retomada.status).toBe("ok");
+    expect(mundo.para).toEqual([NUMERO, GRUPO]);
+  });
+
+  it("grupo sem endereço possível cai só ele; o número sai e nada é `error`", async () => {
+    const d = deps(TARDE);
+    const resolve = d.transporte.resolveDestino;
+    d.transporte.resolveDestino = async (o, c, tel) => (tel.endsWith("@g.us") ? null : resolve(o, c, tel));
+    const r = await aplicaAvisoDeAgendamento(d, evento("appointment.created", "ev1", TARDE));
+    expect(r.status).toBe("ok");
+    expect(r.detail).toContain("grupo:falhou:destino_invalido");
+    expect(mundo.para).toEqual([NUMERO]);
+    // A falha do grupo se distingue da do número no registro.
+    expect(mundo.auditadas).toEqual(["agenda.aviso_whatsapp_enviado", "agenda.aviso_whatsapp_falhou"]);
+    expect(mundo.auditMeta.map((m) => m.alvo)).toEqual(["numero", "grupo"]);
+  });
+
+  it("leitura que lança no caminho do grupo vira retry do grupo, nunca `error`", async () => {
+    const d = deps(TARDE);
+    const reivindica = d.db.reivindicaAviso;
+    d.db.reivindicaAviso = async (e) => {
+      if (e.alvo === "grupo") throw new Error("banco fora");
+      return reivindica(e);
+    };
+    const r = await aplicaAvisoDeAgendamento(d, evento("appointment.created", "ev1", TARDE));
+    expect(r.status).toBe("retry");
+    expect(mundo.para).toEqual([NUMERO]);
   });
 });

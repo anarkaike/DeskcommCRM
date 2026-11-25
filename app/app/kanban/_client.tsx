@@ -6,6 +6,7 @@ import { useActiveOrg } from "@/hooks/auth/AuthProvider";
 import { useT } from "@/hooks/i18n/useT";
 
 import { ImportarLeads } from "./_components/ImportarLeads";
+import { TransferirNegocios } from "./_transferir-negocios";
 import { EmptyPipeline } from "@/components/empty";
 import {
   AlertDialog,
@@ -111,7 +112,12 @@ export function FunisClient({
    * Mostrar o controle com a regra desligada seria oferecer o que o motor
    * ignora.
    */
-  const clientesLigado = useActiveOrg()?.cliente_pela_agenda === true;
+  // As DUAS regras de "é cliente" mantêm o funil de clientes em uso: a da agenda
+  // (migration 0262) e a da venda (#3644). Com qualquer uma ligada, marcar um
+  // funil como de clientes deixa de ser um controle decorativo.
+  const orgAtiva = useActiveOrg();
+  const clientesLigado =
+    orgAtiva?.cliente_pela_agenda === true || orgAtiva?.cliente_pela_venda === true;
   /**
    * ⚠️ A LISTA VEM DO SERVIDOR E É ATUALIZADA PELO CORPO DA RESPOSTA.
    *
@@ -291,7 +297,7 @@ export function FunisClient({
         <>
           <p className="text-xs text-muted-foreground" data-testid="arquivados-explicacao">
             {t(
-              "Funil arquivado não aparece na lista nem recebe negócio novo. Traga de volta para usar outra vez, ou exclua de vez para liberar o nome.",
+              "Funil arquivado não aparece na lista nem recebe negócio novo. Abrir é leitura: nada muda até você tirar do arquivo. Traga de volta para usar outra vez, ou exclua de vez para liberar o nome.",
             )}
           </p>
           <ul
@@ -308,9 +314,22 @@ export function FunisClient({
                   data-testid={`arquivado-${funil.id}`}
                 >
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                    <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
+                    {/*
+                      LINK, e não `<span>` (#1298): decidir entre tirar do arquivo
+                      e excluir de vez exige OLHAR o que ficou dentro — e até aqui
+                      a única porta era desarquivar, abrir e arquivar de novo (três
+                      escritas e duas linhas de auditoria para uma leitura; a
+                      segunda escrita é a que se esquece). O destino é o MESMO da
+                      lista viva, e abrir não muda o estado do funil.
+                    */}
+                    <Link
+                      href={`/app/pipelines/${funil.id}`}
+                      className="min-h-6 min-w-0 flex-1 truncate py-0.5 text-sm text-muted-foreground underline-offset-2 hover:text-text hover:underline"
+                      aria-label={`${t("Abrir")} «${funil.name}» ${t("sem tirar do arquivo")}`}
+                      data-testid={`abrir-arquivado-${funil.id}`}
+                    >
                       {funil.name}
-                    </span>
+                    </Link>
                     <span className="shrink-0 text-xs text-muted-foreground">/{funil.slug}</span>
                     <div className="flex shrink-0 flex-wrap gap-1">
                       <Button
@@ -372,10 +391,25 @@ export function FunisClient({
                         </AlertDialogTitle>
                         <AlertDialogDescription>
                           {t(
-                            "Isso não tem volta: o funil e as etapas dele somem. Se ele já recebeu negócio, a exclusão é recusada e ele continua arquivado.",
+                            "Isso não tem volta: o funil e as etapas dele somem. Se ele já recebeu negócio, escolha abaixo o que fazer com os negócios — ou tire o funil do arquivo e resolva antes.",
                           )}
                         </AlertDialogDescription>
                       </AlertDialogHeader>
+
+                      {/* #4802 (item 3): a escolha sobre os negócios aparece AQUI,
+                          onde a exclusão acontece — e não numa tela à parte. Sem
+                          ela, a resposta era sempre "recusado", e o caminho era
+                          desarquivar, esvaziar card a card e arquivar de novo. */}
+                      <TransferirNegocios
+                        funilId={funil.id}
+                        funilNome={funil.name}
+                        destinos={funis.map((f) => ({ id: f.id, name: f.name }))}
+                        onConcluir={({ restantes }) => {
+                          // Doc 400 (B): encerrado não muda de funil. Sobrou
+                          // algum, a exclusão espera o "remover".
+                          if (restantes === 0) excluirDoArquivo(funil.id);
+                        }}
+                      />
 
                       {excluindoAqui?.erro && (
                         // A recusa da rota, INTEIRA: é ela que diz quantos
@@ -679,6 +713,15 @@ export function FunisClient({
                       )}
                     </p>
                   )}
+                  {/* #4802 (item 3): a contagem real e as escolhas. Só aparece com
+                      negócio vinculado; o botão "Arquivar" abaixo continua sendo
+                      arquivar SEM transferir, que a issue manda manter. */}
+                  <TransferirNegocios
+                    funilId={funil.id}
+                    funilNome={funil.name}
+                    destinos={funis.filter((f) => f.id !== funil.id).map((f) => ({ id: f.id, name: f.name }))}
+                    onConcluir={() => pedirArquivamento(funil.id, false)}
+                  />
                   <div className="flex flex-wrap gap-2">
                     <Button
                       size="sm"

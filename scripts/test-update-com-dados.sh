@@ -77,6 +77,7 @@ trap cleanup EXIT
 echo "==> subindo $IMAGE como $CONTAINER (porta escolhida pelo daemon)"
 docker run -d --rm --name "$CONTAINER" -p "127.0.0.1::5432" \
   --label "deskcomm.harness=update-com-dados" \
+  --label "deskcomm.worktree=$ROOT" \
   -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres "$IMAGE" >/dev/null
 
 # `pg_isready` e `psql` sem `-h` mentem aqui: o initdb sobe um servidor
@@ -213,11 +214,13 @@ on conflict do nothing;
 
 -- #1998: o mesmo model_id em dois provedores e sem linha em ai_pricing. O
 -- backfill 0068 roda ANTES do seed da Requesty, então depois do install
--- 'openai/gpt-4o-mini' existe só sob requesty e sem preço. A re-aplicação
+-- 'anthropic/claude-haiku-4-5' existe só sob requesty e sem preço. A re-aplicação
 -- abaixo tem de criar UMA linha de preço, e não quebrar em ai_pricing_pkey.
+-- (Até a 9475 o veículo era 'openai/gpt-4o-mini'; a AI/ML API passou a gravar o
+-- preço dele no install, e o caso deixou de existir para esse id.)
 insert into public.ai_models
   (provider, model_id, display_name, input_price_per_million_cents, output_price_per_million_cents)
-values ('openrouter', 'openai/gpt-4o-mini', 'GPT-4o mini (OpenRouter)', 14, 60)
+values ('openrouter', 'anthropic/claude-haiku-4-5', 'Claude Haiku 4.5 (OpenRouter)', 99, 500)
 on conflict (provider, model_id) do nothing;
 SQL
 linhas=$(docker exec "$CONTAINER" psql -U postgres -d postgres -tAc "
@@ -299,14 +302,24 @@ fi
 # update abaixo passaria verde sem exercitar o backfill 0068.
 caso_1998=$(docker exec "$CONTAINER" psql -U postgres -d postgres -tAc "
   select (select count(*) from public.ai_models
-           where model_id = 'openai/gpt-4o-mini' and deprecated_at is null)
+           where model_id = 'anthropic/claude-haiku-4-5' and deprecated_at is null)
     || '/' || (select count(*) from public.ai_pricing
-           where model = 'openai/gpt-4o-mini' and superseded_at is null);")
+           where model = 'anthropic/claude-haiku-4-5' and superseded_at is null);")
 [ "$caso_1998" = "2/0" ] || {
   echo "FATAL: o caso do #1998 não foi plantado (modelos/preços = $caso_1998, esperado 2/0)." >&2
   echo "       Sem ele, o update não exercita o backfill 0068 com model_id em dois provedores." >&2
   exit 1
 }
+
+# O banco do operador não é só o nosso schema. Uma view de relatório sobre o
+# campo calculado da Inbox fazia os `drop function` do baseline falharem, e o
+# update da v1.119.0 parava em "cannot change name of input parameter c" numa
+# instalação real. Plantada aqui, ela vale para toda passada seguinte.
+echo "==> o operador tem uma view própria sobre comando_da_conversa"
+psql_stop <<'SQL' >/dev/null
+create view public.relatorio_do_operador as
+  select c.id, public.comando_da_conversa(c) as comando from public.conversations c;
+SQL
 
 echo "==> UPDATE: re-aplicando baseline.sql SOBRE OS DADOS, com ON_ERROR_STOP=1"
 # O OID é lido ANTES da passada que o aceite da issue #1086 mede: este banco já
@@ -322,13 +335,53 @@ psql_stop < "$BASELINE" >/dev/null
 echo "    ✓ update ok — nenhuma constraint quebrou sobre dado existente"
 preco_1998=$(docker exec "$CONTAINER" psql -U postgres -d postgres -tAc "
   select count(*) || '/' || coalesce(min(prompt_cents_per_million_tokens)::int::text, '-')
-    from public.ai_pricing where model = 'openai/gpt-4o-mini' and superseded_at is null;")
-[ "$preco_1998" = "1/14" ] || {
-  echo "FATAL: o backfill 0068 deixou $preco_1998 (linhas/menor preço) para openai/gpt-4o-mini;" >&2
-  echo "       o esperado é 1/14: UMA linha, com o menor preço de entrada (#1998)." >&2
+    from public.ai_pricing where model = 'anthropic/claude-haiku-4-5' and superseded_at is null;")
+[ "$preco_1998" = "1/99" ] || {
+  echo "FATAL: o backfill 0068 deixou $preco_1998 (linhas/menor preço) para anthropic/claude-haiku-4-5;" >&2
+  echo "       o esperado é 1/99: UMA linha, com o menor preço de entrada (#1998)." >&2
   exit 1
 }
 echo "    ✓ #1998: model_id em dois provedores virou UMA linha de preço ($preco_1998)"
+
+forma_do_comando() {
+  docker exec "$CONTAINER" psql -U postgres -d postgres -tAc "
+    select coalesce(array_to_string(proargnames, ','), '(sem nome)') || ' definer=' || prosecdef
+      from pg_proc where oid = 'public.comando_da_conversa(public.conversations)'::regprocedure;"
+}
+[ "$(forma_do_comando)" = "(sem nome) definer=true" ] || {
+  echo "FATAL: depois do update, comando_da_conversa ficou '$(forma_do_comando)'; o esperado é '(sem nome) definer=true'." >&2
+  exit 1
+}
+echo "    ✓ a view do operador não travou o update, e o campo calculado segue sem nome e definer"
+
+echo "==> banco preso com o parâmetro 'c' (update anterior interrompido) tem de se curar"
+psql_stop <<'SQL' >/dev/null
+drop view public.relatorio_do_operador;
+drop function public.comando_da_conversa(public.conversations);
+create function public.comando_da_conversa(c public.conversations) returns text
+  language sql stable as $$ select 'automatico'::text $$;
+create view public.relatorio_do_operador as
+  select c.id, public.comando_da_conversa(c) as comando from public.conversations c;
+SQL
+# Com a view ainda lá, a cura não tem como tirar o nome. Quem está fora da
+# comunidade só vê as linhas ERROR que o update.sh lista na tela, então é nelas
+# que o nome da view e o que fazer têm de estar.
+tela=$(docker exec -i "$CONTAINER" psql -U postgres -d postgres -q -f - < "$BASELINE" 2>&1 | grep 'ERROR' || true)
+grep 'relatorio_do_operador' <<<"$tela" | grep -q 'remova-os' || {
+  echo "FATAL: preso com 'c' e com a view do operador, nenhuma linha ERROR nomeia a view e diz o que fazer." >&2
+  printf '%s\n' "$tela" | head -5 >&2
+  exit 1
+}
+echo "    ✓ com a view, a linha de erro da tela nomeia a view e diz o que fazer"
+psql_stop <<'SQL' >/dev/null
+drop view public.relatorio_do_operador;
+SQL
+psql_stop < "$BASELINE" >/dev/null
+[ "$(forma_do_comando)" = "(sem nome) definer=true" ] || {
+  echo "FATAL: o banco preso com 'c' não se curou: comando_da_conversa ficou '$(forma_do_comando)'." >&2
+  exit 1
+}
+echo "    ✓ curado: sem nome e definer"
 
 echo "==> a view de ocupação não pode ser derrubada nem recriada pelo update (issue #1086)"
 oid_depois=$(oid_da_view)

@@ -18,12 +18,35 @@ import { getConfig, SUBSCRIBED_EVENTS, eventToSlug } from "@/lib/nuvemshop/confi
 import { exchangeCodeForToken } from "@/lib/nuvemshop/oauth";
 import { NuvemshopApiClient } from "@/lib/nuvemshop/api-client";
 import { verifyState } from "@/lib/nuvemshop/state";
+import { comIdDaRequisicao } from "@/lib/api/wrappers";
+import { respostaDePonte } from "@/lib/auth/ponte-de-volta";
+import { marcaDaSaida } from "@/lib/branding/saida";
 
 export const dynamic = "force-dynamic";
 
-function redirectTo(path: string): NextResponse {
+/**
+ * A volta para `/app/integrations/nuvemshop` — por PONTE, não por 302 (#4335).
+ *
+ * O navegador chega aqui vindo da Nuvemshop: a cadeia de navegação começou em
+ * outro site, e o cookie de sessão é `sameSite: "strict"` — ele não viaja num
+ * initiator cross-site. Um 302 daqui para uma tela do `/app` continua a mesma
+ * cadeia, o `proxy.ts` não enxerga usuário e a pessoa cai em `/login` com a
+ * integração JÁ conectada. Mesma classe da #1646; mesmo conserto: documento
+ * same-origin com 200, cujo `location.replace` é disparado por nós.
+ */
+async function voltarParaATela(path: string, req: NextRequest): Promise<NextResponse> {
   const base = env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-  return NextResponse.redirect(new URL(path, base));
+  const destino = new URL(path, base);
+  const marca = await marcaDaSaida(null);
+  const ponte = respostaDePonte(
+    `${destino.pathname}${destino.search}`,
+    marca.nome,
+    "Voltando para a sua integração…",
+  );
+  return comIdDaRequisicao(
+    new NextResponse(ponte.body, { status: ponte.status, headers: ponte.headers }),
+    req,
+  );
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
@@ -33,7 +56,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   const cfg = getConfig();
   if (!cfg) {
-    return redirectTo(`/app/integrations/nuvemshop?error=not_configured`);
+    return await voltarParaATela(`/app/integrations/nuvemshop?error=not_configured`, req);
   }
 
   const state = verifyState(stateParam);
@@ -42,7 +65,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       action: "nuvemshop.oauth_failed",
       metadata: { reason: "invalid_state" },
     });
-    return redirectTo(`/app/integrations/nuvemshop?error=invalid_state`);
+    return await voltarParaATela(`/app/integrations/nuvemshop?error=invalid_state`, req);
   }
 
   if (!code) {
@@ -51,10 +74,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       organizationId: state.orgId,
       metadata: { reason: "missing_code" },
     });
-    return redirectTo(`/app/integrations/nuvemshop?error=missing_code`);
+    return await voltarParaATela(`/app/integrations/nuvemshop?error=missing_code`, req);
   }
 
-  if (!(await supportCallbackWriteAllowed(state.orgId, state.userId, state.authSessionId))) return redirectTo("/app/integrations/nuvemshop?error=invalid_state");
+  if (!(await supportCallbackWriteAllowed(state.orgId, state.userId, state.authSessionId))) return await voltarParaATela("/app/integrations/nuvemshop?error=invalid_state", req);
 
   const admin = createAdminClient();
 
@@ -77,7 +100,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       organizationId: state.orgId,
       metadata: { reason: erroDoNonce.code === "23505" ? "state_reused" : "nonce_unavailable" },
     });
-    return redirectTo(`/app/integrations/nuvemshop?error=invalid_state`);
+    return await voltarParaATela(`/app/integrations/nuvemshop?error=invalid_state`, req);
   }
 
   // Exchange code for access token.
@@ -88,7 +111,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       organizationId: state.orgId,
       metadata: { reason: tokenRes.error, status: tokenRes.status ?? null },
     });
-    return redirectTo(`/app/integrations/nuvemshop?error=${tokenRes.error}`);
+    return await voltarParaATela(`/app/integrations/nuvemshop?error=${tokenRes.error}`, req);
   }
 
   const { accessToken, scope, storeId } = tokenRes;
@@ -105,7 +128,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       organizationId: state.orgId,
       metadata: { reason: "encrypt_failed", error: encrypted.error?.message ?? "no_data" },
     });
-    return redirectTo(`/app/integrations/nuvemshop?error=encrypt_failed`);
+    return await voltarParaATela(`/app/integrations/nuvemshop?error=encrypt_failed`, req);
   }
   const webhookSecretEnc = await admin.rpc("fn_encrypt_oauth", {
     plaintext: cfg.clientSecret,
@@ -119,7 +142,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         error: webhookSecretEnc.error?.message ?? "no_data",
       },
     });
-    return redirectTo(`/app/integrations/nuvemshop?error=encrypt_failed`);
+    return await voltarParaATela(`/app/integrations/nuvemshop?error=encrypt_failed`, req);
   }
 
   const webhookPathToken = randomBytes(24).toString("hex");
@@ -150,7 +173,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       organizationId: state.orgId,
       metadata: { reason: "db_upsert_failed", error: upsertErr.message },
     });
-    return redirectTo(`/app/integrations/nuvemshop?error=db_upsert_failed`);
+    return await voltarParaATela(`/app/integrations/nuvemshop?error=db_upsert_failed`, req);
   }
 
   // Register the 8 webhooks. Best-effort: log failures but don't roll back.
@@ -212,5 +235,5 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     },
   });
 
-  return redirectTo(`/app/integrations/nuvemshop?ok=1`);
+  return await voltarParaATela(`/app/integrations/nuvemshop?ok=1`, req);
 }

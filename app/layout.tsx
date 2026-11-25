@@ -26,6 +26,8 @@ import { logger } from "@/lib/logger";
 import { ThemeProvider } from "@/lib/theme";
 import { Providers } from "./providers";
 import { PublicEnvScript } from "./public-env-script";
+import { EstiloDoTemaDaPlataforma } from "./tema-da-plataforma";
+import { VARIAVEIS_DAS_FONTES_DA_APARENCIA } from "./fontes-da-aparencia";
 import "./globals.css";
 
 // Fontes versionadas em app/fonts/ (origem e licença no README de lá): o
@@ -336,11 +338,17 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       lang="pt-BR"
       data-theme="light"
       suppressHydrationWarning
-      className={`${atkinson.variable} ${plexMono.variable}`}
+      // As famílias da tela Aparência só DECLARAM custom properties aqui
+      // (`preload: false`): o arquivo baixa quando uma organização as usa.
+      className={`${atkinson.variable} ${plexMono.variable} ${VARIAVEIS_DAS_FONTES_DA_APARENCIA}`}
     >
       <head>
         {/* Primeiro de tudo: a cor da instalação, antes do CSS e do script de tema. */}
         <EstiloDaMarca />
+        {/* O tema da plataforma (#3790) entre a marca e o CSS personalizado: a
+            marca dá a cor de ação, o tema as superfícies, e o CSS do operador
+            fala por último. Ver `app/tema-da-plataforma.tsx`. */}
+        <EstiloDoTemaDaPlataforma />
         <EstiloCssPersonalizado />
         {/* Config pública do Supabase + marca resolvida, em runtime (imagem
             genérica self-host). */}
@@ -358,9 +366,27 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       */}
       <body className="min-h-dvh bg-bg font-sans text-text antialiased">
         <Providers>
-          <MarcaDosClientComponents>
-            <ThemeProvider>{children}</ThemeProvider>
-          </MarcaDosClientComponents>
+          {/*
+            A REDE CONTRA ROLAGEM LATERAL DE TODA PÁGINA mora neste `div`, e
+            não no `<html>` nem no `<body>` (#5215, medido na tela).
+
+            No `<html>`, qualquer overflow faz o `<body>` virar contêiner de
+            rolagem; quando o Radix trava a rolagem (menu do perfil, seletor
+            de organização, busca), a página salta e a barra lateral sticky
+            some para cima. Só no `<body>`, o valor passa para a JANELA como
+            `hidden`: a roda não rola, mas foco num campo fora da tela empurra
+            a página para o lado (1405 px no /login a 390, sem volta).
+
+            `clip` num elemento comum corta sem criar contêiner de rolagem:
+            o que sobra não entra na largura do documento, nada rola, e o
+            sticky da barra lateral segue valendo. Os portais do Radix vivem
+            fora daqui, no `<body>`, e não são cortados.
+          */}
+          <div className="overflow-x-clip">
+            <MarcaDosClientComponents>
+              <ThemeProvider>{children}</ThemeProvider>
+            </MarcaDosClientComponents>
+          </div>
           {/*
             O AVISO VAI PARA BAIXO, e isto foi medido na tela.
 
