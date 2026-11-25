@@ -865,7 +865,7 @@ const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
   "api.telegram.org": {
     categoria: "FORNECEDOR",
     motivo:
-      "Bot API oficial do Telegram usada pelo transporte do canal para validar bots, consultar webhook e enviar mensagens; o token pertence à organização e o domínio é controlado pelo Telegram.",
+      "Endpoint oficial da Bot API do Telegram (canal nativo do #3440), usado para validar bots, consultar e registrar webhooks, e enviar mensagens. O token pertence à organização; a URL é fixa por padrão com override TELEGRAM_API_BASE_URL para testes locais.",
   },
   // ── amostra de FORMATO: chega à tela como prévia, não é destino de chamada ──
   "loja.exemplo": {
@@ -1005,11 +1005,6 @@ const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
     categoria: "FORNECEDOR",
     motivo:
       "endpoint da Graph API do WhatsApp Cloud — 6 arquivos: envio de template, sincronização de modelos, validação de credencial, conversões e insights. É contrato da Meta, não escolha nossa.",
-  },
-  "api.telegram.org": {
-    categoria: "FORNECEDOR",
-    motivo:
-      "endpoint da Bot API do Telegram (canal nativo do #3440): é para onde `lib/channels/bot/credentials.ts` envia `sendMessage` e registra o webhook. Endpoint padrão fixo de propósito — instalação que não configura nada tem de funcionar —, com override por TELEGRAM_API_BASE_URL para a prova em tela.",
   },
   "www.googleapis.com": {
     categoria: "FORNECEDOR",

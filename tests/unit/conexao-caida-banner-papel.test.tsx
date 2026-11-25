@@ -50,8 +50,8 @@ describe.each(["pt-BR", "es"] as const)("alerta de conexão em %s", locale => {
     // Entre várias caídas, o deep-link aponta para a que PRECISA de QR — a que
     // só caiu continua na lista, onde a ficha dela diz o que aconteceu.
     mounted.rerender(view(role, locale, who, [
-      { id: "channel", apelido: "Vendas", status: "FAILED" },
-      { id: "channel-2", apelido: "Suporte", status: "SCAN_QR_CODE" },
+      { id: "channel", apelido: "Vendas", status: "FAILED", provider: "waha" },
+      { id: "channel-2", apelido: "Suporte", status: "SCAN_QR_CODE", provider: "waha" },
     ]));
     expect(within(screen.getByRole("alert")).getByRole("link", { name: copy[locale].qr })).toHaveAttribute("href", "/app/connections?qr=channel-2");
   });
