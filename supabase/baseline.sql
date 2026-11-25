@@ -9636,28 +9636,6 @@ $x$;
 do $x$
 begin
 alter table public.channel_sessions
-  drop constraint if exists channel_sessions_provider_ref_check;
-
-alter table public.channel_sessions
-  add constraint channel_sessions_provider_ref_check check (
-    (provider = 'waha'       and waha_session_name    is not null) or
-    (provider = 'meta_cloud' and meta_phone_number_id is not null) or
-    -- 'zernio_social' (migration 0368) endereça pelo MESMO `zernio_account_id`:
-    -- é o mesmo intermediário, com outra superfície de canal.
-    (provider in ('zernio', 'zernio_social') and zernio_account_id is not null) or
-    (provider = 'wacalls'    and wacalls_session_id    is not null) or
-    (provider = 'datafy'     and datafy_phone_number_id is not null) or
-    -- Bot do Telegram (migration 9342): endereça pelo id do robô.
-    (provider = 'telegram'   and telegram_bot_id      is not null) or
-    -- Chat no site (9471): endereça pela chave pública do widget.
-    (provider = 'webchat'    and webchat_public_key   is not null)
-  );
-end
-$x$;
-
-do $x$
-begin
-alter table public.channel_sessions
   drop constraint if exists channel_sessions_webchat_allowed_origins_check;
 
 alter table public.channel_sessions
@@ -85209,83 +85187,6 @@ grant select on table public.storage_redaction_queue to authenticated;
 
 
 
--- ---- VARREDURA anon: função nova nasce exposta em quem ATUALIZA (migration 0116) ----
---
--- ⚠️ DE PROPÓSITO, NENHUMA FUNÇÃO É CRIADA DEPOIS DESTE BLOCO. Apêndice que cria
--- função entra ANTES dele — quem o empurrar para o meio desarma a cura para tudo
--- que vier depois. (O último bloco do arquivo é a chamada das travas do suporte,
--- migration 0274, que não cria função.)
--- Vigiado por `tests/unit/varredura-anon-e-o-ultimo-bloco.test.ts`.
---
--- A 0108 revogou anon numa LISTA de 8 funções, medida num banco instalado do
--- ZERO. Quem ATUALIZA tem outro estado: o `ALTER DEFAULT PRIVILEGES ... GRANT
--- ALL ON FUNCTIONS TO anon` do corpo deste arquivo grava uma entrada em
--- `pg_default_acl` que fica no catálogo PARA SEMPRE, e a partir daí toda função
--- criada em `public` nasce com EXECUTE para anon — inclusive as deste apêndice.
---
--- Medido numa VPS real (2026-08-07), comparando com o que um install fresco
--- produz: 6 definer expostas a anon e 5 a authenticated, entre elas
--- `fn_decrypt_oauth` — alcançável pela anon key, que vai para o browser.
---
--- Lista conserta o estoque e reabre no próximo `create function`. Esta varredura
--- é auto-curativa e roda DEPOIS de tudo que cria função, então cura no mesmo run
--- em que o defeito nasceria. Desfazer o ALTER DEFAULT PRIVILEGES não serve: ele
--- vem do `pg_dump` do Supabase e é reescrito a cada re-aplicação.
---
--- As duas origens de EXECUTE (a mesma lição da 0108): grant DIRETO a anon, que
--- `revoke from public` não remove; e grant a PUBLIC, do qual anon HERDA, que
--- `revoke from anon` não remove. O privilégio EFETIVO de authenticated e
--- service_role é medido ANTES e devolvido depois — tira anon sem tirar leitura.
-do $$
-declare
-  f record;
-  tinha_auth boolean;
-  tinha_service boolean;
-begin
-  if to_regrole('anon') is null then
-    return;
-  end if;
-
-  for f in
-    select p.oid, p.oid::regprocedure as assinatura
-      from pg_proc p
-      join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public'
-       and p.prosecdef
-  loop
-    tinha_auth := to_regrole('authenticated') is not null
-                  and has_function_privilege('authenticated', f.oid, 'EXECUTE');
-    tinha_service := to_regrole('service_role') is not null
-                     and has_function_privilege('service_role', f.oid, 'EXECUTE');
-
-    execute format('revoke execute on function %s from public, anon', f.assinatura);
-
-    if tinha_auth then
-      execute format('grant execute on function %s to authenticated', f.assinatura);
-    end if;
-    if tinha_service then
-      execute format('grant execute on function %s to service_role', f.assinatura);
-    end if;
-  end loop;
-end $$;
-
--- regra 2 (authenticated): as 5 que o update abriu e o install não abre. Aqui não
--- cabe varredura — `authenticated` PRECISA de EXECUTE nos helpers de RLS e em
--- `retrieve_top_k_chunks` (num install fresco ele tem). É julgamento por função,
--- e o alvo de cada linha é o valor que um install fresco produz, medido.
-revoke execute on function public.fn_audit_log_row() from authenticated;
-revoke execute on function public.fn_decrypt_oauth(bytea) from authenticated;
-revoke execute on function public.fn_encrypt_oauth(text) from authenticated;
-revoke execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) from authenticated;
-revoke execute on function public.fn_update_budget_consumption() from authenticated;
-
-grant execute on function public.fn_audit_log_row() to service_role;
-grant execute on function public.fn_decrypt_oauth(bytea) to service_role;
-grant execute on function public.fn_encrypt_oauth(text) to service_role;
-grant execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) to service_role;
-grant execute on function public.fn_update_budget_consumption() to service_role;
-
-
 -- ---- Criador provisório sai na entrega (migration 0237) ----
 -- As duas funções acima já saíram com a regra; aqui fica só a COLUNA, que é
 -- o dado que faltava. Idempotente. NÃO há expurgo retroativo, de propósito:
@@ -91097,7 +90998,7 @@ alter table public.telegram_bot_connections
   drop constraint if exists telegram_bot_connections_status_check;
 alter table public.telegram_bot_connections
   add constraint telegram_bot_connections_status_check
-  check (status in ('draft', 'configured', 'active', 'paused', 'disconnected', 'error'));
+  check (status in ('draft', 'configured', 'active', 'paused', 'disconnected', 'error', 'deleted'));
 
 create unique index if not exists telegram_bot_connections_webhook_path_unique
   on public.telegram_bot_connections (webhook_path_token)
@@ -91162,27 +91063,12 @@ alter table public.telegram_webhook_updates drop constraint if exists telegram_w
 alter table public.telegram_webhook_updates add constraint telegram_webhook_updates_status_check
   check (status in ('pending', 'processing', 'processed', 'ignored', 'error', 'deferred'));
 alter table public.telegram_bot_connections add column if not exists deleted_at timestamptz;
-alter table public.telegram_bot_connections drop constraint if exists telegram_bot_connections_status_check;
-alter table public.telegram_bot_connections add constraint telegram_bot_connections_status_check
-  check (status in ('draft', 'configured', 'active', 'paused', 'disconnected', 'error', 'deleted'));
 drop index if exists public.telegram_bot_connections_bot_global_unique;
 create unique index if not exists telegram_bot_connections_bot_global_unique
   on public.telegram_bot_connections (telegram_bot_id) where deleted_at is null;
 drop index if exists public.telegram_bot_connections_org_bot_unique;
 create unique index if not exists telegram_bot_connections_org_bot_unique
   on public.telegram_bot_connections (organization_id, telegram_bot_id) where deleted_at is null;
-alter table public.channel_sessions drop constraint if exists channel_sessions_provider_check;
-alter table public.channel_sessions add constraint channel_sessions_provider_check
-  check (provider in ('waha', 'meta_cloud', 'zernio', 'zernio_social', 'wacalls', 'datafy', 'telegram'));
-alter table public.channel_sessions drop constraint if exists channel_sessions_provider_ref_check;
-alter table public.channel_sessions add constraint channel_sessions_provider_ref_check check (
-  (provider = 'waha' and waha_session_name is not null) or
-  (provider = 'meta_cloud' and meta_phone_number_id is not null) or
-  (provider in ('zernio', 'zernio_social') and zernio_account_id is not null) or
-  (provider = 'wacalls' and wacalls_session_id is not null) or
-  (provider = 'datafy' and datafy_phone_number_id is not null) or
-  (provider = 'telegram' and telegram_bot_connection_id is not null and phone_number is null)
-);
 create unique index if not exists channel_sessions_telegram_connection_unique
   on public.channel_sessions (telegram_bot_connection_id) where telegram_bot_connection_id is not null;
 do $$ begin
@@ -91190,10 +91076,6 @@ do $$ begin
     foreign key (organization_id, telegram_bot_connection_id)
     references public.telegram_bot_connections (organization_id, id) on delete restrict;
 exception when duplicate_object then null; end $$;
-
-alter table public.conversations drop constraint if exists conversations_channel_check;
-alter table public.conversations add constraint conversations_channel_check
-  check (channel in ('whatsapp', 'instagram', 'facebook', 'telegram'));
 
 create or replace function public.fn_upsert_telegram_contact(
   p_org uuid, p_identity text, p_display_name text
@@ -91499,8 +91381,7 @@ revoke select on public.telegram_bot_surface_capabilities from anon, authenticat
 grant select (organization_id, connection_id, surface, capability)
   on public.telegram_bot_surface_capabilities to authenticated;
 
-drop policy if exists telegram_bot_surface_capabilities_select_tenant
-  on public.telegram_bot_surface_capabilities;
+drop policy if exists telegram_bot_surface_capabilities_select_tenant on public.telegram_bot_surface_capabilities;
 create policy telegram_bot_surface_capabilities_select_tenant
   on public.telegram_bot_surface_capabilities
   for select to authenticated
@@ -91863,13 +91744,7 @@ comment on column public.telegram_team_group_members.can_read_cases is
   'Allows a paired, reviewed operator to list and inspect cases in this group without permission to act on them.';
 
 
--- Reconciled private fork source: supabase/migrations/20261026220500_9714_telegram_numeric_group_ids.sql
--- manifest: Permite IDs numéricos de grupos Telegram na tabela compartilhada de grupos de sessão.
-alter table public.channel_session_groups
-  drop constraint if exists channel_session_groups_group_chat_id_check;
-alter table public.channel_session_groups
-  add constraint channel_session_groups_group_chat_id_check
-  check (group_chat_id like '%@g.us' or group_chat_id ~ '^-?[0-9]{1,20}$');
+-- 9714 amplia a constraint única criada no espelho de 9705 acima; não a recria.
 
 
 -- Reconciled private fork source: supabase/migrations/20261026220600_9715_telegram_team_assistant_runtime.sql
@@ -91879,7 +91754,7 @@ alter table public.telegram_case_interactions
 
 alter table public.telegram_case_interactions
   add constraint telegram_case_interactions_action_check
-  check (action in ('list_open','list_closed','view_case','guide_reply','guide_question','resolve','escalate','approve_member','assistant_reply'));
+  check (action in ('list_open','list_closed','view_case','guide_reply','guide_question','resolve','escalate','approve_member','deny_member','assistant_reply'));
 
 comment on column public.telegram_team_group_settings.team_assistant_enabled is
   'Opt-in read-only assistant for verified members replying to case cards in this Telegram group; it cannot mutate cases or message customers.';
@@ -91911,12 +91786,7 @@ alter table public.telegram_case_interactions
   add column if not exists target_telegram_user_id text
   check (target_telegram_user_id ~ '^[0-9]{1,20}$');
 
-alter table public.telegram_case_interactions
-  drop constraint if exists telegram_case_interactions_action_check;
-
-alter table public.telegram_case_interactions
-  add constraint telegram_case_interactions_action_check
-  check (action in ('list_open','list_closed','view_case','guide_reply','guide_question','resolve','escalate','approve_member','deny_member','assistant_reply'));
+-- 9716 amplia a constraint única acima com a ação `deny_member`.
 
 comment on column public.telegram_team_group_members.approval_state is
   'Review state for an observed Telegram participant. Observers and denied members never receive CRM action grants.';
@@ -91950,3 +91820,80 @@ begin
     );
 end
 $$;
+
+
+-- ---- VARREDURA anon: função nova nasce exposta em quem ATUALIZA (migration 0116) ----
+--
+-- ⚠️ DE PROPÓSITO, NENHUMA FUNÇÃO É CRIADA DEPOIS DESTE BLOCO. Apêndice que cria
+-- função entra ANTES dele — quem o empurrar para o meio desarma a cura para tudo
+-- que vier depois. Ele é o bloco final do baseline; as travas do suporte
+-- (migration 0274), que não criam funções, também ficam antes dele.
+-- Vigiado por `tests/unit/varredura-anon-e-o-ultimo-bloco.test.ts`.
+--
+-- A 0108 revogou anon numa LISTA de 8 funções, medida num banco instalado do
+-- ZERO. Quem ATUALIZA tem outro estado: o `ALTER DEFAULT PRIVILEGES ... GRANT
+-- ALL ON FUNCTIONS TO anon` do corpo deste arquivo grava uma entrada em
+-- `pg_default_acl` que fica no catálogo PARA SEMPRE, e a partir daí toda função
+-- criada em `public` nasce com EXECUTE para anon — inclusive as deste apêndice.
+--
+-- Medido numa VPS real (2026-08-07), comparando com o que um install fresco
+-- produz: 6 definer expostas a anon e 5 a authenticated, entre elas
+-- `fn_decrypt_oauth` — alcançável pela anon key, que vai para o browser.
+--
+-- Lista conserta o estoque e reabre no próximo `create function`. Esta varredura
+-- é auto-curativa e roda DEPOIS de tudo que cria função, então cura no mesmo run
+-- em que o defeito nasceria. Desfazer o ALTER DEFAULT PRIVILEGES não serve: ele
+-- vem do `pg_dump` do Supabase e é reescrito a cada re-aplicação.
+--
+-- As duas origens de EXECUTE (a mesma lição da 0108): grant DIRETO a anon, que
+-- `revoke from public` não remove; e grant a PUBLIC, do qual anon HERDA, que
+-- `revoke from anon` não remove. O privilégio EFETIVO de authenticated e
+-- service_role é medido ANTES e devolvido depois — tira anon sem tirar leitura.
+do $$
+declare
+  f record;
+  tinha_auth boolean;
+  tinha_service boolean;
+begin
+  if to_regrole('anon') is null then
+    return;
+  end if;
+
+  for f in
+    select p.oid, p.oid::regprocedure as assinatura
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public'
+       and p.prosecdef
+  loop
+    tinha_auth := to_regrole('authenticated') is not null
+                  and has_function_privilege('authenticated', f.oid, 'EXECUTE');
+    tinha_service := to_regrole('service_role') is not null
+                     and has_function_privilege('service_role', f.oid, 'EXECUTE');
+
+    execute format('revoke execute on function %s from public, anon', f.assinatura);
+
+    if tinha_auth then
+      execute format('grant execute on function %s to authenticated', f.assinatura);
+    end if;
+    if tinha_service then
+      execute format('grant execute on function %s to service_role', f.assinatura);
+    end if;
+  end loop;
+end $$;
+
+-- regra 2 (authenticated): as 5 que o update abriu e o install não abre. Aqui não
+-- cabe varredura — `authenticated` PRECISA de EXECUTE nos helpers de RLS e em
+-- `retrieve_top_k_chunks` (num install fresco ele tem). É julgamento por função,
+-- e o alvo de cada linha é o valor que um install fresco produz, medido.
+revoke execute on function public.fn_audit_log_row() from authenticated;
+revoke execute on function public.fn_decrypt_oauth(bytea) from authenticated;
+revoke execute on function public.fn_encrypt_oauth(text) from authenticated;
+revoke execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) from authenticated;
+revoke execute on function public.fn_update_budget_consumption() from authenticated;
+
+grant execute on function public.fn_audit_log_row() to service_role;
+grant execute on function public.fn_decrypt_oauth(bytea) to service_role;
+grant execute on function public.fn_encrypt_oauth(text) to service_role;
+grant execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) to service_role;
+grant execute on function public.fn_update_budget_consumption() to service_role;

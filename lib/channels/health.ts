@@ -406,6 +406,7 @@ export interface ConexaoCaida {
   id: string;
   apelido: string;
   status: string;
+  provider: string;
 }
 
 /**
@@ -437,7 +438,7 @@ export async function listarConexoesCaidas(
 ): Promise<ConexaoCaida[]> {
   const { data } = await cliente
     .from("channel_sessions")
-    .select("id, display_name, phone_number, status, waha_session_name")
+    .select("id, display_name, phone_number, status, waha_session_name, provider")
     .eq("organization_id", organizationId)
     .is("archived_at", null)
     // A faixa diz "nenhuma mensagem entra nem sai por esta conexão" e leva a
@@ -481,6 +482,7 @@ export async function listarConexoesCaidas(
     id: s.id as string,
     apelido: (s.display_name as string | null) ?? (s.phone_number as string | null) ?? "sem nome",
     status: (s.status as string | null) ?? "",
+    provider: (s.provider as string | null) ?? "",
   }));
 }
 

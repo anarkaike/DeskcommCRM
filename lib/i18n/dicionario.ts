@@ -23407,7 +23407,6 @@ export const DICIONARIO: Traducoes = {
   // ---- Cor por canal no aviso de mensagem nova (#4094) --------------------
   // Nomes de rede não se traduzem (WhatsApp é WhatsApp em espanhol); entram no
   // dicionário assim mesmo porque a paleta de Configurações os lê por `t()`.
-  Telegram: { es: "Telegram" },
   Instagram: { es: "Instagram" },
   Messenger: { es: "Messenger" },
   "Chat no site": { es: "Chat en el sitio" },
@@ -23586,7 +23585,6 @@ export const DICIONARIO: Traducoes = {
   "Não envia mensagens.": { es: "No envía mensajes." },
   "Não foi possível buscar os contatos. Atualize a busca.": { es: "No fue posible buscar los contactos. Actualiza la búsqueda." },
   "Não foi possível sincronizar. Um administrador pode testar a conexão na aba Configuração.": { es: "No fue posible sincronizar. Un administrador puede probar la conexión en la pestaña Configuración." },
-  "Não informado": { es: "No informado" },
   "Não informar": { es: "No informar" },
   "Não permitir": { es: "No permitir" },
   "O paciente recebe o atendimento; o contato é quem recebe a comunicação. Um telefone compartilhado não confirma esse vínculo.": { es: "El paciente recibe la atención; el contacto es quien recibe la comunicación. Un teléfono compartido no confirma ese vínculo." },
@@ -23822,6 +23820,12 @@ export const DICIONARIO: Traducoes = {
   },
   "A configuração da empresa está em um formato inesperado.": {
     es: "La configuración de la empresa está en un formato inesperado.",
+  },
+  "Permite enviar avisos de casos humanos a grupos configurados.": {
+    es: "Permite enviar avisos de casos humanos a los grupos configurados.",
+  },
+  "Operadores pareados podem consultar casos abertos e registrar respostas pelo Telegram.": {
+    es: "Los operadores vinculados pueden consultar casos abiertos y registrar respuestas por Telegram.",
   },
 };
 

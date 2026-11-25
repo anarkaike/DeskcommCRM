@@ -236,6 +236,8 @@ export interface ChannelTenantScope {
 export interface OutboundEnvelope extends ChannelTenantScope {
   /** Callback interno: revalida a origem depois do preparo assíncrono e antes do transporte. */
   beforeSend?: () => Promise<void>;
+  /** Tipo de ator confiável que iniciou o envio; adapters que autorizam por emissor podem exigi-lo. */
+  actorType?: string;
   /** Identificador da sessão/número no provider (WAHA: nome da sessão). */
   sessionRef: string;
   /** Endereço já resolvido por `resolveRecipient`. */

@@ -179,8 +179,8 @@ describe("banco e TypeScript falam o mesmo vocabulário", () => {
   });
 
   it("a coluna nasce antes do CHECK que a referencia", () => {
-    const col = baseline.indexOf("add column if not exists zernio_account_id");
-    const check = baseline.search(/provider (?:= 'zernio'|in \('zernio', 'zernio_social'\))/);
+    const col = baseline.lastIndexOf("add column if not exists zernio_account_id");
+    const check = baseline.lastIndexOf("provider in ('zernio', 'zernio_social')");
     expect(col).toBeGreaterThan(-1);
     expect(col).toBeLessThan(check);
   });

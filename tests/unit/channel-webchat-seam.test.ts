@@ -25,6 +25,7 @@ describe("capability do chat no site", () => {
   it("a matriz conhece o provider com o perfil medido", () => {
     expect(capabilitiesOf("webchat")).toEqual({
       freeformOutsideWindow: true,
+      automatedOutbound: false,
       requiresTemplates: false,
       canManageTemplates: false,
       banRisk: false,

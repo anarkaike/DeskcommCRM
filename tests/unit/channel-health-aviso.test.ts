@@ -95,6 +95,7 @@ describe("quando avisar", () => {
     const aviso = avisoDaConexao(
       { reachable: true, status: "FAILED", detail: null },
       "Bot de vendas",
+      "pt-BR",
       "Telegram",
     );
     expect(aviso?.title).toContain('Telegram "Bot de vendas"');

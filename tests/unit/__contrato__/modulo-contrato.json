@@ -85,6 +85,7 @@
       "GET /api/v1/ai/cases",
       "GET /api/v1/ai/cases/[id]",
       "GET /api/v1/ai/cases/[id]/chat",
+      "GET /api/v1/ai/cases/telegram-destination",
       "GET /api/v1/ai/evolution",
       "GET /api/v1/ai/followup-flows",
       "GET /api/v1/ai/followup-flows/[id]",
@@ -158,6 +159,7 @@
       "POST /api/v1/ai/skills/[id]/install",
       "POST /api/v1/ai/skills/[id]/restore",
       "POST /api/v1/ai/skills/import",
+      "PUT /api/v1/ai/cases/telegram-destination",
       "PUT /api/v1/ai/guardrail-layers",
       "PUT /api/v1/ai/knowledge/sources/[id]/texto",
       "PUT /api/v1/ai/mapas",
@@ -689,6 +691,16 @@
           "nome": "bodySchema",
           "origem": "local",
           "hash": "e3c3b54347284ce9"
+        }
+      ],
+      "resposta": []
+    },
+    "/api/v1/ai/cases/telegram-destination": {
+      "corpo": [
+        {
+          "nome": "schema",
+          "origem": "local",
+          "hash": "4504e89758a36f0f"
         }
       ],
       "resposta": []
