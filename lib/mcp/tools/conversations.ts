@@ -6,23 +6,22 @@
  * - `crm_get_conversation_history` -> listMessagesHandler (carrega historico)
  */
 import { z } from "zod";
+import { projetarDerivadoNoHistorico } from "@/lib/mcp/media-derived-read";
 
 import {
   listConversationsHandler,
   getConversationHandler,
+  countConversationsHandler,
 } from "@/app/api/v1/conversations/_handler";
 import { listMessagesHandler } from "@/app/api/v1/messages/_handler";
 import { ApiError } from "@/lib/api/types";
 import { audit } from "@/lib/audit";
-import {
-  criarRascunho,
-  JANELA_MAXIMA_HORAS,
-  TEXTO_MAXIMO,
-} from "@/lib/inbox/rascunho-sugerido";
+import { criarRascunho, JANELA_MAXIMA_HORAS, TEXTO_MAXIMO } from "@/lib/inbox/rascunho-sugerido";
 import { VALIDADE_DO_LINK_DE_MIDIA_S } from "@/lib/messaging/media/link-temporario";
 import { getQueuePositions } from "@/lib/routing/queue";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { resolveUserNames } from "./_users";
+import { nomesDosAtendentesCom } from "@/lib/users/nome-do-atendente";
+import { nomesDeQuemEnviouCom } from "@/lib/users/nome-de-quem-enviou";
 import type { McpToolDefinition } from "../types";
 
 /**
@@ -36,21 +35,21 @@ import type { McpToolDefinition } from "../types";
 function isInQueue(c: { comando_da_conversa?: string | null }): boolean {
   // Ele decide UMA coisa: vale a pena buscar as posições de fila para esta
   // página? Por isso é liberal de propósito — pergunta "não tem dono e não
-  // acabou", que cobre tanto a org COM automático (só `aguardando` está na fila)
-  // quanto a SEM (`automatico` também está, ver `comandosDaFila`). Errar para o
-  // lado do sim custa uma consulta; errar para o não some com a posição que a IA
-  // devolve ao cliente.
+  // acabou", que cobre as três respostas que a Fila aceita em `comandosDaFila`:
+  // `aguardando`, `ninguem` (desde a #4012 o banco diz isso quando a organização
+  // não tem agente no ar) e `automatico` (a janela
+  // entre o deploy e a migration, em que o banco ainda devolve `automatico`).
+  // Errar para o lado do sim custa uma consulta; errar para o não some com a
+  // posição que a IA devolve ao cliente.
   const q = c.comando_da_conversa;
-  return q === "aguardando" || q === "automatico";
+  return q === "aguardando" || q === "ninguem" || q === "automatico";
 }
 
 const listInputShape = {
   contact_id: z.string().uuid().optional(),
   // `pending` entra: é o estado da conversa que o próprio agente escalou, e sem
   // ele a IA não conseguia listar o que ela mesma passou para uma pessoa.
-  status: z
-    .enum(["open", "pending", "claimed", "ai_handling", "closed", "archived"])
-    .optional(),
+  status: z.enum(["open", "pending", "claimed", "ai_handling", "closed", "archived"]).optional(),
   limit: z.number().int().min(1).max(50).default(10),
   cursor: z.string().optional(),
 };
@@ -131,8 +130,9 @@ export const crmListConversations: McpToolDefinition<typeof listInputShape> = {
     // organização — com `last_message_preview` junto, que é texto do lado de
     // lá indo para o WhatsApp do cliente A, encaminhável, sem volta.
     // Nomes (dedupe) e posições de fila (1 query cada) — sem N+1 na listagem.
-    const names = await resolveUserNames(
+    const names = await nomesDosAtendentesCom(
       ctx.supabase,
+      ctx.organizationId,
       conversations.map((c) => c.assigned_to_user_id),
     );
     const queueMap = conversations.some(isInQueue)
@@ -160,6 +160,38 @@ export const crmListConversations: McpToolDefinition<typeof listInputShape> = {
       has_more: result.has_more,
     };
   },
+};
+
+// ---------------------------------------------------------------------------
+// count (#4996, item 2)
+// ---------------------------------------------------------------------------
+const countInputShape = {
+  status: z.enum(["open", "pending", "claimed", "ai_handling", "closed", "archived"]).optional(),
+};
+
+export const crmCountConversations: McpToolDefinition<typeof countInputShape> = {
+  name: "crm_count_conversations",
+  description:
+    "Conta conversas por status e devolve só números (total e, sem filtro de status, o total por status), sem prévia nem mensagens. " +
+    "Para 'quantas conversas abertas/pendentes/com a IA?', use esta em vez de paginar crm_list_conversations. Em atendimento, conta só as conversas do contato desta conversa.",
+  inputSchema: countInputShape,
+  category: "read",
+  requiresRole: "agent",
+  requiresScope: "mcp:read",
+  handler: async (input, ctx) =>
+    countConversationsHandler(
+      ctx.supabase,
+      {
+        organization_id: ctx.organizationId,
+        actor: ctx.actor,
+        requestId: ctx.requestId,
+      },
+      {
+        status: input.status,
+        // Escopo do turno NO WHERE, como na listagem (#2184).
+        contact_id: ctx.contatoDoTurno,
+      },
+    ),
 };
 
 const getInputShape = {
@@ -226,7 +258,7 @@ export const crmGetConversation: McpToolDefinition<typeof getInputShape> = {
           "conversa não é sua para ler; siga a conversa com quem está falando.",
       };
     }
-    const names = await resolveUserNames(ctx.supabase, [conv.assigned_to_user_id]);
+    const names = await nomesDosAtendentesCom(ctx.supabase, ctx.organizationId, [conv.assigned_to_user_id]);
     const queue_position = isInQueue(conv)
       ? ((await getQueuePositions(ctx.supabase, ctx.organizationId)).get(conv.id) ?? null)
       : null;
@@ -312,7 +344,10 @@ export async function resolverMidiasDoHistorico(
   await Promise.all(
     aAssinar.map(async (m) => {
       try {
-        const { data, error } = await storage.createSignedUrl(m.caminho, VALIDADE_DO_LINK_DE_MIDIA_S);
+        const { data, error } = await storage.createSignedUrl(
+          m.caminho,
+          VALIDADE_DO_LINK_DE_MIDIA_S,
+        );
         out.set(
           m.id,
           error || !data?.signedUrl
@@ -331,6 +366,7 @@ export const crmGetConversationHistory: McpToolDefinition<typeof historyInputSha
   name: "crm_get_conversation_history",
   description:
     "Carrega historico de mensagens de uma conversa. Use para dar contexto ao agente sem inflar o system prompt." +
+    " Cada mensagem traz sent_by_user_id e sent_by_user_name (nome de quem da equipe enviou, quando resolvivel; vazio para cliente, IA, automacao e sistema)." +
     " Em conversa de atendimento, devolve apenas o histórico da conversa do contato desta conversa.",
   inputSchema: historyInputShape,
   category: "read",
@@ -411,7 +447,28 @@ export const crmGetConversationHistory: McpToolDefinition<typeof historyInputSha
     // por 1h para foto ou áudio de cliente, iria para o provedor de IA e para os
     // registros da rodada, e o agente não tem como abri-lo. Tipo e estado ficam.
     // Pela API (sem contato do turno) o link sai normalmente.
-    const media = await resolverMidiasDoHistorico(result.messages, { comLink: !ctx.contatoDoTurno });
+    const media = await resolverMidiasDoHistorico(result.messages, {
+      comLink: !ctx.contatoDoTurno,
+    });
+    // ── QUEM DA EQUIPE FALOU, E POR QUE ISSO CUSTA UMA LEITURA POR PÁGINA (#4077) ──
+    //
+    // `sent_by_user_id` já vinha na linha (`MSG_COLS`), mas a projeção abaixo o
+    // jogava fora: quem lê por token sabia que a mensagem foi de PESSOA
+    // (`sent_via`) e não sabia de qual. O nome não é coluna — mora em
+    // `auth.users`, que o PostgREST não expõe —, então sai da MESMA resolução
+    // que o balão do inbox usa (#4031), com os ids DISTINTOS da página: UMA
+    // consulta (`fn_nomes_dos_membros`, que responde vínculo e nome juntos),
+    // nunca uma por autor nem por mensagem.
+    //
+    // DUAS COISAS QUE O MAPA VAZIO DIZ. Mensagem de cliente (`inbound`), de IA,
+    // de automação, de sistema ou de celular NÃO pede nome (`mereceNomeDeQuemEnviou`):
+    // sai com `sent_by_user_id` nulo e nome nulo — vazio, não um "sistema" de
+    // mentira. E o nome só se resolve para quem tem vínculo com a organização do
+    // chamador: id de fora, usuário removido ou falha da leitura devolvem nulo, e
+    // o `sent_by_user_id` continua sendo a verdade. Nada aqui amplia o conjunto
+    // de conversas que o chamador já podia ler — é projeção sobre a página que
+    // veio do handler, depois da RLS/escopo dele.
+    const autores = await nomesDeQuemEnviouCom(ctx.supabase, ctx.organizationId, result.messages);
     return {
       messages: result.messages.map((m) => ({
         id: m.id,
@@ -422,11 +479,14 @@ export const crmGetConversationHistory: McpToolDefinition<typeof historyInputSha
         // Mídia utilizável por quem consome pela API: tipo, tamanho e um link
         // temporário do arquivo já guardado (`media_url` é o endereço interno do
         // gateway e não serve fora dele). Ver `resolverMidiasDoHistorico`.
+        ...projetarDerivadoNoHistorico(m, ctx),
         media_mime: m.media_mime ?? null,
         media_size_bytes: m.media_size_bytes ?? null,
         media_status: media.get(m.id)?.status ?? "none",
         media_signed_url: media.get(m.id)?.signedUrl ?? null,
         sent_via: m.sent_via,
+        sent_by_user_id: m.sent_by_user_id ?? null,
+        sent_by_user_name: autores.get(m.id) ?? null,
         sent_at: m.sent_at,
         status: m.status,
       })),
@@ -458,7 +518,9 @@ const rascunhoInputShape = {
     .min(1)
     .max(64)
     .default("integracao")
-    .describe("De onde veio o texto (ex.: 'erp'). É o que a caixa de entrada mostra no aviso de origem."),
+    .describe(
+      "De onde veio o texto (ex.: 'erp'). É o que a caixa de entrada mostra no aviso de origem.",
+    ),
   expira_em_horas: z
     .number()
     .int()

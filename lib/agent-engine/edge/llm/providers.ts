@@ -13,10 +13,11 @@ import { PROVEDOR_POR_ASSINATURA } from '@/lib/ai/pontos/provedores';
 import { fetchParaDestinoDaOrganizacao } from '@/lib/automation/destinos-internos-autorizados';
 
 import { allowlistedFetch, buildAllowlist } from '../egress';
+import { comCacheDaAnthropicNoOpenRouter, type CacheDaChamada } from './cache-da-openrouter';
 
 /**
- * provider name → (chave BYOK da org, id do modelo, endpoint opcional) → modelo
- * pronto para generateText.
+ * provider name → (chave BYOK da org, id do modelo, endpoint opcional, cache
+ * opcional) → modelo pronto para generateText.
  *
  * O terceiro parâmetro é o endpoint escolhido no painel de provedores
  * (`ai_purpose_bindings.base_url`). Existe por causa dos dois casos que o
@@ -24,10 +25,13 @@ import { allowlistedFetch, buildAllowlist } from '../egress';
  * OpenAI-compatível na frente da OpenRouter e, no roteiro do produto, um modelo
  * rodando na máquina do próprio cliente. É opcional — os providers canônicos
  * ignoram e continuam indo ao endpoint intrínseco de terem sido escolhidos.
+ *
+ * O quarto também é opcional: quem não o passa (mídia, transcrição, testes)
+ * recebe a fábrica de sempre.
  */
 export type ProviderRegistry = Record<
   string,
-  (apiKey: string, modelId: string, baseUrl?: string) => LanguageModel
+  (apiKey: string, modelId: string, baseUrl?: string, cache?: CacheDaChamada) => LanguageModel
 >;
 
 /**
@@ -47,6 +51,23 @@ const GOOGLE_ENDPOINT = 'https://generativelanguage.googleapis.com';
 export const OPENROUTER_ENDPOINT = process.env.OPENROUTER_BASE_URL?.trim() || 'https://openrouter.ai/api/v1';
 
 /**
+ * O endereço da chamada é a OpenRouter OFICIAL? Resolvido igual à fábrica
+ * (`baseUrl ?? OPENROUTER_ENDPOINT`), porque OPENROUTER_BASE_URL e o painel
+ * podem apontar um gateway do operador. Hostname exato: `openrouter.ai.exemplo`
+ * não passa. É o critério ÚNICO de quem manda campo próprio da OpenRouter no
+ * corpo (cache, sessão) ou pede o corpo da resposta (custo): um gateway estrito
+ * recusaria o campo desconhecido, e o turno inteiro cairia.
+ */
+export function ehOpenRouterOficial(baseUrl?: string): boolean {
+  try {
+    return new URL(baseUrl ?? OPENROUTER_ENDPOINT).hostname === 'openrouter.ai';
+  } catch {
+    // Endereço que nem é URL não é a OpenRouter oficial — a fábrica erra sozinha depois.
+    return false;
+  }
+}
+
+/**
  * A DeepSeek também fala a API da OpenAI — mesma fábrica, mesmo formato de
  * payload, sem SDK novo. O endpoint é a raiz que o provedor documenta (ele
  * também aceita `/v1`); o `@ai-sdk/openai` acrescenta `/chat/completions`.
@@ -61,6 +82,17 @@ export const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com';
  * `https://router.eu.requesty.ai/v1`.
  */
 export const REQUESTY_ENDPOINT = 'https://router.requesty.ai/v1';
+
+/**
+ * A AI/ML API é um agregador OpenAI-compatível como a Requesty: uma chave dá
+ * acesso a modelos de vários fabricantes, com ids `fabricante/modelo`
+ * (`openai/gpt-4o-mini`), em Chat Completions. Mesma fábrica, sem SDK novo.
+ *
+ * Diferente da Requesty, o endpoint é FIXO (`aceitaEndpointProprio: false`):
+ * a chave só viaja para `api.aimlapi.com`, e o transporte contido
+ * (`fetchDoProvedor`) recusa redirect para qualquer outro host.
+ */
+export const AIMLAPI_ENDPOINT = 'https://api.aimlapi.com/v1';
 
 /**
  * O endpoint do CODEX — o mesmo login do ChatGPT, falando a API de resposta.
@@ -215,15 +247,29 @@ export function modeloOpenAIRaciocina(modelId: string): boolean {
 }
 
 /**
- * Da linha 6 em diante nenhum modelo lista `minimal`, e só `gpt-6-luna` e `gpt-6-sol`
- * listam `none` (doc oficial de cada id em 11/10/2026: o gpt-6.1-sol diz "`none` and
- * `minimal` reasoning efforts are not supported", o gpt-6-astra lista low…max, o
- * gpt-6-luna lista none, low…max; o @ai-sdk/openai declara as mesmas listas em
- * `supportedReasoningEfforts`). Mandar o knob como está seria 400 em toda resposta.
+ * O esforço aceito muda por família, e mandar o knob como está é 400 em toda
+ * resposta que não trouxe `reasoning.effort` (o turno do agente, o rascunho, o
+ * fechamento).
  *
- * `none`/`minimal` é pedido de velocidade, então vira `none` onde ele existe e `low`
- * onde não existe. `minimal` NÃO vira `low` no Luna: medido acima, lá `low` é mais
- * lento até que o padrão, e `none` é o único que entrega o que o operador pediu.
+ * Linha 5: o `gpt-5` (e `gpt-5-mini`, `gpt-5-nano`) lista `minimal, low,
+ * medium, high` — NÃO lista `none`; do `gpt-5.1` em diante é o contrário,
+ * `none` entra e `minimal` sai (`none, low, medium, high`), com `xhigh` a mais
+ * do 5.2 ao 5.6. Fonte: `getGpt5ReasoningEfforts` do `@ai-sdk/openai` 4.0.108
+ * (`node_modules/@ai-sdk/openai/dist/index.js`, l. 467-495) — a mesma lista
+ * que o SDK publica em `supportedReasoningEfforts` e a que a doc de cada id
+ * repete.
+ *
+ * Da linha 6 em diante nenhum modelo lista `minimal`, e só `gpt-6-luna`, `gpt-6-sol` e
+ * `gpt-6.1-terra` listam `none` (doc oficial de cada id em 11/10/2026: o gpt-6.1-sol diz
+ * "`none` and `minimal` reasoning efforts are not supported", o gpt-6-astra lista
+ * low…max, o gpt-6-luna lista none, low…max; o @ai-sdk/openai declara as mesmas listas
+ * em `supportedReasoningEfforts`. O gpt-6.1-terra, em 27/10/2026, lista none, low…max).
+ *
+ * `none`/`minimal` é pedido de velocidade, então vira o MAIS RÁPIDO que o modelo
+ * aceita: `minimal` no gpt-5, `none` do 5.1 em diante, `none` onde ele existe na
+ * linha 6 e `low` onde não existe. `minimal` NÃO vira `low` no Luna: medido
+ * acima, lá `low` é mais lento até que o padrão, e `none` é o único que entrega
+ * o que o operador pediu.
  */
 export function esforcoAceitoPeloModelo(
   modelId: string,
@@ -231,12 +277,14 @@ export function esforcoAceitoPeloModelo(
 ): EsforcoDeRaciocinioOpenAI {
   if (esforco !== 'none' && esforco !== 'minimal') return esforco;
   const id = modelId.toLowerCase();
-  // A primeira geração GPT-5 (incluindo snapshots) começa em minimal.
-  // Não confundir gpt-5-mini com gpt-5.4-mini, que aceita none.
-  if (/^gpt-5(?:-mini|-nano)?(?:-\d{4}-\d{2}-\d{2})?$/.test(id)) return 'minimal';
-  const major = /^gpt-(\d+)/.exec(id)?.[1];
-  if (major === undefined || Number(major) < 6) return esforco;
-  const aceitaNone = id === 'gpt-6-luna' || id === 'gpt-6-sol';
+  const versao = /^gpt-(\d+)(?:\.(\d+))?/.exec(id);
+  if (versao === null) return esforco;
+  const major = Number(versao[1]);
+  // `gpt-5` sem minor é o 5.0: aceita `minimal`, não aceita `none`.
+  const minor = versao[2] === undefined ? 0 : Number(versao[2]);
+  if (major === 5) return minor === 0 ? 'minimal' : 'none';
+  if (major < 6) return esforco;
+  const aceitaNone = id === 'gpt-6-luna' || id === 'gpt-6-sol' || id === 'gpt-6.1-terra';
   return aceitaNone ? 'none' : 'low';
 }
 
@@ -267,6 +315,15 @@ function comEsforcoDeRaciocinio(inner: typeof fetch, esforco: EsforcoDeRaciocini
   };
 }
 
+/** Mesmo transporte contido para chat e serviços do provedor, inclusive redirects. */
+export function fetchDoProvedor(endpoint: string, allowedHosts: readonly string[] = []): typeof fetch {
+  const allow = buildAllowlist([endpoint, ...allowedHosts]);
+  return (input, init) => {
+    const url = typeof input === 'string' || input instanceof URL ? input : input.url;
+    return allowlistedFetch(url, init, { allowlist: allow });
+  };
+}
+
 /**
  * Providers reais do lançamento. Sonnet (Anthropic) é o default RECOMENDADO —
  * recomendação vive em .env.example/docs; o id do modelo é sempre config da org.
@@ -287,17 +344,22 @@ export function createDefaultRegistry(opts?: {
   deepseekThinking?: RaciocinioDeepseek;
   /** Knob OPENAI_REASONING_EFFORT; ausente = lido do ambiente. `null` = não injeta. */
   openaiReasoningEffort?: EsforcoDeRaciocinioOpenAI | null;
+  /**
+   * Knob OPENROUTER_PROMPT_CACHE; ausente = lido do ambiente. Lido de
+   * `process.env`, como OPENAI_REASONING_EFFORT, e não por `llmEdgeConfigFromEnv`:
+   * o env do app descarta chave que não declara, e as rotas do app também chamam
+   * o seam. Ligado por padrão desde a prova paga em cada provedor de origem
+   * (scripts/prova-cache-openrouter.ts): só `off` desliga — vazio e ausente ligam,
+   * porque o `.env.example` sempre trouxe a linha vazia e quem instalou a tem assim.
+   */
+  openrouterPromptCache?: boolean;
 }): ProviderRegistry {
   const extra = opts?.allowedHosts ?? [];
   const esforcoOpenAI =
     opts?.openaiReasoningEffort !== undefined ? opts.openaiReasoningEffort : esforcoDeRaciocinioOpenAI();
-  const contain = (endpoint: string): typeof fetch => {
-    const allow = buildAllowlist([endpoint, ...extra]);
-    return (input, init) => {
-      const url = typeof input === 'string' || input instanceof URL ? input : input.url;
-      return allowlistedFetch(url, init, { allowlist: allow });
-    };
-  };
+  const cacheNaOpenRouter =
+    opts?.openrouterPromptCache ?? process.env.OPENROUTER_PROMPT_CACHE?.trim().toLowerCase() !== 'off';
+  const contain = (endpoint: string): typeof fetch => fetchDoProvedor(endpoint, extra);
   return {
     anthropic: (apiKey, modelId) =>
       createAnthropic({ apiKey, fetch: contain(ANTHROPIC_ENDPOINT) })(modelId),
@@ -340,13 +402,19 @@ export function createDefaultRegistry(opts?: {
      * endpoint canônico faria o egress bloquear a própria configuração que a
      * tela ofereceu, com erro de rede que ninguém liga ao painel.
      */
-    openrouter: (apiKey, modelId, baseUrl) => {
+    openrouter: (apiKey, modelId, baseUrl, cache) => {
       const endpoint = baseUrl ?? OPENROUTER_ENDPOINT;
+      // O embrulho fica POR FORA da contenção: o pedido modificado continua
+      // passando pela allowlist. Gateway do operador nunca recebe campo novo.
+      const contido = contain(endpoint);
       const provider = createOpenAI({
         apiKey,
         baseURL: endpoint,
         headers: cabecalhosDeAtribuicaoOpenRouter(),
-        fetch: contain(endpoint),
+        fetch:
+          cache && cacheNaOpenRouter && ehOpenRouterOficial(baseUrl)
+            ? comCacheDaAnthropicNoOpenRouter(contido, cache)
+            : contido,
       });
       // Chat Completions, NÃO Responses: a OpenRouter fala a API da OpenAI
       // (chat/completions). O `createOpenAI()(modelId)` desta versão do SDK usa
@@ -356,6 +424,10 @@ export function createDefaultRegistry(opts?: {
       // /responses e recebia a página do chat), enquanto gpt-4o/4.1 passavam
       // por sorte do roteamento. `.chat()` fixa o formato que a OpenRouter
       // realmente serve, para qualquer família de modelo.
+      // O id do exemplo acima foi APOSENTADO pelo Google (404 "no longer
+      // available to new users", medido em 18/11/2026, #4925): a medição do
+      // FORMATO continua valendo para qualquer modelo, o id não. Para Google na
+      // OpenRouter, use um que o provedor sirva (`google/gemini-3.1-flash-lite`).
       return provider.chat(modelId);
     },
     /**
@@ -382,6 +454,16 @@ export function createDefaultRegistry(opts?: {
       return createOpenAI({ apiKey, baseURL: endpoint, fetch: contain(endpoint) }).chat(modelId);
     },
     /**
+     * AI/ML API: agregador OpenAI-compatível, em `.chat()` como a Requesty.
+     * Sem `baseUrl` de propósito: a lista diz `aceitaEndpointProprio: false`,
+     * então a chave vai sempre para o endpoint canônico, e a allowlist do
+     * egress é só ele (redirect para fora vira `EgressBlockedError`).
+     */
+    aimlapi: (apiKey, modelId) =>
+      createOpenAI({ apiKey, baseURL: AIMLAPI_ENDPOINT, fetch: contain(AIMLAPI_ENDPOINT) }).chat(
+        modelId,
+      ),
+    /**
      * Provedor personalizado (#1642): o endpoint É DO OPERADOR e vem na
      * credencial (`ai_provider_credentials.base_url`), através de
      * `decisao.baseUrl ?? config.baseUrl`. Não existe endpoint canônico aqui de
@@ -404,6 +486,11 @@ export function createDefaultRegistry(opts?: {
         apiKey,
         baseURL: baseUrl,
         fetch: fetchParaDestinoDaOrganizacao(contain(baseUrl)),
+        // Gateway OpenAI-compatível (9Router, LiteLLM...) pode assumir streaming quando o
+        // pedido não traz `stream`; o SDK não manda o campo em generateText, e a resposta
+        // vira SSE que o parse de JSON recusa ("Invalid JSON response" com HTTP 200). Pedir
+        // JSON explicitamente é o que a chamada sem streaming quer de qualquer forma.
+        headers: { Accept: 'application/json' },
       }).chat(modelId);
     },
   };

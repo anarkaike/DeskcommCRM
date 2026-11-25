@@ -36,11 +36,17 @@ const ORG_ID = "22222222-2222-4222-8222-222222222222";
 function montarAdmin(
   propostas: LinhaDeProposta[],
   leadsAbertos?: string[],
-  extras?: { avisos?: AvisoAberto[]; contatos?: LinhaDeContato[] },
+  extras?: {
+    avisos?: AvisoAberto[];
+    contatos?: LinhaDeContato[];
+    /** #4191 — demandas abertas sem próximo passo, com o negócio pelo join. */
+    demandas?: Array<Record<string, unknown>>;
+  },
 ) {
   const idsAbertos = leadsAbertos ?? [...new Set(propostas.map((p) => p.lead_id).filter((id): id is string => id !== null))];
   const avisosAbertos = extras?.avisos ?? [];
   const contatos = extras?.contatos ?? [];
+  const demandas = extras?.demandas ?? [];
   const chamadas: Array<{ tabela: string; filtros: Array<[string, unknown]> }> = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const admin: any = {
@@ -60,7 +66,13 @@ function montarAdmin(
         },
         order: () => cadeia,
         limit: () => cadeia,
-        is: () => cadeia,
+        // #4191 — o filtro de elegibilidade comercial TAMBÉM é medido: sem
+        // registrar o `.is()`, um teste "o Radar não lista o não comercial"
+        // passaria com o filtro removido.
+        is: (campo: string, valor: unknown) => {
+          filtros.push([`is:${campo}`, valor]);
+          return cadeia;
+        },
         in: (campo: string, valores: unknown) => {
           filtros.push([`in:${campo}`, valores]);
           return cadeia;
@@ -69,6 +81,7 @@ function montarAdmin(
         then: (resolve: (r: { data: unknown[]; error: null }) => void) => {
           if (tabela === "crm_proposals") return resolve({ data: [...propostas], error: null });
           if (tabela === "agent_inbox_items") return resolve({ data: [...avisosAbertos], error: null });
+          if (tabela === "demandas") return resolve({ data: [...demandas], error: null });
           if (tabela === "contacts") {
             const pedido = filtros.find(([campo]) => campo === "in:id")?.[1] as string[] | undefined;
             const linhas = pedido ? contatos.filter((c) => pedido.includes(c.id)) : [...contatos];
@@ -193,6 +206,12 @@ describe("carregaRadarDeRisco — propostas esperando revisão (C6)", () => {
     ]);
   });
 
+  it("rascunho com aviso não mantém negócio fechado no radar geral", async () => {
+    const { admin } = montarAdmin([RASCUNHO], [], { avisos: [{ ref_id: "prop-1" }] });
+    const radar = await carregaRadarDeRisco(admin, { organizationId: ORG_ID });
+    expect(radar.propostas_esperando_revisao).toEqual([]);
+  });
+
   it("rascunho SEM aviso aberto não entra", async () => {
     const { admin } = montarAdmin([RASCUNHO], undefined, { avisos: [] });
     const radar = await carregaRadarDeRisco(admin, { organizationId: ORG_ID });
@@ -231,5 +250,137 @@ describe("carregaRadarDeRisco — propostas esperando revisão (C6)", () => {
       expect(c.filtros).toContainEqual(["kind", "proposta_pronta_para_revisao"]);
       expect(c.filtros).toContainEqual(["status", "open"]);
     }
+  });
+});
+
+// O Postgres honra `.order(last_activity_at asc).limit(500)`: numa org com mais
+// de 500 abertos, o negócio recém-ativo fica FORA de `rows`. Este dublê honra
+// order, limit, `status` e `in(id)`, como o banco, para provar que estar fora de
+// `rows` não tira da revisão um negócio que segue aberto.
+function montarAdminComTeto(leads: Array<{ id: string; status: string; last_activity_at: string }>) {
+  const propostas = ["lead-ativo", "lead-fechado"].map((lead_id, i) => ({
+    id: `prop-${i}`, lead_id, status: "rascunho", numero: null, ano: null, valid_until: null,
+    versao: 1, created_at: "2026-11-04T00:00:00Z", titulo: "x", contact_id: null,
+  }));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const admin: any = {
+    from: vi.fn((tabela: string) => {
+      let limite = Infinity;
+      let status: unknown;
+      let ids: string[] | undefined;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cadeia: any = {
+        select: () => cadeia, not: () => cadeia, order: () => cadeia, is: () => cadeia, gt: () => cadeia,
+        eq: (campo: string, valor: unknown) => { if (campo === "status") status = valor; return cadeia; },
+        in: (campo: string, valores: string[]) => { if (campo === "id") ids = valores; return cadeia; },
+        limit: (n: number) => { limite = n; return cadeia; },
+        then: (resolve: (r: { data: unknown[]; error: null }) => void) => {
+          if (tabela === "crm_proposals") return resolve({ data: propostas, error: null });
+          if (tabela === "agent_inbox_items") return resolve({ data: propostas.map((p) => ({ ref_id: p.id })), error: null });
+          if (tabela === "crm_leads") {
+            const linhas = leads
+              .filter((l) => status === undefined || l.status === status)
+              .filter((l) => ids === undefined || ids.includes(l.id))
+              .sort((a, b) => a.last_activity_at.localeCompare(b.last_activity_at))
+              .slice(0, limite)
+              .map((l) => ({
+                id: l.id, title: "", contact_id: null, owner_user_id: null, owner_kind: null, owner_agent_id: null,
+                stage_id: null, last_activity_at: l.last_activity_at, created_at: l.last_activity_at, pipeline_id: "pipeline-1",
+              }));
+            return resolve({ data: linhas, error: null });
+          }
+          return resolve({ data: [], error: null });
+        },
+      };
+      return cadeia;
+    }),
+  };
+  return admin;
+}
+
+describe("carregaRadarDeRisco — revisão com mais de 500 negócios abertos (C6)", () => {
+  const parados = Array.from({ length: 500 }, (_, i) => ({ id: `parado-${i}`, status: "open", last_activity_at: "2025-01-01T00:00:00Z" }));
+
+  it("rascunho com aviso de negócio ABERTO e recém-ativo segue no radar geral", async () => {
+    const admin = montarAdminComTeto([
+      ...parados,
+      { id: "lead-ativo", status: "open", last_activity_at: "2026-11-04T00:00:00Z" },
+      { id: "lead-fechado", status: "won", last_activity_at: "2026-11-04T00:00:00Z" },
+    ]);
+    const radar = await carregaRadarDeRisco(admin, { organizationId: ORG_ID });
+    expect(radar.propostas_esperando_revisao.map((p) => p.lead_id)).toEqual(["lead-ativo"]);
+  });
+});
+
+describe("#4191 — negócio NÃO comercial fora do Radar", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("a consulta de negócios abertos pede SÓ os comerciais", async () => {
+    const { admin, chamadas } = montarAdmin([], ["lead-1"]);
+    await carregaRadarDeRisco(admin, { organizationId: ORG_ID });
+    const consultaDeLeads = chamadas.find(
+      (c) => c.tabela === "crm_leads" && c.filtros.some(([campo]) => campo === "status"),
+    );
+    expect(consultaDeLeads).toBeDefined();
+    // O filtro é a coluna canônica, nula: nenhuma lista de ids montada à mão.
+    expect(consultaDeLeads?.filtros).toContainEqual(["is:nao_comercial_em", null]);
+  });
+
+  it("a lista auxiliar de demandas sem próximo passo descarta a demanda de negócio classificado", async () => {
+    const { admin } = montarAdmin([], ["lead-comercial"], {
+      demandas: [
+        {
+          id: "demanda-comercial",
+          lead_id: "lead-comercial",
+          contact_id: "contato-1",
+          aberta_em: "2026-01-01T00:00:00.000Z",
+          origem: "whatsapp",
+          contacts: { name: "Cliente", display_name: null },
+          crm_leads: { nao_comercial_em: null },
+        },
+        {
+          id: "demanda-golpe",
+          lead_id: "lead-golpe",
+          contact_id: "contato-2",
+          aberta_em: "2026-01-01T00:00:00.000Z",
+          origem: "whatsapp",
+          contacts: { name: "Golpe", display_name: null },
+          crm_leads: { nao_comercial_em: "2026-11-06T12:00:00.000Z" },
+        },
+        {
+          // Demanda sem lead (lead_id nullable): não tem classificação e FICA.
+          id: "demanda-sem-lead",
+          lead_id: null,
+          contact_id: "contato-3",
+          aberta_em: "2026-01-01T00:00:00.000Z",
+          origem: "manual",
+          contacts: { name: "Sem lead", display_name: null },
+          crm_leads: null,
+        },
+      ],
+    });
+
+    const radar = await carregaRadarDeRisco(admin, { organizationId: ORG_ID });
+    const ids = radar.sem_proximo_passo.map((d) => d.id);
+    expect(ids).toContain("demanda-comercial");
+    expect(ids).toContain("demanda-sem-lead");
+    expect(ids).not.toContain("demanda-golpe");
+    expect(radar.total_sem_proximo_passo).toBe(2);
+  });
+
+  it("o negócio classificado não vira item nem proposta vencida (rows cruzadas)", async () => {
+    // Se a consulta devolvesse o classificado, a proposta vencida dele entraria;
+    // o filtro no banco é a primeira barreira, e o cruzamento por `rows` a
+    // segunda. Aqui: só o comercial está na leitura.
+    const { admin } = montarAdmin(
+      [
+        { id: "prop-1", lead_id: "lead-comercial", status: "vencida", numero: 1, ano: 2026, valid_until: "2026-01-01", versao: 1, created_at: "2026-01-01T00:00:00Z" },
+        { id: "prop-2", lead_id: "lead-golpe", status: "vencida", numero: 2, ano: 2026, valid_until: "2026-01-01", versao: 1, created_at: "2026-01-02T00:00:00Z" },
+      ],
+      ["lead-comercial"],
+    );
+    const radar = await carregaRadarDeRisco(admin, { organizationId: ORG_ID });
+    const leads = radar.propostas_vencidas_sem_retomada.map((p) => p.lead_id);
+    expect(leads).toEqual(["lead-comercial"]);
   });
 });

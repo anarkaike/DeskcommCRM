@@ -84,6 +84,11 @@ const ESCRITA_QUE_E_TRABALHO_DE_ATENDENTE: ReadonlyArray<string> = [
   "crm_move_lead_stage",
   // `app/api/v1/messages/` — exige `agent`. Responder cliente é o trabalho do dia.
   "crm_send_whatsapp_message",
+  // #4129 — `lib/mcp/tools/messages.ts`: mesma rota e mesmo papel da irmã acima
+  // (`app/api/v1/messages/`, `agent`), e é a MESMA capacidade de mandar arquivo
+  // ao cliente por uma conversa que já existe. Enviar o catálogo é o trabalho do
+  // dia; o dano máximo é um arquivo a mais para a pessoa que atende.
+  "crm_send_material",
   // `app/api/v1/ai/cases/[id]/reply/` — POST exige `agent`. Registrar no chamado
   // é o trabalho de quem atende (paridade medida na integração do papel novo).
   "crm_add_case_note",
@@ -97,6 +102,11 @@ const ESCRITA_QUE_E_TRABALHO_DE_ATENDENTE: ReadonlyArray<string> = [
   // esse custo é limitado pelo índice único parcial da 0123: no máximo uma
   // proposta viva por contato e campo, ou seja três por contato.
   "crm_propose_contact_field",
+  // `app/api/v1/contacts/[id]/` — PATCH exige `agent`, e é por ele que a equipe
+  // edita a mesma aba Diagnóstico. O poder é MENOR que o do PATCH: só as chaves
+  // do diagnóstico (nunca as observações da equipe nem campo da organização),
+  // mescladas no banco, com o selo "Escrito pela IA" (decisão D7).
+  "crm_save_lead_diagnosis",
   // `app/api/v1/ai/cases/[id]/` — exige `agent`.
   "crm_close_human_case",
   // `app/api/v1/conversations/[id]/reactivate-bot/` — POST exige `agent`.
@@ -105,6 +115,25 @@ const ESCRITA_QUE_E_TRABALHO_DE_ATENDENTE: ReadonlyArray<string> = [
   // ranking — e por isso sobreviveu à troca do papel do agente para `ai_operator`,
   // que um piso de `manager` teria transformado em bloqueio por coincidência.
   "crm_resume_ai_attendance",
+  // #4517 — o quarteto de comandos de conversa, e a paridade de cada um com a sua
+  // rota: `conversations/[id]/pause-ai` (agent), `/reactivate-bot` (agent),
+  // `/close` (agent) e `/reopen` (agent). Todos chamam o MESMO handler da rota.
+  //
+  // O poder extra que cada um carrega não vem do papel, vem do escopo
+  // `conversations:write` do token — e as quatro recusam `actor.type` igual a
+  // `ai_agent` no handler, em voz alta: o agente não comanda a própria automação.
+  "crm_pause_ai",
+  "crm_resume_ai",
+  "crm_close_conversation",
+  "crm_reopen_conversation",
+  // #4517 — `PATCH /api/v1/contacts/[id]/` é a MESMA rota das linhas acima, e
+  // esta tool chama o MESMO `patchContactHandler`.
+  //
+  // ⚠️ O poder de SOBRESCREVER a ficha não vem deste nome nem do papel: vem do
+  // escopo `contacts:write` do token. Sem ele, a tool cai no caminho de proposta
+  // — inclusive para o agente da casa (`tokenScopes` ausente), que continua
+  // proibido de gravar por interpretação de texto (spec 17 §4b).
+  "crm_update_contact",
   // `app/api/v1/leads/[id]/lose/` — POST exige `agent`. Encerrar demanda que o
   // cliente declarou encerrada é o trabalho do dia (paridade medida na W2→base).
   "crm_close_demand",
@@ -112,6 +141,11 @@ const ESCRITA_QUE_E_TRABALHO_DE_ATENDENTE: ReadonlyArray<string> = [
   "crm_propose_reactivation",
   // `app/api/v1/conversations/[id]/assign` — exige `agent`: é a fila.
   "crm_assign_conversation",
+  // #3881 — `app/api/v1/conversations/[id]/sector` — PUT exige `agent`: escolher
+  // a fila é trabalho de quem atende. A régua (`lib/atendimento/setor-da-conversa.ts`)
+  // recusa setor de outra organização, conversa encerrada e sobrescrita do setor
+  // definido à mão sem opt-in.
+  "crm_set_conversation_sector",
   // `app/api/v1/conversation-tags` é leitura `viewer`; marcar conversa é trabalho
   // de atendente e o dano máximo é um filtro sujo, reversível na tela.
   "crm_manage_tags",
@@ -127,6 +161,11 @@ const ESCRITA_QUE_E_TRABALHO_DE_ATENDENTE: ReadonlyArray<string> = [
   // grava uma linha que uma PESSOA precisa revisar e enviar (`consumed_at` só
   // depois do clique); ela não envia nada ao cliente, então não muda a casa.
   "crm_create_conversation_draft",
+  // #4838 — `app/api/v1/tasks/` (POST) e `app/api/v1/tasks/[id]/` (PATCH)
+  // exigem `agent`: criar e concluir tarefa é o gesto de quem atende, todo dia.
+  // A tarefa é lembrete interno da equipe; nada sai para o cliente.
+  "crm_create_task",
+  "crm_update_task",
 ];
 
 function alcancavelPeloAgente(requiresRole: Role): boolean {

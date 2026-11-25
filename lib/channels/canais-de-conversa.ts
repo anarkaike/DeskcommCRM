@@ -38,12 +38,27 @@ import { SOCIAL_NETWORKS } from "./social/catalog";
  * Ele precede as redes sociais e não tem entrada em `SOCIAL_NETWORKS` — o canal
  * dele é o WAHA/Meta, não o intermediário social. Fica explícito aqui, e é a
  * única parte escrita à mão.
+ *
+ * ## `telegram` é o segundo, pelo motivo inverso
+ *
+ * O Telegram APARECE em `SOCIAL_NETWORKS` (issue #3440), mas com `inbox: false`
+ * e como rede do PARCEIRO: aquele Telegram é o do intermediário. O canal nativo
+ * é o bot do @BotFather, outro provider (`telegram`), com outra ingestão e outro
+ * adapter. Derivar do catálogo daria o valor certo pelo motivo errado, e no dia
+ * em que o parceiro ligasse `inbox` ali o nosso valor viraria refém da decisão
+ * dele.
+ *
+ * ## `webchat` é o terceiro, e também fica escrito à mão
+ *
+ * O chat no site (Spec 36) não é rede social: não há catálogo de onde derivá-lo.
+ * O valor é o do provider `webchat`, e a coluna `conversations.channel` o aceita
+ * pelo mesmo CHECK que o Telegram ganhou (migração 9342, a do Telegram; o chat no site soma o valor na 9471).
  */
 export const CANAIS_DE_CONVERSA = [
   "whatsapp",
-  ...SOCIAL_NETWORKS.filter((rede) => rede.inbox).map((rede) => rede.id),
-  // Telegram bot provider, independent of Zernio.
   "telegram",
+  "webchat",
+  ...SOCIAL_NETWORKS.filter((rede) => rede.inbox).map((rede) => rede.id),
 ] as const satisfies readonly string[];
 
 export type CanalDeConversa = (typeof CANAIS_DE_CONVERSA)[number];

@@ -93,7 +93,7 @@ async function pendingAction(
   org: string,
   group: string,
   telegramUser: string,
-  replyTo: string,
+  replyTo: string | null,
 ) {
   const { rows } = await pool.query<Interaction>(
     `select i.id::text,i.organization_id::text,i.connection_id::text,i.group_setting_id::text,
@@ -790,8 +790,8 @@ export async function handleTelegramGroupCaseUpdate(
       });
       if (assisted) return true;
     }
-    // Case actions require an explicit reply to the bot’s action prompt.
-    // Ordinary group discussion must never be treated as customer guidance.
+    // A group discussion is not consent to apply a pending case action.
+    // Require an explicit reply to the bot prompt before changing case state.
     if (!replyTo) return false;
     const interaction = await pendingAction(
       pool,

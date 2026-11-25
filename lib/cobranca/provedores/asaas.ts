@@ -14,8 +14,12 @@
  * - O Asaas não aceita chave de idempotência. GET, PUT e DELETE repetem em 429,
  *   5xx e rede; POST repete SÓ em 429 (recusado antes de processar). A
  *   idempotência do POST é a RELEITURA antes de criar: cliente pela
- *   `externalReference`, assinatura ACTIVE, webhook pela URL ou pelo nome.
- *   No máximo 3 tentativas e 5 s por espera.
+ *   `externalReference` (o vínculo com a organização) e, não achando, pelo
+ *   `cpfCnpj` — o cliente cadastrado direto no painel do Asaas não tem vínculo,
+ *   e é adotado (com o vínculo gravado nele) em vez de duplicado (#4768); a
+ *   assinatura ACTIVE só é reaproveitada quando traz o NOSSO vínculo, para a
+ *   adoção não pendurar a cobrança na assinatura de outra integração; webhook
+ *   pela URL ou pelo nome. No máximo 3 tentativas e 5 s por espera.
  * - Toda resposta passa por Zod lendo só o que é usado; forma inesperada vira
  *   `ErroDoProvedor(200, "resposta_invalida")`, que `sincronizar` grava como
  *   `leitura_invalida` sem tocar o estado.
@@ -26,9 +30,10 @@ import { z } from "zod";
 
 import { documentoDoPagador } from "@/lib/cobranca/documento";
 import { FUSO_PADRAO } from "@/lib/cobranca/fuso";
+import { MOEDAS_DO_ASAAS } from "@/lib/cobranca/vocabulario";
 import { logger } from "@/lib/logger";
 
-import { ErroDoProvedor, type AdaptadorDeCobranca, type Modo, type SinalDoWebhook, type Situacao, type WebhookPreparado } from "./contrato";
+import { ErroDoProvedor, type AdaptadorDeCobranca, type Modo, type PlanoParaProvedor, type SinalDoWebhook, type Situacao, type WebhookPreparado } from "./contrato";
 
 /** A base de cada ambiente. Qual vale sai do prefixo da chave. */
 export const ASAAS_API_BASE = {
@@ -63,10 +68,43 @@ export function modoDaChaveAsaas(chave: string): Modo | null {
   return m[1] === "prod" ? "producao" : "teste";
 }
 
+/**
+ * O Asaas não tem moeda: todo valor é real. Plano em dólar ou euro (migration
+ * 9332) seria cobrado como se fosse real — R$ 500 no lugar de US$ 500. A rota de
+ * planos já recusa criar plano assim com o Asaas conectado; esta é a defesa no
+ * último passo, antes de qualquer chamada ao provedor.
+ */
+function exigirMoedaDoAsaas(plano: PlanoParaProvedor): void {
+  if (!MOEDAS_DO_ASAAS.includes(plano.moeda)) throw new ErroDoProvedor(null, "moeda_nao_suportada", false);
+}
+
 function baseDeLoopback(base: string): boolean {
   if (!URL.canParse(base)) return false;
   const u = new URL(base);
   return (u.protocol === "http:" || u.protocol === "https:") && HOSTS_DE_LOOPBACK.has(u.hostname);
+}
+
+/**
+ * O callback do Asaas para a volta, ou `null` quando o endereço não serve: a
+ * volta automática é conforto, e sem ela a fatura sai igual (ver iniciarAssinatura).
+ */
+function callbackDaVolta(urlDeVolta: string, contraDuble: boolean): { successUrl: string; autoRedirect: true } | null {
+  if (!URL.canParse(urlDeVolta)) return null;
+  const retorno = new URL(urlDeVolta);
+  // http só em loopback contra o dublê do e2e (`baseUrl` só existe lá).
+  const protocoloOk = retorno.protocol === "https:" || (contraDuble && baseDeLoopback(urlDeVolta));
+  if (!protocoloOk || retorno.username || retorno.password || retorno.hash) return null;
+  retorno.searchParams.set("voltou", "1");
+  return { successUrl: retorno.toString(), autoRedirect: true };
+}
+
+/**
+ * 4xx que não é chave inválida nem espera: o Asaas recusou antes de processar.
+ * ponytail: o status e o `code` da recusa por domínio não foram medidos; por isso
+ * vale qualquer 4xx assim — refazer sem callback uma recusa de outra causa só a repete.
+ */
+function recusaSemEfeito(e: unknown): e is ErroDoProvedor {
+  return e instanceof ErroDoProvedor && e.status !== null && e.status >= 400 && e.status < 500 && e.status !== 401 && !e.transitorio;
 }
 
 const corpoDeErro = z.object({ errors: z.array(z.object({ code: z.string().optional() })) });
@@ -95,6 +133,22 @@ function ler<T>(schema: z.ZodType<T>, dados: unknown): T {
 }
 
 const comId = z.object({ id: z.string().min(1), deleted: z.boolean().nullish() });
+/**
+ * O cliente como a listagem e o PUT devolvem: além do id, o vínculo que NÓS
+ * gravamos e a data de criação, que é o desempate quando o documento se repete.
+ */
+const clienteDoAsaas = comId.extend({
+  externalReference: z.string().nullish(),
+  /** Data civil `AAAA-MM-DD` (o Asaas não manda hora aqui): ordena como texto. */
+  dateCreated: z.string().nullish(),
+});
+type ClienteDoAsaas = z.infer<typeof clienteDoAsaas>;
+/**
+ * A assinatura como a listagem devolve: além do id, o vínculo que NÓS gravamos no
+ * POST. É ele que separa a assinatura desta organização da que o cliente adotado
+ * já tinha na conta por outra integração.
+ */
+const assinaturaDaOrg = comId.extend({ externalReference: z.string().nullish() });
 const UUID = z.string().uuid();
 const cobrancaDoAsaas = z.object({
   id: z.string().min(1),
@@ -115,6 +169,9 @@ const assinaturaDoAsaas = z.object({
   dateCreated: z.string(),
   /** Valor por ciclo, em reais — é o que `trocarPlano` grava (`precoCents / 100`). */
   value: z.number().nullish(),
+  /** Vínculo que NÓS gravamos no POST (#4862): é ele que separa a assinatura desta
+   * organização da que o cliente adotado do painel já tinha por outra integração. */
+  externalReference: z.string().nullish(),
 });
 type AssinaturaDoAsaas = z.infer<typeof assinaturaDoAsaas>;
 /** Removida (`deleted`), INACTIVE ou EXPIRED. */
@@ -218,8 +275,8 @@ const eventoDoAsaas = z.object({
   // Tetos de tamanho: com o token vazado, cada aviso válido vira uma linha no arquivo de avisos.
   id: z.string().min(1).max(100),
   event: z.string().regex(/^[A-Z_]{1,64}$/),
-  payment: z.object({ customer: z.string().nullish() }).nullish(),
-  subscription: z.object({ customer: z.string().nullish() }).nullish(),
+  payment: z.object({ customer: z.string().max(100).nullish() }).nullish(),
+  subscription: z.object({ customer: z.string().max(100).nullish() }).nullish(),
 });
 
 /**
@@ -451,20 +508,88 @@ export function criarAdaptadorAsaas(dep: DependenciasDoAsaas): AdaptadorDeCobran
   }
 
   /**
-   * Busca pela `externalReference` (= org) antes de criar: o POST não tem chave
-   * de idempotência, e é a busca que cura o clique repetido e a resposta
-   * perdida. O documento vai só no corpo do POST. `notificationDisabled`: quem
-   * avisa o pagador é a régua do sistema, com a marca da empresa; os e-mails,
-   * SMS e WhatsApp do Asaas sairiam em dobro, com a marca dele, e alguns são cobrados.
+   * A lista de clientes da conta por um filtro da API (a única forma de busca que
+   * o Asaas oferece: `GET /customers` filtra por `externalReference`, `cpfCnpj`,
+   * `email`, `name` e `groupName`; o teto de `limit` é 100). Cliente removido não
+   * conta — a listagem só o mostra com `includeDeleted`.
+   */
+  async function clientesPor(filtro: Record<string, string>): Promise<ClienteDoAsaas[]> {
+    const consulta = new URLSearchParams({ ...filtro, limit: "100" });
+    const lidos = ler(listaDoAsaas(clienteDoAsaas), await chamar("GET", `/customers?${consulta}`)).data;
+    return lidos.filter((c) => c.deleted !== true);
+  }
+
+  /**
+   * O desempate quando MAIS DE UM cliente responde ao mesmo documento: o mais
+   * ANTIGO (`dateCreated` — o pagador original, não o duplicado que nasceu
+   * depois), e o menor id quando as datas empatam. A ordem da listagem do Asaas
+   * não entra: a escolha tem de ser a mesma em toda chamada.
+   */
+  function escolherCliente(candidatos: ClienteDoAsaas[]): ClienteDoAsaas {
+    const escolhido = [...candidatos].sort(
+      (a, b) => (a.dateCreated ?? "9999-12-31").localeCompare(b.dateCreated ?? "9999-12-31") || a.id.localeCompare(b.id),
+    )[0];
+    if (escolhido === undefined) throw new ErroDoProvedor(null, "resposta_invalida", false);
+    return escolhido;
+  }
+
+  /**
+   * Grava o vínculo da organização no cliente adotado (`PUT /customers/{id}` aceita
+   * `externalReference` e só altera os campos enviados). Chave sem permissão de
+   * editar cliente adota sem vínculo, e o cliente gravado na assinatura mantém a
+   * idempotência dali em diante.
+   */
+  async function vincularCliente(cliente: ClienteDoAsaas, orgId: string): Promise<void> {
+    try {
+      await chamar("PUT", `/customers/${encodeURIComponent(cliente.id)}`, { externalReference: orgId });
+    } catch (e) {
+      if (!(e instanceof ErroDoProvedor)) throw e;
+      logger.warn("cobranca.asaas.cliente_adotado_sem_vinculo", { status: e.status, codigo: e.codigo });
+    }
+  }
+
+  /**
+   * Busca pelo vínculo (`externalReference` = org) e, se não achar, pelo DOCUMENTO
+   * antes de criar: o POST não tem chave de idempotência, e é a busca que cura o
+   * clique repetido e a resposta perdida. O documento é o segundo caminho porque
+   * cliente cadastrado direto no painel do Asaas não tem `externalReference` — só
+   * a releitura por vínculo não o acha, e o POST criaria um duplicado com o mesmo
+   * CPF/CNPJ (#4768). Achado pelo documento e SEM vínculo, ele é ADOTADO (com o
+   * vínculo gravado nele) em vez de duplicado, tenha ou não assinatura ou cobrança
+   * na conta: o histórico dele fica onde está e não é relido — quem impede a
+   * adoção de puxar a assinatura de outra integração é a releitura de
+   * `iniciarAssinatura`, que só reaproveita assinatura ACTIVE com o NOSSO vínculo.
+   * `notificationDisabled` fica só na criação: quem avisa o pagador é a régua do
+   * sistema, com a marca da empresa, e os e-mails, SMS e WhatsApp do Asaas sairiam
+   * em dobro; num cliente que já existe na conta, desligar notificação mudaria o
+   * comportamento das outras integrações dele.
    */
   async function garantirCliente(org: Parameters<AdaptadorDeCobranca["garantirCliente"]>[0]): Promise<string> {
     const orgId = uuidDaOrg(org.id);
     if (org.documento === null) throw new ErroDoProvedor(null, "documento_obrigatorio", false);
     const documento = documentoDoPagador(org.documento);
     if (documento === null) throw new ErroDoProvedor(null, "documento_invalido", false);
-    const consulta = new URLSearchParams({ externalReference: orgId, limit: "10" });
-    const achado = ler(listaDoAsaas(comId), await chamar("GET", `/customers?${consulta}`)).data.find((c) => c.deleted !== true);
-    if (achado) return achado.id;
+    const pelaOrg = await clientesPor({ externalReference: orgId });
+    if (pelaOrg.length > 0) {
+      if (pelaOrg.length > 1) logger.warn("cobranca.asaas.cliente_duplicado", { quantidade: pelaOrg.length, por: "externalReference" });
+      return escolherCliente(pelaOrg).id;
+    }
+    const peloDocumento = await clientesPor({ cpfCnpj: documento });
+    // Vínculo de OUTRA organização não é adotado: `cobranca_assinaturas` tem índice
+    // único em (provedor, provedor_cliente_id), e o mesmo cliente para duas empresas
+    // faria o checkout da segunda falhar em toda tentativa. Cria-se um novo, como antes.
+    const livres = peloDocumento.filter((c) => !c.externalReference);
+    if (livres.length < peloDocumento.length) logger.warn("cobranca.asaas.cliente_de_outra_organizacao", {});
+    if (livres.length > 0) {
+      if (livres.length > 1) logger.warn("cobranca.asaas.cliente_duplicado", { quantidade: livres.length, por: "documento" });
+      const adotado = escolherCliente(livres);
+      // Adota mesmo com assinatura ou cobrança na conta: duplicar o pagador é o
+      // defeito da #4768, e o histórico dele não é tocado nem relido. O que garante
+      // que a assinatura do painel não vire a nossa é o filtro de vínculo em
+      // `iniciarAssinatura`.
+      await vincularCliente(adotado, orgId);
+      return adotado.id;
+    }
     return ler(
       comId,
       await chamar("POST", "/customers", {
@@ -480,19 +605,33 @@ export function criarAdaptadorAsaas(dep: DependenciasDoAsaas): AdaptadorDeCobran
   /**
    * Releitura antes de criar (sem chave de idempotência): uma assinatura ACTIVE
    * do cliente é a de um POST anterior que processou e perdeu a resposta.
-   * `urlDeVolta` e `chaveIdempotencia` não se aplicam: a fatura do Asaas não
-   * expira nem devolve o cliente — a volta é o "Já paguei", que relê.
+   * A fatura não expira. O callback só navega à ponte própria; a confirmação
+   * continua sendo a releitura autenticada, nunca a chegada à URL.
+   *
+   * O callback é MELHOR ESFORÇO: o Asaas exige que o `successUrl` seja do
+   * domínio cadastrado na conta, e a conta que não cadastrou recusa a criação
+   * inteira. Sem ele a fatura sai igual e o "Já paguei" relê o estado — então
+   * endereço que não serve (não-https, com credencial ou fragmento) segue sem
+   * callback, e a recusa 4xx do POST com callback é refeita UMA vez sem ele
+   * (4xx não processou nada; a releitura de ACTIVE acima já cobre o retry).
    */
   async function iniciarAssinatura(
     p: Parameters<AdaptadorDeCobranca["iniciarAssinatura"]>[0],
   ): ReturnType<AdaptadorDeCobranca["iniciarAssinatura"]> {
+    exigirMoedaDoAsaas(p.plano);
+    let callback = callbackDaVolta(p.urlDeVolta, dep.baseUrl !== undefined);
     const orgId = uuidDaOrg(p.orgId);
     const caminho = `/subscriptions?customer=${encodeURIComponent(p.clienteRef)}&status=ACTIVE&limit=10`;
-    const ativas = ler(listaDoAsaas(comId), await chamar("GET", caminho)).data.filter((s) => s.deleted !== true);
+    // Só a NOSSA assinatura ACTIVE é reaproveitada: o cliente pode ter sido ADOTADO
+    // do painel do Asaas (#4768) e já ter uma assinatura de outra integração. Sem o
+    // filtro, a cobrança se penduraria nela — valor, ciclo e cobranças de outro
+    // fluxo — e a gravaria como se fosse desta organização.
+    const ativas = ler(listaDoAsaas(assinaturaDaOrg), await chamar("GET", caminho)).data.filter(
+      (s) => s.deleted !== true && s.externalReference === orgId,
+    );
     const hoje = dataCivilEmSaoPaulo(agora());
     const fimDoTeste = p.trialAte === null ? null : dataCivilEmSaoPaulo(p.trialAte);
-    const assinaturaRef =
-      ativas[0]?.id ??
+    const criar = async () =>
       ler(
         comId,
         await chamar("POST", "/subscriptions", {
@@ -502,20 +641,44 @@ export function criarAdaptadorAsaas(dep: DependenciasDoAsaas): AdaptadorDeCobran
           value: p.plano.precoCents / 100,
           cycle: CICLO_DO_INTERVALO[p.plano.intervalo],
           nextDueDate: fimDoTeste !== null && fimDoTeste > hoje ? fimDoTeste : hoje,
+          ...(callback ? { callback } : {}),
           description: p.plano.nome,
           externalReference: orgId,
         }),
       ).id;
+    let assinaturaRef = ativas[0]?.id;
+    if (assinaturaRef === undefined) {
+      try {
+        assinaturaRef = await criar();
+      } catch (e) {
+        if (!(callback && recusaSemEfeito(e))) throw e;
+        logger.warn("cobranca.asaas.callback_nao_aplicado", { status: e.status, codigo: e.codigo, ponto: "assinatura" });
+        callback = null;
+        assinaturaRef = await criar();
+      }
+    }
     const primeira = (await cobrancasDaAssinatura(assinaturaRef)).find((c) => c.status === "PENDING" || c.status === "OVERDUE");
     if (primeira === undefined) throw new ErroDoProvedor(null, "cobranca_ainda_nao_gerada", true);
     const url = linkSeguro(primeira.invoiceUrl);
     if (url === null) throw new ErroDoProvedor(200, "resposta_invalida", false);
+    // Também cobre a primeira fatura de uma assinatura recuperada após retry.
+    // PUT idempotente altera só navegação; não cria cobrança nem marca pagamento.
+    // Falhar aqui não derruba um link válido: a fatura já existe.
+    if (callback) {
+      try {
+        await chamar("PUT", `/payments/${encodeURIComponent(primeira.id)}`, { callback });
+      } catch (e) {
+        if (!(e instanceof ErroDoProvedor)) throw e;
+        logger.warn("cobranca.asaas.callback_nao_aplicado", { status: e.status, codigo: e.codigo, ponto: "fatura" });
+      }
+    }
     // A cobrança é a "sessão" do Asaas: é a id que a troca de plano expira no
     // provedor (#2609) — guardada junto com o link em `checkout_sessao_id`.
     return { url, expiraEm: null, assinaturaRef, sessaoId: primeira.id };
   }
 
   async function iniciarAjusteProporcional(p: Parameters<AdaptadorDeCobranca["iniciarAjusteProporcional"]>[0]) {
+    exigirMoedaDoAsaas(p.plano);
     const externalReference = `upgrade:${uuidDaOrg(p.orgId)}:${p.chaveIdempotencia}`;
     const consulta = new URLSearchParams({ customer: p.clienteRef, externalReference, limit: "10" });
     const existentes = ler(listaDoAsaas(cobrancaDoAsaas), await chamar("GET", `/payments?${consulta}`)).data;
@@ -573,10 +736,20 @@ export function criarAdaptadorAsaas(dep: DependenciasDoAsaas): AdaptadorDeCobran
    * antiga, senão da pendente, só da principal viva; (8)
    * `pagamentoSemAssinaturaViva` é sempre false no Asaas: a API não diz quando
    * a assinatura foi removida, e o DELETE leva junto as cobranças abertas.
+   *
+   * #4862 — o vínculo vale também para a LEITURA: o cliente pode ter sido
+   * ADOTADO do painel (#4768) e carregar assinatura e cobrança de OUTRA
+   * integração. Entram nesta situação só as assinaturas com
+   * `externalReference` = id da organização e só as cobranças dessas assinaturas.
+   * Sem isso, `assinaturasVivas`, `jaPagou` e `proximoVencimento` sairiam
+   * calculados com o que é de fora, e a `assinaturaRef` devolvida (gravada em
+   * `provedor_assinatura_id` por `sincronizar`) apontaria para a assinatura de
+   * outra integração — cancelar ou trocar plano agiria sobre ela.
    */
-  async function lerSituacao(p: { clienteRef: string }): Promise<Situacao> {
+  async function lerSituacao(p: { clienteRef: string; organizacao: string }): Promise<Situacao> {
+    const orgId = uuidDaOrg(p.organizacao);
     const cliente = encodeURIComponent(p.clienteRef);
-    const [assinaturas, pagas] = await Promise.all([
+    const [lidas, pagasLidas] = await Promise.all([
       // includeDeleted: sem ele a removida some, e o cancelamento viraria "teste vencido".
       chamar("GET", `/subscriptions?customer=${cliente}&includeDeleted=true&limit=100`).then(
         (d) => ler(listaDoAsaas(assinaturaDoAsaas), d).data,
@@ -587,6 +760,12 @@ export function criarAdaptadorAsaas(dep: DependenciasDoAsaas): AdaptadorDeCobran
         ),
       ).then((listas) => listas.flat()),
     ]);
+    // O filtro é na RESPOSTA, não na consulta: a listagem de assinaturas do Asaas
+    // não aceita `externalReference` (só a de clientes), e a consulta pelo vínculo
+    // não traria as REMOVIDAS que o includeDeleted precisa ver.
+    const assinaturas = lidas.filter((s) => s.externalReference === orgId);
+    const nossas = new Set(assinaturas.map((s) => s.id));
+    const pagas = pagasLidas.filter((c) => c.subscription !== null && c.subscription !== undefined && nossas.has(c.subscription));
     const recentes = [...assinaturas].sort((a, b) => b.dateCreated.localeCompare(a.dateCreated));
     const vivas = recentes.filter((s) => !ehTerminal(s));
     const principal = vivas[0] ?? null;
@@ -643,6 +822,7 @@ export function criarAdaptadorAsaas(dep: DependenciasDoAsaas): AdaptadorDeCobran
    * todas levam o valor novo.
    */
   async function trocarPlano(p: Parameters<AdaptadorDeCobranca["trocarPlano"]>[0]): Promise<void> {
+    exigirMoedaDoAsaas(p.plano);
     const hoje = dataCivilEmSaoPaulo(agora());
     const cobrancas = await cobrancasDaAssinatura(p.assinaturaRef);
     if (cobrancas.some((c) => c.status === "OVERDUE" || (c.status === "PENDING" && c.dueDate <= hoje))) {
@@ -665,8 +845,8 @@ export function criarAdaptadorAsaas(dep: DependenciasDoAsaas): AdaptadorDeCobran
   }
 
   /** O Asaas não tem portal: "gerenciar" é pagar a cobrança aberta. Sem ela, `null` (a rota responde 409 `sem_portal`). */
-  async function urlDeGerenciar(p: { clienteRef: string }): Promise<string | null> {
-    return (await lerSituacao({ clienteRef: p.clienteRef })).linkDePagamento;
+  async function urlDeGerenciar(p: { clienteRef: string; urlDeVolta: string; organizacao: string }): Promise<string | null> {
+    return (await lerSituacao({ clienteRef: p.clienteRef, organizacao: p.organizacao })).linkDePagamento;
   }
 
   return {

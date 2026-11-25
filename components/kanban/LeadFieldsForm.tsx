@@ -1,6 +1,7 @@
 "use client";
 
 import { useActiveOrg } from "@/hooks/auth/AuthProvider";
+import { roleAtLeast } from "@/lib/auth/types";
 import { useT } from "@/hooks/i18n/useT";
 import { useEffect, useImperativeHandle, useState, type Ref } from "react";
 import { useForm } from "react-hook-form";
@@ -13,10 +14,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { useEditLead } from "@/hooks/kanban/useUpdateLead";
 import type { Lead } from "@/lib/types/leads";
 import { updateLeadSchema, type UpdateLeadInput } from "@/lib/schemas/leads";
-import { MOEDA_PADRAO, parseReaisToCents, simboloDaMoeda } from "@/lib/money";
+import { MOEDA_PADRAO, formatCents, parseReaisToCents, simboloDaMoeda } from "@/lib/money";
+import { BotaoRegistrarVenda } from "@/components/vendas/BotaoRegistrarVenda";
+import { useVendasDoNegocio } from "@/hooks/vendas/useVendasRegistradas";
 import { soChavesAlteradas } from "@/lib/leads/custom-fields-so-diff";
 import { CustomFieldsEditor, type CustomFieldDef } from "@/components/contacts/CustomFieldsEditor";
 import { ContactTagsEditor } from "@/components/inbox/ContactTagsEditor";
+import { lerRecorrenciaDoFormulario } from "@/lib/leads/valor-recorrente";
 import { EcoDoValor } from "./EcoDoValor";
 import type { CampoConfirmadoDoDocumento } from "./RevisaoDoDocumento";
 
@@ -31,6 +35,9 @@ interface FormShape {
   title: string;
   description: string;
   valueReais: string;
+  /** Mensalidade e duração do contrato (fatia 1 da #3602), em texto. */
+  valorRecorrenteReais: string;
+  recorrenciaMeses: string;
   expected_close_date: string;
 }
 
@@ -48,11 +55,23 @@ interface Props {
   onCancel?: () => void;
   /** Confirmação externa do próprio card: preserva os outros campos em edição. */
   controle?: Ref<ControleDosCamposDoNegocio>;
+  /**
+   * A DESCRIÇÃO ALTA (#4151): na página inteira do negócio ela é o campo que se
+   * lê e se reescreve, e três linhas davam uma janela de 3,5 linhas de texto
+   * para o único campo longo do formulário. Na gaveta de 28rem o padrão continua
+   * sendo o de sempre — não é a mesma régua de espaço.
+   */
+  descricaoAlta?: boolean;
 }
 
 function centsToReais(cents: number | null | undefined): string {
   if (cents === null || cents === undefined) return "";
   return (cents / 100).toFixed(2).replace(".", ",");
+}
+
+/** Duração em meses como texto (`null` = sem prazo, que é o campo vazio). */
+function mesesComoTexto(meses: number | null | undefined): string {
+  return meses === null || meses === undefined ? "" : String(meses);
 }
 
 /**
@@ -64,13 +83,24 @@ function centsToReais(cents: number | null | undefined): string {
  * registro justamente de quem o produziu — a funcionalidade que prova "sua ação
  * fica registrada" provaria isso para todo mundo menos para o autor.
  */
-export function LeadFieldsForm({ lead, pipelineId, fieldDefs = [], onSaved, onCancel, controle }: Props) {
+export function LeadFieldsForm({ lead, pipelineId, fieldDefs = [], onSaved, onCancel, controle, descricaoAlta = false }: Props) {
   const t = useT();
   const org = useActiveOrg();
   // A moeda do negócio JÁ GRAVADO vence: trocar a moeda da empresa não
   // reescreve o que nasceu antes, e o cartão e o dossiê mostram a persistida.
   const moedaDoValor = lead.currency ?? org?.currency ?? MOEDA_PADRAO;
   const edit = useEditLead(pipelineId);
+  // Com venda registrada, o Valor É a soma das vendas na moeda do negócio —
+  // o banco grava isso em `value_cents` (migration 9450). Aqui a soma sai da
+  // mesma lista, para o campo acompanhar a venda recém-registrada sem esperar
+  // o negócio ser relido.
+  const { data: vendas } = useVendasDoNegocio(lead.id);
+  const vendasDoNegocio = Array.isArray(vendas) ? vendas : [];
+  const valorPelasVendas = vendasDoNegocio.length > 0;
+  const somaDasVendas = vendasDoNegocio.reduce(
+    (soma, v) => soma + (v.currency.toUpperCase() === moedaDoValor.toUpperCase() ? v.valor_cents : 0),
+    0,
+  );
   const [customFields, setCustomFields] = useState<Record<string, unknown>>(lead.custom_fields ?? {});
   // A RÉGUA do diff (issue #2132): o valor carregado ao abrir. Só o que a
   // pessoa mudar daqui vai viajar — devolver o objeto inteiro sobrescrevia o
@@ -84,6 +114,8 @@ export function LeadFieldsForm({ lead, pipelineId, fieldDefs = [], onSaved, onCa
       title: lead.title,
       description: lead.description ?? "",
       valueReais: centsToReais(lead.value_cents),
+      valorRecorrenteReais: centsToReais(lead.recurring_value_cents),
+      recorrenciaMeses: mesesComoTexto(lead.recurring_months),
       expected_close_date: lead.expected_close_date ?? "",
     },
   });
@@ -93,12 +125,26 @@ export function LeadFieldsForm({ lead, pipelineId, fieldDefs = [], onSaved, onCa
       title: lead.title,
       description: lead.description ?? "",
       valueReais: centsToReais(lead.value_cents),
+      valorRecorrenteReais: centsToReais(lead.recurring_value_cents),
+      recorrenciaMeses: mesesComoTexto(lead.recurring_months),
       expected_close_date: lead.expected_close_date ?? "",
     });
     setCustomFields(lead.custom_fields ?? {});
     setCamposCarregados(lead.custom_fields ?? {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lead.id]);
+
+  // O Valor relido do banco entra no campo quando a pessoa não o mexeu: apagar
+  // a última venda devolve o valor digitado (decisão 2B do doc 396), e o campo
+  // volta editável com ELE — não com a soma que estava em memória, que um
+  // Salvar gravaria por cima.
+  useEffect(() => {
+    const doBanco = centsToReais(lead.value_cents);
+    const carregado = form.formState.defaultValues?.valueReais;
+    if (carregado === doBanco || form.getValues("valueReais") !== carregado) return;
+    form.resetField("valueReais", { defaultValue: doBanco });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lead.value_cents]);
 
   useImperativeHandle(controle, () => ({
     confirmarCampo(confirmacao) {
@@ -125,10 +171,38 @@ export function LeadFieldsForm({ lead, pipelineId, fieldDefs = [], onSaved, onCa
       }
     }
 
+    // O RECORRENTE (fatia 1 da #3602) — a régua compartilhada com o diálogo de
+    // criação e com o de edição; aqui também vai sempre, para apagar o campo
+    // significar "não tem mais mensalidade".
+    // Apagar a mensalidade de um negócio que a TINHA leva a duração junto: é a
+    // regra 1 do trio, a mesma do servidor (`recorrenciaParaGravar`). Duração
+    // digitada num negócio que nunca teve mensalidade segue sendo recusa.
+    const apagouAMensalidade =
+      lead.recurring_value_cents != null && values.valorRecorrenteReais.trim() === "";
+    const leitura = lerRecorrenciaDoFormulario(
+      values.valorRecorrenteReais,
+      apagouAMensalidade ? "" : values.recorrenciaMeses,
+      moedaDoValor,
+    );
+    if (!leitura.ok) {
+      form.setError(leitura.campo === "valor" ? "valorRecorrenteReais" : "recorrenciaMeses", {
+        message:
+          leitura.motivo === "valor_invalido"
+            ? t("Valor inválido")
+            : leitura.motivo === "duracao_invalida"
+              ? t("Duração inválida")
+              : t("Informe a mensalidade para usar a duração"),
+      });
+      return;
+    }
+
     const patch: Record<string, unknown> = {
       title: values.title.trim(),
       description: values.description.trim() ? values.description.trim() : null,
-      value_cents: valueCents,
+      // Com venda registrada, o valor é do banco (a soma): o formulário não o
+      // reescreve — um Salvar com a ficha aberta antes da venda apagaria a soma.
+      ...(valorPelasVendas ? {} : { value_cents: valueCents }),
+      ...leitura.trio,
       expected_close_date: values.expected_close_date || null,
       // Só o que a pessoa alterou (issue #2132) — o merge continua do servidor.
       ...(fieldDefs.length > 0
@@ -151,7 +225,7 @@ export function LeadFieldsForm({ lead, pipelineId, fieldDefs = [], onSaved, onCa
       // O que acabou de gravar vira a nova régua: o segundo salvamento não
       // reenvia o primeiro, e uma limpeza alheia no intervalo não é atropelada.
       setCamposCarregados({ ...customFields });
-      toast.success(t("Lead atualizado"));
+      toast.success(t("Negócio atualizado"));
       onSaved?.();
     } catch {
       // toast already shown
@@ -171,7 +245,7 @@ export function LeadFieldsForm({ lead, pipelineId, fieldDefs = [], onSaved, onCa
 
         <div className="space-y-2">
           <Label htmlFor="description">{t("Descrição")}</Label>
-          <Textarea id="description" rows={3} {...form.register("description")} />
+          <Textarea id="description" rows={descricaoAlta ? 10 : 3} {...form.register("description")} />
         </div>
 
         <div className="grid grid-cols-2 gap-3">
@@ -179,13 +253,44 @@ export function LeadFieldsForm({ lead, pipelineId, fieldDefs = [], onSaved, onCa
             {/* O rótulo segue a moeda do NEGÓCIO (a organização é a reserva):
                   `R$` em duro mentia para quem opera em euro. */}
             <Label htmlFor="valueReais">{t("Valor")} ({simboloDaMoeda(moedaDoValor)})</Label>
-            <Input
-              id="valueReais"
-              inputMode="decimal"
-              placeholder="0,00"
-              {...form.register("valueReais")}
-            />
-            <EcoDoValor control={form.control} moeda={moedaDoValor} />
+            <div className="flex items-center gap-1">
+              {valorPelasVendas ? (
+                <Input
+                  id="valueReais"
+                  readOnly
+                  aria-readonly
+                  data-testid="valor-pelas-vendas"
+                  value={formatCents(somaDasVendas, moedaDoValor)}
+                  className="bg-surface-elevated"
+                />
+              ) : (
+                <Input
+                  id="valueReais"
+                  inputMode="decimal"
+                  placeholder="0,00"
+                  {...form.register("valueReais")}
+                />
+              )}
+              {/* A ÚNICA porta de "registrar venda" no negócio: o "+" mora no
+                  próprio Valor, e cada venda soma nele. */}
+              {/* Piso do `POST /api/v1/vendas`: abaixo de `agent` o "+" só terminaria em 403. */}
+              {roleAtLeast(org?.role, "agent") && (
+                <BotaoRegistrarVenda
+                  leadId={lead.id}
+                  titulo={lead.title}
+                  moeda={moedaDoValor.toUpperCase()}
+                  className="size-9 border border-border"
+                  testId="valor-registrar-venda"
+                />
+              )}
+            </div>
+            {valorPelasVendas ? (
+              <p className="text-xs text-text-muted" data-testid="valor-pelas-vendas-legenda">
+                {t("Soma de")} {vendasDoNegocio.length} {t("venda(s) registrada(s)")}
+              </p>
+            ) : (
+              <EcoDoValor control={form.control} moeda={moedaDoValor} />
+            )}
             {form.formState.errors.valueReais && (
               <p className="text-xs text-error-fg">
                 {t(form.formState.errors.valueReais.message ?? "")}
@@ -199,6 +304,48 @@ export function LeadFieldsForm({ lead, pipelineId, fieldDefs = [], onSaved, onCa
               type="date"
               {...form.register("expected_close_date")}
             />
+          </div>
+        </div>
+
+        {/* A MENSALIDADE (fatia 1 da #3602) no dossiê: o mesmo par de campos do
+            diálogo do funil, com a mesma leitura — quem edita o negócio da
+            conversa não deveria precisar abrir o quadro para corrigir o
+            contrato. */}
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <Label htmlFor="valorRecorrenteReais">
+              {t("Valor recorrente (mensal)")} ({simboloDaMoeda(moedaDoValor)})
+            </Label>
+            <Input
+              id="valorRecorrenteReais"
+              inputMode="decimal"
+              placeholder="0,00"
+              {...form.register("valorRecorrenteReais")}
+            />
+            <EcoDoValor
+              control={form.control}
+              moeda={moedaDoValor}
+              campo="valorRecorrenteReais"
+            />
+            {form.formState.errors.valorRecorrenteReais && (
+              <p className="text-xs text-error-fg">
+                {form.formState.errors.valorRecorrenteReais.message}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="recorrenciaMeses">{t("Duração (meses)")}</Label>
+            <Input
+              id="recorrenciaMeses"
+              inputMode="numeric"
+              placeholder={t("sem prazo")}
+              {...form.register("recorrenciaMeses")}
+            />
+            {form.formState.errors.recorrenciaMeses && (
+              <p className="text-xs text-error-fg">
+                {form.formState.errors.recorrenciaMeses.message}
+              </p>
+            )}
           </div>
         </div>
 

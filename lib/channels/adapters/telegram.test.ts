@@ -80,7 +80,7 @@ describe("Telegram channel adapter", () => {
         kind: "text",
         body: "Olá, Ana",
       }),
-    ).resolves.toEqual({ externalId: "987654321:88" });
+    ).resolves.toEqual({ externalId: "tg:connection-1:987654321:88" });
 
     expect(connection.eq).toHaveBeenCalledWith("organization_id", "org-1");
     expect(connection.eq).toHaveBeenCalledWith("id", "connection-1");
@@ -157,7 +157,7 @@ describe("Telegram channel adapter", () => {
         kind: "text",
         body: "Resposta automática",
       }),
-    ).resolves.toEqual({ externalId: "987654321:88" });
+    ).resolves.toEqual({ externalId: "tg:connection-1:987654321:88" });
     expect(capability.eq).toHaveBeenCalledWith("capability", "ai_replies");
   });
 
@@ -182,7 +182,7 @@ describe("Telegram channel adapter", () => {
         body: "Legenda",
         media: { url: "https://storage.example/signed", mime: "image/jpeg", caption: "Legenda" },
       }),
-    ).resolves.toEqual({ externalId: "987654321:89" });
+    ).resolves.toEqual({ externalId: "tg:connection-1:987654321:89" });
     expect(mocks.sendMedia).toHaveBeenCalledWith({
       token: "server-only-token",
       chatId: "987654321",

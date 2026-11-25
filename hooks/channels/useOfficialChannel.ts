@@ -5,6 +5,12 @@ import { showApiError } from "@/components/feedback/ApiErrorToast";
 import { apiClient } from "@/lib/api/client";
 
 export interface OfficialChannelState {
+  /**
+   * A janela da Meta (Embedded Signup, #4074). `null`/ausente = a instalação não
+   * cadastrou App ID, Configuration ID e chave secreta em `/admin/meta`, e o botão
+   * não aparece.
+   */
+  embeddedSignup?: { appId: string; configId: string; graphVersion: string } | null;
   channel_session_id?: string | null;
   connected: boolean;
   /** Existe token gravado? O token em si NUNCA volta — ver a rota. */
@@ -16,6 +22,17 @@ export interface OfficialChannelState {
   displayName: string | null;
   phoneNumber: string | null;
   status: string | null;
+  /**
+   * DE ONDE veio a conexão (#4074): `embedded_signup` = janela da Meta com o app
+   * da instalação; `token_manual` = credencial colada na aba. `inferida` marca
+   * as linhas anteriores à migration 9328, que só podiam ser manuais. `null` =
+   * coluna ausente ou valor desconhecido — a tela não inventa rótulo.
+   */
+  origem?: {
+    valor: "embedded_signup" | "token_manual";
+    rotulo: string;
+    inferida: boolean;
+  } | null;
   webhook: {
     callbackUrl: string;
     verifyToken: string | null;
@@ -73,6 +90,30 @@ export function useConnectOfficialChannel() {
     mutationFn: async (input: ConnectInput) =>
       apiClient.post<{ data: { connected: boolean; displayName: string; phoneNumber: string | null } }>(
         "/api/v1/channels/official",
+        input,
+      ),
+    onError: showApiError,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["official-channel"] });
+    },
+  });
+}
+
+export interface EmbeddedSignupInput {
+  code: string;
+  /** Na coexistência a Meta pode não mandar o número; o servidor o busca pela conta. */
+  phone_number_id?: string;
+  waba_id: string;
+  modo?: "coexistencia" | "padrao";
+}
+
+/** Conecta o número escolhido na janela da Meta (Embedded Signup, #4074). */
+export function useConnectOfficialEmbeddedSignup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: EmbeddedSignupInput) =>
+      apiClient.post<{ data: { connected: boolean; displayName: string; phoneNumber: string | null } }>(
+        "/api/v1/channels/official/embedded-signup",
         input,
       ),
     onError: showApiError,

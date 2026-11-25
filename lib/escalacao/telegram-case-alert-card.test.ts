@@ -1,50 +1,38 @@
 import { describe, expect, it } from "vitest";
 import { formatTelegramCaseAlertCard } from "./telegram-case-alert-card";
 
-const caseId = "12345678-1234-1234-1234-123456789012";
-
 describe("formatTelegramCaseAlertCard", () => {
-  it("shares concise case context without customer identity or transcript", () => {
+  it("contains concise case context without customer identity or conversation transcript", () => {
     const text = formatTelegramCaseAlertCard({
-      caseId,
+      caseId: "22222222-3333-4333-8333-555555555555",
       canal: "WhatsApp",
       titulo: "Pedido de uniforme",
       contexto: "A cliente quer comprar uniforme escolar.",
       bloqueio: "Confirmar a escola e os tamanhos.",
       crmUrl: "https://crm.example/app/ai/cases?caso=abc",
     });
-    expect(text).toContain("Caso: 12345678");
+    expect(text).toContain("Caso: 22222222");
     expect(text).toContain("Canal: WhatsApp");
-    expect(text).toContain("━━━━ CONTEXTO ━━━━");
+    expect(text).toContain("CONTEXTO");
     expect(text).toContain("Abrir no CRM:");
-    expect(text).not.toContain("ÚLTIMAS MENSAGENS");
-    expect(text).not.toContain("Nome do cliente");
+    expect(text).not.toContain("Raissa de Almeida");
+    expect(text).not.toContain("5534991234567");
+    expect(text).not.toContain("Qual o preço?");
   });
 
-  it("bounds untrusted text and the total Telegram message size", () => {
+  it("redacts personal data and bounds untrusted text and total message size", () => {
     const text = formatTelegramCaseAlertCard({
-      caseId,
+      caseId: "33333333-3333-4333-8333-555555555555",
       canal: "Telegram",
       titulo: "x".repeat(500),
-      contexto: "y".repeat(5000),
+      contexto: "Contato julia@example.com, telefone +55 (34) 99123-4567. " + "y".repeat(5000),
       bloqueio: "z".repeat(1000),
       crmUrl: "https://crm.example/case",
     });
     expect(text.length).toBeLessThanOrEqual(4000);
-  });
-
-  it("redacts phone numbers and email addresses in case summaries", () => {
-    const text = formatTelegramCaseAlertCard({
-      caseId,
-      canal: "WhatsApp",
-      titulo: "Pedido para teste@example.com",
-      contexto: "Retornar para +55 (34) 99123-4567.",
-      bloqueio: null,
-      crmUrl: "https://crm.example/case",
-    });
     expect(text).toContain("[e-mail omitido]");
     expect(text).toContain("[telefone omitido]");
-    expect(text).not.toContain("teste@example.com");
+    expect(text).not.toContain("julia@example.com");
     expect(text).not.toContain("99123-4567");
   });
 });

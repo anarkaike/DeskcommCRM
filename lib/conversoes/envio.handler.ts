@@ -51,7 +51,11 @@ import type {
   ResultadoDeEnvio,
 } from "@/lib/plataformas-de-anuncio/types";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { lerAtribuicao } from "./leitura-da-atribuicao";
+import {
+  lerAtribuicao,
+  motivoDeContaDaEtapaGoogle,
+  type LeituraDeAtribuicao,
+} from "./leitura-da-atribuicao";
 import { lerValorDaConversa } from "./valor-da-conversa";
 import { lerVendaPeloCanal } from "./venda-pelo-canal";
 import { ehEventoDeEtapa } from "./regras-google";
@@ -101,14 +105,26 @@ export async function processarConversao(
   if (!row.entity_id) return ok("skipped", "sem_entidade");
 
   const admin = createAdminClient();
+  const etapaGoogle = qualificacao !== undefined && !qualificacao.eventoMeta;
 
   // ⚠️ Filtro de organização junto do id: o client é service-role e bypassa RLS.
-  const { data, error } = await admin
+  const campos = etapaGoogle
+    ? "id, status, value_cents, currency, closed_at, contact_id, source_metadata"
+    : "id, status, value_cents, currency, closed_at, contact_id";
+  const { data: lead, error } = await admin
     .from("crm_leads")
-    .select("id, status, value_cents, currency, closed_at, contact_id")
+    .select(campos)
     .eq("id", row.entity_id)
     .eq("organization_id", row.organization_id)
-    .maybeSingle();
+    .maybeSingle<{
+      id: string;
+      status: string;
+      value_cents: number | null;
+      currency: string | null;
+      closed_at: string | null;
+      contact_id: string | null;
+      source_metadata?: unknown;
+    }>();
 
   if (error) {
     // Erro de leitura é transitório por natureza (rede/banco). Marcar `error`
@@ -120,16 +136,7 @@ export async function processarConversao(
       detail: `leitura do lead falhou: ${error.message}`,
     };
   }
-  if (!data) return ok("skipped", "lead_inexistente");
-
-  const lead = data as {
-    id: string;
-    status: string;
-    value_cents: number | null;
-    currency: string | null;
-    closed_at: string | null;
-    contact_id: string | null;
-  };
+  if (!lead) return ok("skipped", "lead_inexistente");
 
   // O filtro que faz `lead.stage_changed` valer a pena escutar: a grande maioria
   // das mudanças de etapa não é fechamento, e sai por aqui sem tocar no banco de
@@ -141,25 +148,28 @@ export async function processarConversao(
     return ok("skipped", "ja_enviada");
   }
 
-  const leitura =
+  const leitura: LeituraDeAtribuicao =
     registro?.remote_request_id && ehPlataformaConhecida(registro.platform)
       ? {
-          temAtribuicao: true as const,
+          temAtribuicao: true,
           atribuicao: { plataforma: registro.platform, cliqueDeOrigem: "", telefone: null },
         }
-      : await lerAtribuicao(admin, row.organization_id, lead.contact_id);
+      : await lerAtribuicao(
+          admin,
+          row.organization_id,
+          lead.contact_id,
+          etapaGoogle ? lead : undefined,
+        );
   if (!leitura.temAtribuicao) return ok("skipped", leitura.motivo);
 
-  const { plataforma, cliqueDeOrigem, telefone } = leitura.atribuicao;
-  // Presente só na captura de PÁGINA (formulário): o ramo do protocolo
-  // pendente monta a atribuição sem identidade de navegador, e o `in` cobre o
-  // tipo sem inventar campo.
-  const identidadeDoNavegador =
-    "identidadeDoNavegador" in leitura.atribuicao ? leitura.atribuicao.identidadeDoNavegador : undefined;
-  const identificadoresGoogle =
-    "identificadoresGoogle" in leitura.atribuicao
-      ? leitura.atribuicao.identificadoresGoogle
-      : undefined;
+  const {
+    plataforma,
+    cliqueDeOrigem,
+    telefone,
+    identidadeDoNavegador,
+    identificadoresGoogle,
+    contaGoogleDoClique,
+  } = leitura.atribuicao;
   // A regra de etapa é de UMA plataforma: o lead que veio da outra não é dela.
   // Sai sem linha no livro-razão — não há pendência, havia nada a reportar.
   if (qualificacao && !qualificacao.eventoMeta && plataforma !== "google_ads")
@@ -343,9 +353,11 @@ export async function processarConversao(
     // ─── EVENTO DE ETAPA FORA DO VOCABULÁRIO DO CANAL (#2457) ──────────────
     //
     // `eventoNoCanal` é null quando o nome escolhido para a etapa não está em
-    // `ChannelConversionInput` — `QualifiedLead` e `ViewContent` estão na lista
-    // que a própria tela oferece (`EVENTOS_DA_META`) e fora da do canal. Sem
-    // conexão direta não há CAMINHO nenhum para eles, e gravar `sem_conexao`
+    // `EVENTOS_DE_ETAPA_NO_CANAL`. Foi o caso de `QualifiedLead` e `ViewContent`
+    // até 27/10/2026, quando o canal passou a repassá-los; hoje a lista do
+    // canal cobre a da tela, e este ramo vale para um retrato gravado com um
+    // nome que o canal não conhece (versão futura da tela, dado antigo). Sem
+    // conexão direta não há CAMINHO nenhum para ele, e gravar `sem_conexao`
     // mandava a pessoa preencher um token que esta instalação só-com-canal
     // nunca vai ter.
     //
@@ -390,6 +402,24 @@ export async function processarConversao(
     return ok("skipped", "sem_valor");
   }
   if (!qualificacao && modoDeValor === "nunca") valorDaVenda = null;
+
+  if (qualificacao && plataforma === "google_ads") {
+    if (registro?.remote_request_id) {
+      // O Data Manager confere a conta e a ação do protocolo. Nunca reenviar em seu lugar.
+      if (!transporte.consultar) throw new Error("Consulta do protocolo do Google indisponível.");
+    } else {
+      const motivo = await motivoDeContaDaEtapaGoogle(
+        admin,
+        row.organization_id,
+        contaGoogleDoClique,
+        credencial.credencial.google?.customerId,
+      );
+      if (motivo) {
+        await registra("skipped", motivo);
+        return ok("skipped", motivo);
+      }
+    }
+  }
 
   const acaoDoGoogle = registro?.google_action_id ?? qualificacao?.googleActionId;
   if (qualificacao && acaoDoGoogle && credencial.credencial.google) {

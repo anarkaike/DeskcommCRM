@@ -134,6 +134,7 @@ describe("Telegram case alert event handler", () => {
     expect(body).not.toContain("ÚLTIMAS MENSAGENS");
     expect(body).not.toContain("Raissa de Almeida");
     expect(body).not.toContain("Preciso de uniforme para meu filho.");
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("from messages where organization_id"))).toBe(false);
     expect(body).toContain("Abrir no CRM:");
     expect(bodyWithoutLinks).not.toMatch(/\+?\d{10,}/);
     expect(body).not.toMatch(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);

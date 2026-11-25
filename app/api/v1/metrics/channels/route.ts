@@ -8,15 +8,19 @@
  * `fn_attendant_metrics` (0037) e só troca o `group by` por
  * `channel_session_id`.
  *
- * ## Escopo = a PRÓPRIA RLS
+ * ## Escopo = a PRÓPRIA RLS (sessão) ou a linha do token (servidor)
  *
- * Igual à rota irmã: a RPC é SECURITY INVOKER e roda com o client de SESSÃO
- * (cookie validado), então a policy de `conversations` (0035) faz o recorte —
- * agent vê só as próprias conversas, manager+ a organização (e `owner_user_id`
- * restringe ainda mais quem compara). A organização vem de
- * `authz.org.orgId`, NUNCA da query: quem escreve a query é quem já está
- * logado nela. Piso de rota = `agent`, o mesmo da irmã — um piso maior
- * esconderia da pessoa as conversas dela.
+ * Igual à rota irmã: na sessão a RPC é SECURITY INVOKER e roda com o client de
+ * SESSÃO (cookie validado), então a policy de `conversations` (0035) faz o
+ * recorte — agent vê só as próprias conversas, manager+ a organização (e
+ * `owner_user_id` restringe ainda mais quem compara). A organização vem de
+ * `authz.organizationId`, NUNCA da query. Piso de rota = `agent`, o mesmo da
+ * irmã — um piso maior esconderia da pessoa as conversas dela.
+ *
+ * Sessão OU token de servidor `dsk_…` com `mcp:read` (Spec 33, R3). Pelo token
+ * não há RLS por atendente: o cliente é o de serviço e a leitura é a da
+ * organização inteira, então o token exige papel `manager` (a tela de um agent
+ * não abre mais do que as conversas dele).
  *
  * ## Read-only ⇒ sem audit
  *
@@ -34,30 +38,25 @@ import { randomUUID } from "node:crypto";
 import { type NextRequest } from "next/server";
 import { z } from "zod";
 
+import { resolveAuthDual, tetoDeEscritaDoToken } from "@/lib/api/auth-dual";
 import { fail, ok } from "@/lib/api/wrappers";
-import { requireRole } from "@/lib/auth/require-role";
 import { montarLinhas, type LinhaCanalBruta } from "@/lib/metrics/canais";
-import { createClient } from "@/lib/supabase/server";
 import { traduzir } from "@/lib/i18n/dicionario";
+import { IDIOMA_PADRAO } from "@/lib/i18n/idiomas";
+import {
+  datasDaJanela,
+  janelaDoDesempenho,
+  MAXIMO_DE_DIAS,
+  MS_POR_DIA,
+} from "@/lib/metrics/periodo-do-desempenho";
+import { fusoUtilizavel } from "@/lib/tempo/fusos";
 
 export const dynamic = "force-dynamic";
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-const MS_POR_DIA = 24 * 60 * 60 * 1000;
 
-/**
- * Quantos dias a janela pode cobrir. O teto limita o que o relatório AFIRMA,
- * não o custo. Desde a migration 0596 (#2554), esta RPC e a irmã
- * `fn_attendant_metrics` cortam pela janela ANTES do lateral: o custo acompanha
- * as conversas DA janela, não o histórico inteiro da organização. Medido na
- * triagem do #2554 (Postgres do baseline, 10 mil conversas espalhadas em 120
- * dias, sob RLS, limite de 8 s do papel authenticated): janela de 1 dia em
- * ~1,4–1,8 s; 30 dias (~2.500 conversas na janela, a janela que a tela usa) e
- * 90 dias ainda passam de 8 s — nesse volume a tela recebe ERRO em vez de
- * lentidão, aqui e na irmã por atendente (issue #2514).
- */
-const DIAS_MAXIMOS = 90;
-
+// Em organizações grandes, até janelas válidas podem esgotar o tempo da
+// RPC (veja o teste de custo em metricas-cortam-pela-janela.test.ts, #2554).
 const querySchema = z.object({
   from: z.string().datetime({ offset: true }).optional(),
   to: z.string().datetime({ offset: true }).optional(),
@@ -71,11 +70,20 @@ interface MetricsPayload {
 export async function GET(req: NextRequest): Promise<Response> {
   const requestId = randomUUID();
 
-  // Piso `agent`: a RLS é quem separa "as suas" da "da organização".
-  const authz = await requireRole("agent", { requestId, resource: "metrics" });
+  // Piso `agent` na sessão: a RLS é quem separa "as suas" da "da organização".
+  // O token vê a organização inteira, então exige `manager`.
+  const authz = await resolveAuthDual(req, {
+    requestId,
+    resource: "metrics",
+    role: "agent",
+    scope: "mcp:read",
+    tokenRole: "manager",
+  });
   if (!authz.ok) return authz.response;
-  const t = (texto: string) => traduzir(texto, authz.user.idioma);
-  const { org: activeOrg } = authz;
+  // Está em PUBLIC_PATHS: o teto do token é a única contagem das chamadas dele.
+  const teto = await tetoDeEscritaDoToken(authz, "metrics", requestId);
+  if (teto) return teto;
+  const t = (texto: string) => traduzir(texto, authz.idioma ?? IDIOMA_PADRAO);
 
   const url = new URL(req.url);
   const parsed = querySchema.safeParse({
@@ -102,23 +110,40 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   // O teto é declarado, não aplicado por baixo: a rota recusa a janela que não
   // pode medir em vez de devolver um total que mente sobre o corte.
+  const de = from.toISOString();
+  const ate = to.toISOString();
   const dias = Math.ceil((to.getTime() - from.getTime()) / MS_POR_DIA);
-  if (dias > DIAS_MAXIMOS) {
+  let periodoCivilValido = false;
+
+  // Preserva o limite dos intervalos ISO arbitrários. A única exceção é o
+  // período da tela, alinhado aos dias locais, alongado pelo recuo do relógio.
+  if (dias === MAXIMO_DE_DIAS + 1) {
+    const { data: org, error } = await authz.supabase
+      .from("organizations")
+      .select("timezone")
+      .eq("id", authz.organizationId)
+      .maybeSingle();
+    if (error) return fail("internal_error", error.message, 500, { requestId });
+    const fuso = fusoUtilizavel(org?.timezone);
+    const periodo = janelaDoDesempenho(datasDaJanela({ from, to }, fuso), fuso);
+    periodoCivilValido = "janela" in periodo && periodo.janela.from === de && periodo.janela.to === ate;
+  }
+
+  if (dias > MAXIMO_DE_DIAS && !periodoCivilValido) {
     return fail(
       "validation_failed",
       t("Janela de {dias} dias: o relatório por canal cobre no máximo {maximo} dias.")
         .replace("{dias}", String(dias))
-        .replace("{maximo}", String(DIAS_MAXIMOS)),
+        .replace("{maximo}", String(MAXIMO_DE_DIAS)),
       422,
       { requestId },
     );
   }
 
-  const supabase = await createClient();
-  const { data, error } = await supabase.rpc("fn_channel_metrics", {
-    p_org: activeOrg.orgId,
-    p_from: from.toISOString(),
-    p_to: to.toISOString(),
+  const { data, error } = await authz.supabase.rpc("fn_channel_metrics", {
+    p_org: authz.organizationId,
+    p_from: de,
+    p_to: ate,
     p_owner: parsed.data.owner_user_id,
   });
   if (error) return fail("internal_error", error.message, 500, { requestId });
@@ -127,7 +152,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   return ok(
     {
-      window: { from: from.toISOString(), to: to.toISOString() },
+      window: { from: de, to: ate },
       owner_user_id: parsed.data.owner_user_id ?? null,
       // `montarLinhas` preserva `null` na média (null ≠ 0) e ordena por volume.
       channels: montarLinhas(metrics.channels),

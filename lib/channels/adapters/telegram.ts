@@ -121,17 +121,17 @@ export const telegramAdapter: ChannelAdapter = {
       envelope.media && mediaKind
         ? await sendTelegramMedia({
             token,
-            chatId: envelope.to,
+            chatId: envelope.providerConversationId ?? envelope.to,
             kind: mediaKind,
             media: envelope.media,
             ...(reply ? { replyToMessageId: reply } : {}),
           })
         : await sendTelegramText({
             token,
-            chatId: envelope.to,
+            chatId: envelope.providerConversationId ?? envelope.to,
             text: envelope.body ?? "",
             ...(reply ? { replyToMessageId: reply } : {}),
           });
-    return { externalId: `${sent.chatId}:${sent.messageId}` };
+    return { externalId: `tg:${envelope.sessionRef}:${sent.chatId}:${sent.messageId}` };
   },
 };

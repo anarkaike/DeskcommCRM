@@ -121,7 +121,7 @@ describe("Telegram human case group callbacks", () => {
     expect(mocks.ask).not.toHaveBeenCalled();
   });
 
-  it("associates an unquoted natural-language answer with the sole pending case action", async () => {
+  it("associates a direct reply with the sole pending case action", async () => {
     const tx = vi.fn(async (sql: string) => {
       if (sql.includes("select id::text from telegram_team_group_settings"))
         return { rows: [{ id: group }] };
@@ -132,8 +132,7 @@ describe("Telegram human case group callbacks", () => {
     mocks.connect.mockResolvedValue({ query: tx, release: vi.fn() });
     mocks.query.mockImplementation(async (sql: string) => {
       if (sql.includes("i.update_id=$4 and i.status=$5")) return { rows: [] };
-      if (sql.includes("select i.id::text interaction_id")) return { rows: [] };
-      if (sql.includes("join agent_cases c"))
+      if (sql.includes("i.reply_to_message_id=$3"))
         return { rows: [{ id: interactionId, organization_id: org, connection_id: connection,
           group_setting_id: group, case_id: caseId, action: "guide_reply",
           telegram_user_id: "987654321", actor_user_id: "user-1", group_message_id: "88" }] };
@@ -182,7 +181,7 @@ describe("Telegram human case group callbacks", () => {
     });
     mocks.query.mockImplementation(async (sql: string) => {
       if (sql.includes("i.update_id=$4 and i.status=$5")) return { rows: [] };
-      if (sql.includes("join agent_cases c"))
+      if (sql.includes("i.reply_to_message_id=$3"))
         return { rows: [
           { id: interactionId, case_id: caseId, action: "guide_reply" },
           { id: "another-interaction", case_id: "another-case", action: "guide_question" },

@@ -36,9 +36,18 @@ describe("capabilities do canal intermediado", () => {
       costPerMessage: true,
       alteraMensagemEnviada: false,
       automatedOutbound: true,
+      podeReagir: false,
+      transmissao: true,
       // A agenda do aparelho só existe para quem conversa com o aparelho
       // (#2736); o canal oficial não lê agenda nenhuma de celular.
       phonebook: false,
+      // Status é do APP do WhatsApp: a API oficial não tem o endpoint, então
+      // nem o canal intermediado (que espelha a Meta) publica Status (#3397).
+      statusUpdates: false,
+      // A ponte da venda pela conversa é deste provedor (#4552): `reportConversion` no adapter.
+      reportaConversao: true,
+      // O visto por id de mensagem é do canal por QR (#5015).
+      marcaLidasPorMensagem: false,
     });
   });
 
@@ -170,8 +179,8 @@ describe("banco e TypeScript falam o mesmo vocabulário", () => {
   });
 
   it("a coluna nasce antes do CHECK que a referencia", () => {
-    const col = baseline.indexOf("add column if not exists zernio_account_id");
-    const check = baseline.search(/provider (?:= 'zernio'|in \('zernio', 'zernio_social'\))/);
+    const col = baseline.lastIndexOf("add column if not exists zernio_account_id");
+    const check = baseline.lastIndexOf("provider in ('zernio', 'zernio_social')");
     expect(col).toBeGreaterThan(-1);
     expect(col).toBeLessThan(check);
   });

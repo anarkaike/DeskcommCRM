@@ -36,7 +36,7 @@ import { lerChamado, listarChamados, type ConversasVisiveis } from "@/lib/escala
 import { lerContinuidadeHumana } from "@/lib/escalacao/continuidade";
 import { devolverAtendimentoAoAgente } from "@/lib/escalacao/retomada";
 import type { McpContext, McpToolDefinition } from "../types";
-import { resolveUserNames } from "./_users";
+import { nomesDosAtendentesCom } from "@/lib/users/nome-do-atendente";
 
 /** Payload de auditoria a partir do ator do ctx (mesma forma de governance.ts). */
 function actorAudit(ctx: McpContext): {
@@ -79,8 +79,9 @@ export const crmListAvailableAttendants: McpToolDefinition<typeof atendentesInpu
     // roteamento no prompt ela precisa de GENTE, não de UUID. O helper expõe
     // SÓ `full_name` (mínimo LGPD do `team/assignable`) — nunca e-mail,
     // telefone ou o `user_metadata` inteiro.
-    const nomes = await resolveUserNames(
+    const nomes = await nomesDosAtendentesCom(
       ctx.supabase,
+      ctx.organizationId,
       roster.map((a) => a.userId),
     );
     const linhas = roster.map((a) => ({
@@ -382,7 +383,8 @@ export const crmResumeAiAttendance: McpToolDefinition<typeof retomarInputShape> 
         requestId: ctx.requestId,
         apiTokenId: ctx.apiTokenId,
       },
-      { conversationId: input.conversation_id },
+      // Só chega aqui uma PESSOA (o agente foi recusado acima).
+      { conversationId: input.conversation_id, limparClassificacaoDaIa: true },
     );
     if (!resultado.ok) throw new Error(resultado.erro);
 

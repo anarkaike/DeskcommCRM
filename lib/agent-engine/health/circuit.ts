@@ -36,7 +36,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import type pg from 'pg';
 
 import { traduzir } from '@/lib/i18n/dicionario';
+import { preencher } from '@/lib/i18n/idioma-do-aviso';
 import { normalizarIdioma, type Idioma } from '@/lib/i18n/idiomas';
+import { redeSocial } from '@/lib/channels/social/catalog';
 
 import type { Logger } from '../obs/logger';
 import { enforceHolds } from '../edge/crm/session-watchdog';
@@ -194,25 +196,78 @@ export const TITULO_DO_GO_LIVE = 'Número novo aguardando liberação (go-live)'
 export const CORPO_DO_GO_LIVE =
   'Os retornos automáticos deste número estão parados até você liberar. Eles esperam na fila, nada é perdido, e voltam espaçados ao longo das horas seguintes. Responder quem te escreveu continua funcionando normalmente. Marque este item como resolvido quando o número estiver pronto para disparar.';
 
-export function textoDoGoLive(idioma: Idioma): { title: string; body: string } {
+// A mesma trava numa conexão de REDE SOCIAL (A3, parte 2): não é "número" nem tem telefone, e
+// "Número novo" na Central de quem conectou o Instagram dizia o contrário do que está acontecendo.
+// Duas consts de topo, uma linha cada, pelo mesmo motivo das de cima.
+export const TITULO_DO_GO_LIVE_DA_REDE = 'Conexão nova do {rede} aguardando liberação (go-live)';
+export const CORPO_DO_GO_LIVE_DA_REDE =
+  'Os retornos automáticos desta conexão do {rede} estão parados até você liberar. Eles esperam na fila, nada é perdido, e voltam espaçados ao longo das horas seguintes. Responder quem te escreveu continua funcionando normalmente. Marque este item como resolvido quando a conexão estiver pronta para disparar.';
+
+/**
+ * O texto do item de número novo. `rede` é a plataforma da sessão quando ela é uma conexão de
+ * rede social (`metadata.social_platform`); com ela, o nome da rede vem do catálogo
+ * (`SOCIAL_NETWORKS`) e o texto fala de CONEXÃO. Sem rede, ou com uma que o catálogo não conhece,
+ * é o texto de sempre: o número de WhatsApp não muda nem uma vírgula.
+ */
+export function textoDoGoLive(idioma: Idioma, rede?: string | null): { title: string; body: string } {
+  const conhecida = rede ? redeSocial(rede) : undefined;
+  if (conhecida) {
+    return {
+      title: preencher(traduzir(TITULO_DO_GO_LIVE_DA_REDE, idioma), { rede: conhecida.label }),
+      body: preencher(traduzir(CORPO_DO_GO_LIVE_DA_REDE, idioma), { rede: conhecida.label }),
+    };
+  }
   return { title: traduzir(TITULO_DO_GO_LIVE, idioma), body: traduzir(CORPO_DO_GO_LIVE, idioma) };
 }
 
-/** Texto do diagnóstico do inbox_item de saúde degradada (pt-br; SÓ taxas/contagens — PII jamais). */
-function diagnosisBody(reason: Exclude<HoldReason, 'go_live'>, rates: SessionRates, k: HealthKnobs): string {
+/**
+ * A plataforma da sessão (`metadata.social_platform`), ou `null` para quem não é rede social
+ * (o número de WhatsApp, sem a chave) e para a sessão que não existe.
+ * Roda no client e na transação do tick: um erro aqui aborta a transação (Postgres 25P02),
+ * então capturá-lo não deixaria o item ser gravado. Ele propaga como o de `idiomaDaOrg`; o
+ * tick é desfeito e o seguinte tenta de novo.
+ */
+export async function redeDaSessaoDoGoLive(
+  db: Pick<pg.PoolClient, 'query'>,
+  organizationId: string,
+  channelSessionId: string,
+): Promise<string | null> {
+  const { rows } = await db.query<{ rede: string | null }>(
+    `select metadata->>'social_platform' as rede
+       from channel_sessions where organization_id = $1 and id = $2`,
+    [organizationId, channelSessionId],
+  );
+  return rows[0]?.rede ?? null;
+}
+
+/**
+ * Texto do diagnóstico do inbox_item de saúde degradada, no idioma da
+ * organização (a Central mostra o texto como foi gravado; `pt-BR` é o de
+ * antes). SÓ taxas/contagens — PII jamais.
+ */
+function diagnosisBody(
+  reason: Exclude<HoldReason, 'go_live'>,
+  rates: SessionRates,
+  k: HealthKnobs,
+  idioma: Idioma = 'pt-BR',
+): string {
   if (reason === 'block_rate') {
     const rate = rates.totalSends > 0 ? rates.blockedSends / rates.totalSends : 0;
-    return (
-      `Bloqueios em ${pct(rate)} dos ${rates.totalSends} últimos envios do número ` +
-      `(limiar ${pct(k.blockRateThreshold)}). Outbound em espera automática — a fila retém, nada é perdido. ` +
-      'Verifique o número (possível queima do WhatsApp) e resolva este item para retomar.'
+    return preencher(
+      traduzir(
+        'Bloqueios em {taxa} dos {envios} últimos envios do número (limiar {limiar}). Outbound em espera automática — a fila retém, nada é perdido. Verifique o número (possível queima do WhatsApp) e resolva este item para retomar.',
+        idioma,
+      ),
+      { taxa: pct(rate), envios: rates.totalSends, limiar: pct(k.blockRateThreshold) },
     );
   }
   const rate = rates.sentLeads > 0 ? rates.respondedLeads / rates.sentLeads : 0;
-  return (
-    `Taxa de resposta em ${pct(rate)} (${rates.respondedLeads} de ${rates.sentLeads} leads contatados ` +
-    `responderam; piso ${pct(k.responseRateFloor)}). Outbound em espera automática — a fila retém. ` +
-    'Verifique a abordagem/o número e resolva este item para retomar.'
+  return preencher(
+    traduzir(
+      'Taxa de resposta em {taxa} ({responderam} de {contatados} leads contatados responderam; piso {piso}). Outbound em espera automática — a fila retém. Verifique a abordagem/o número e resolva este item para retomar.',
+      idioma,
+    ),
+    { taxa: pct(rate), responderam: rates.respondedLeads, contatados: rates.sentLeads, piso: pct(k.responseRateFloor) },
   );
 }
 
@@ -307,12 +362,13 @@ async function evaluateSession(
         [tenantId, channelSessionId, reason],
       );
       delta.held = 1;
+      const idioma = await idiomaDaOrg();
       const item =
         reason === 'go_live'
-          ? textoDoGoLive(await idiomaDaOrg())
+          ? textoDoGoLive(idioma, await redeDaSessaoDoGoLive(client, tenantId, channelSessionId))
           : {
-              title: 'Saúde do número degradada — outbound em espera automática',
-              body: diagnosisBody(reason, rates, k),
+              title: traduzir('Saúde do número degradada — outbound em espera automática', idioma),
+              body: diagnosisBody(reason, rates, k, idioma),
             };
       // inbox item 1× por episódio: só cria se não há item aberto do número (dedup).
       const ins = await client.query(
@@ -362,7 +418,10 @@ async function evaluateSession(
         // texto de hoje — quem atualiza com número ainda em aquecimento precisa
         // ver que os retornos pararam. Depois disso o filtro `severity = 'info'`
         // não casa mais nada.
-        const item = textoDoGoLive(await idiomaDaOrg());
+        const item = textoDoGoLive(
+          await idiomaDaOrg(),
+          await redeDaSessaoDoGoLive(client, tenantId, channelSessionId),
+        );
         await client.query(
           `update agent_inbox_items set severity = 'warn', title = $3, body = $4
            where organization_id = $1 and ref_kind = $5 and ref_id = $2 and status = 'open' and severity = 'info'`,

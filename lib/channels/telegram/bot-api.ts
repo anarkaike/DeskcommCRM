@@ -35,6 +35,20 @@ type TelegramEnvelope<T> = { ok: true; result: T } | { ok: false; description?: 
 
 const API_TIMEOUT_MS = 8_000;
 
+function telegramApiUrl(path: string): string {
+  const configured = process.env.NODE_ENV === "test" ? process.env.TELEGRAM_API_BASE_URL : undefined;
+  if (configured) {
+    try {
+      const base = new URL(configured);
+      if (base.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(base.hostname))
+        return new URL(path, base).toString();
+    } catch {
+      // Invalid test overrides fall through to the official Telegram endpoint.
+    }
+  }
+  return new URL(path, "https://api.telegram.org").toString();
+}
+
 function telegramTransportErrorCode(cause: unknown): string {
   let current: unknown = cause;
   for (let depth = 0; depth < 3 && current && typeof current === "object"; depth += 1) {
@@ -80,7 +94,7 @@ async function callTelegram<T>(
 ): Promise<T> {
   let response: Response;
   try {
-    const url = `https://api.telegram.org/bot${token}/${method}`;
+    const url = telegramApiUrl(`/bot${token}/${method}`);
     const init: RequestInit = {
       method: body ? "POST" : "GET",
       headers: body ? { "content-type": "application/json" } : undefined,

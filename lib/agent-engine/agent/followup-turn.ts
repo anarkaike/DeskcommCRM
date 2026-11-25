@@ -2,6 +2,7 @@ import {claimOfJob,type JobClaim} from "../queue/claim";
 import {resultadoDoEnvioDoFollowup} from "../edge/crm/send-ledger";
 import { parseServiceBoundary } from "@/lib/atendimento/fronteira";
 import { requireCurrentServiceBoundary } from "@/lib/atendimento/fronteira-server";
+import { falasDaEquipeNoFim, ultimaFalaEDaEquipe } from "@/lib/escalacao/fala-da-equipe";
 import { OrgNaoOperanteError } from "@/lib/organizacao/operante";
 /**
  * Handler do job `followup_turn` (F3-03; blueprint 1.3) — a peça BUILD da
@@ -12,10 +13,16 @@ import { OrgNaoOperanteError } from "@/lib/organizacao/operante";
  * em OpenClaw/Hermes que transforma continuação fria em retomada natural.
  *
  * Reusa runAgentTurn (F2-09) por inteiro — sessão fresca, loop de tools, checkpoint,
- * veto. A ÚNICA diferença é a abertura: o bloco temporal entra no SUFIXO (messages),
+ * veto. A diferença no PROMPT é a abertura: o bloco temporal entra no SUFIXO (messages),
  * DEPOIS do prefixo cacheável (system do playbook + tools — F2-17), então não
  * invalida o cache org-wide. O delta é RELATIVO ao now do run (clock injetável),
  * nunca persistido estático.
+ *
+ * A outra diferença é o PONTO DE IA: a chamada principal de um job `followup_turn`
+ * sai como `followup_turn`, não `agent_turn` (o turno decide pelo `kind` do job, em
+ * `executarTurnoDoAgente`). É o que deixa o painel de provedores escolher um modelo
+ * só para o follow-up — sem escolha, vale o da versão publicada, como antes — e o
+ * que separa o custo dele em `llm_calls`.
  *
  * Ids de envio (conversa + número) vêm da ROW do lead no harness (fonte confiável),
  * NUNCA do payload do modelo — o cron só carrega o snapshot da promessa (F3-02).
@@ -25,7 +32,9 @@ import type pg from 'pg';
 
 import { withFields } from '../obs/logger';
 import type { JobRow } from '../queue/queue';
+import { rescheduleJob } from '../queue/queue';
 import {
+  corpoDaMensagem,
   getLeadContext,
   textoDoClienteNaUltimaMensagem,
   type LeadContext,
@@ -35,7 +44,7 @@ import { WahaChannelAdapter } from '../edge/channel/waha-adapter';
 import { applySendOutcome } from '../edge/crm/send-message';
 import { runBeforeSend } from '../guardrails/before-send';
 import { definicaoNaConexao } from '@/lib/channels/linha-do-espelho';
-import { estadoDaJanela } from '@/lib/channels/janela';
+import { aJanelaRegulatoriaSeAplica, estadoDaJanela } from '@/lib/channels/janela';
 import { renderTemplateBody } from '@/lib/channels/meta/render-template';
 import { contextoDoContato, renderizarTextoDeFollowup } from '@/lib/automation/texto-do-followup';
 import { classificarMidiaComLegenda, type TipoDeMidiaComLegenda } from '@/lib/messaging/media/midia-com-legenda';
@@ -60,8 +69,20 @@ import {
   type LeadCheckpointRow,
 } from './inbound-turn';
 import { isLeadInHandoff } from './human-handoff';
+import { AgendaPuladoError, MOTIVO_DO_PULO, decidirNoEnvio } from '@/lib/agenda/escolha-no-envio';
+import { escolhaDoFluxoPg } from '@/lib/agenda/escolha-no-envio-leitura';
+import { protecaoAgendaPg } from '@/lib/agenda/protecao-followup';
 import { aplicarPessoaNoComandoAoTurno } from '@/lib/followup/pessoa-no-comando-no-turno';
+import { liberaEnvioComODono } from '@/lib/followup/envio-com-o-dono';
 import { fusoDaOrganizacao } from './fuso-da-org';
+import {
+  MOTIVO_DO_MODELO_DISPENSADO,
+  carenciaDoAmbiente,
+  decidirAntesDoModeloPago,
+  jaEsperouPelaCarencia,
+  lerJanelaDaConversa,
+  rastroDaCarencia,
+} from './carencia-antes-do-modelo';
 import {
   followupPublicadoDoEnrollment,
   proximaAberturaDoFollowup,
@@ -76,10 +97,30 @@ import {
 } from './followup-flow-classify';
 import { consultarJevNoFollowup } from '@/lib/ai/decisao/followup';
 import { enviarComSaidaConfiguravel } from "@/lib/prospecting/saida-configuravel";
+import { redacaoQuePassaNaJanela } from "@/lib/followup/variacoes-do-passo";
+import { loadRecentCopies, loadSpinningKnobs } from "../spinning/store";
+import { carregarBlocoDoNegocio } from './negocio-do-followup';
 
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
+
+/**
+ * #4429 — QUANTO ESPERAR quando a janela de repetição recusa todas as redações
+ * do passo, e QUANTAS VEZES insistir.
+ *
+ * Uma hora porque a janela é das últimas cópias do NÚMERO e só anda com envios:
+ * em uma hora o número já mandou outras mensagens (outra inscrição, outro passo)
+ * e a candidata que colidia pode passar. Não é o relógio que resolve — é o
+ * tráfego do número. O passo continua DEVENDO o envio nesse meio-tempo.
+ *
+ * O TETO existe para não trocar um defeito por outro: sem ele, um passo de texto
+ * único repetido para sempre ficaria re-agendando de hora em hora e a inscrição
+ * nunca fecharia. Depois de três tentativas o passo encerra com o motivo — o
+ * comportamento de antes, agora só depois de a janela ter tido chance de andar.
+ */
+const ESPERA_POR_REPETICAO_MS = HOUR_MS;
+const MAX_ADIAMENTOS_POR_REPETICAO = 3;
 
 /**
  * Payload que o cron enfileira no disparo (F3-02 grava reason/promise/promised_at/
@@ -96,7 +137,10 @@ export const followupTurnPayloadSchema = z
     // F3-04: 'template' = re-entrada DETERMINÍSTICA — envia a variante versionada
     // direto pela cadeia de guardrails, sem LLM (custo $0, blueprint). Ausente/'agent'
     // = run normal do agente (comportamento F3-03 intocado).
-    mode: z.enum(['agent', 'template']).optional(),
+    // 'retomada' = a equipe devolveu o atendimento ao agente e a última fala é
+    // dela (lib/escalacao/retomada-ao-devolver.ts enfileira). O agente continua
+    // de onde a pessoa parou — ver `runRetomadaAoDevolver`.
+    mode: z.enum(['agent', 'template', 'retomada']).optional(),
     // Onda 5 (Task 5.1): turno DIRIGIDO POR FLUXO (lib/followup/engine.ts enfileira
     // este payload, campo a campo IDÊNTICO ao FollowupJobRequest.payload de lá).
     // Presente ⇒ ramo guardado em runFlowDrivenTurn; ausente ⇒ comportamento LEGADO
@@ -107,6 +151,13 @@ export const followupTurnPayloadSchema = z
     prompt_hint: z.string().optional(),
     /** action mode `text` — enviado pela cadeia de guardrails, sem LLM. */
     fixed_body: z.string().min(1).max(4000).optional(),
+    /**
+     * #4429 — AS OUTRAS REDAÇÕES DO MESMO PASSO, na ORDEM DA VEZ (a preferida
+     * primeiro, que é o `fixed_body`). O turno escolhe entre elas com a janela de
+     * repetição na mão, na hora do envio. Ausente = uma redação só: o job antigo,
+     * já enfileirado, e o passo sem variação seguem byte a byte como antes.
+     */
+    fixed_variacoes: z.array(z.string().min(1).max(4000)).max(10).optional(),
     /**
      * #2734 — mídia OPCIONAL (imagem, vídeo, áudio ou documento, #2972) por URL
      * do passo `action`/`text`; o `fixed_body` vira a LEGENDA. Opcional: payloads
@@ -146,8 +197,12 @@ export type FollowupFlowTurnResult =
   | { kind: 'classified'; class: string }
   /** Classificar sem resposta ao envio do fluxo: nada a concluir, só o rastro da espera. */
   | { kind: 'awaiting_reply' }
-  /** O envio ficou estacionado até `until` (janela fechada) — nem saiu, nem foi recusado. */
-  | { kind: 'deferred'; until: Date; reason: string }
+  /**
+   * O envio ficou estacionado até `until` (janela fechada) — nem saiu, nem foi
+   * recusado. `janelaRegulatoria` é o ESCOPO do canal deste turno: só ele
+   * autoriza o dossiê a falar em janela de 24 h (ver `aJanelaRegulatoriaSeAplica`).
+   */
+  | { kind: 'deferred'; until: Date; reason: string; janelaRegulatoria?: boolean }
   | { kind: 'planned'; propostas: PropostaDeEsperaBruta[]; modelo: string };
 
 /**
@@ -243,6 +298,46 @@ function buildFollowupOpeningMessage(
     'Houve avanço REAL no funil neste turno? Marque-o com update_lead_state (só o próximo estágio válido).',
     'Aprendeu algo durável sobre o lead? Salve com save_lead_note (a headline entra no índice de memória).',
   ].join('\n');
+}
+
+/**
+ * Abertura do passo de IA de um FLUXO de follow-up. PURA, exportada para teste.
+ *
+ * Não reusa o cabeçalho de `buildFollowupOpeningMessage` ("você havia combinado
+ * retornar a este lead") porque, num fluxo, ele é FALSO na maioria dos casos: o
+ * passo sai porque a EQUIPE armou o fluxo (card entrou numa etapa, silêncio,
+ * acionamento manual), não por uma promessa do agente. Medido: num fluxo de
+ * boas-vindas por etapa, com o contato sem conversa nenhuma, o modelo leu a
+ * promessa inventada e escreveu "aquela obra que conversamos".
+ *
+ * A ordem: o ritual (histórico, estado), o NEGÓCIO e só então a orientação do
+ * passo — a instrução do dono do fluxo é a última palavra.
+ */
+export function buildFlowStepOpeningMessage(
+  temporalBlock: string,
+  ritual: string[],
+  negocioBlock: string,
+  promptHint: string | undefined,
+): string {
+  const partes = [
+    'Passo de um fluxo de follow-up: a equipe configurou esta mensagem para sair agora. Não presuma',
+    'conversa nem combinado que não estejam no histórico abaixo — se o histórico está vazio, este é o primeiro contato.',
+    '',
+    '## Contexto temporal do follow-up',
+    temporalBlock,
+    '',
+    ...ritual,
+    '',
+  ];
+  if (negocioBlock !== '') partes.push(negocioBlock, '');
+  partes.push(
+    'Escreva a mensagem usando a tool send_message — NUNCA escreva a resposta como texto direto',
+    '(texto fora de tool é descartado pelo runtime). Use get_lead_context se precisar reler o contexto.',
+    'Houve avanço REAL no funil neste turno? Marque-o com update_lead_state (só o próximo estágio válido).',
+    'Aprendeu algo durável sobre o lead? Salve com save_lead_note (a headline entra no índice de memória).',
+  );
+  if (promptHint) partes.push('', '## Orientação do passo do fluxo', promptHint);
+  return partes.join('\n');
 }
 
 /** Última mensagem inbound do contexto (a "última coisa que o lead disse" — Z). */
@@ -423,6 +518,7 @@ export function createFollowupTurnHandler(deps: FollowupTurnDeps) {
             enrollmentId: payload.followup_enrollment_id,
             nodeId: payload.node_id,
             contactId: leadId,
+            passoDeTexto: payload.fixed_body !== undefined || payload.template_id !== undefined,
           },
           agora,
         );
@@ -451,7 +547,12 @@ export function createFollowupTurnHandler(deps: FollowupTurnDeps) {
             organizationId: tenantId,
             enrollmentId: payload.followup_enrollment_id,
             nodeId: payload.node_id,
-            result: { kind: 'deferred', until: pessoa.ate, reason: 'pessoa_no_comando' },
+            result: {
+              kind: 'deferred',
+              until: pessoa.ate,
+              reason: 'pessoa_no_comando',
+              janelaRegulatoria: await janelaRegulatoriaDoCanal(pool, tenantId, target.channelSessionId),
+            },
           });
           return;
         }
@@ -579,7 +680,12 @@ export function createFollowupTurnHandler(deps: FollowupTurnDeps) {
             organizationId: tenantId,
             enrollmentId: payload.followup_enrollment_id,
             nodeId: payload.node_id,
-            result: { kind: 'deferred', until: proximaAbertura, reason: 'followup_send_window' },
+            result: {
+              kind: 'deferred',
+              until: proximaAbertura,
+              reason: 'followup_send_window',
+              janelaRegulatoria: await janelaRegulatoriaDoCanal(pool, tenantId, target.channelSessionId),
+            },
           });
           return;
         }
@@ -596,6 +702,7 @@ export function createFollowupTurnHandler(deps: FollowupTurnDeps) {
           purpose: payload.purpose,
           promptHint: payload.prompt_hint,
           fixedBody: payload.fixed_body,
+          fixedVariacoes: payload.fixed_variacoes,
           fixedMediaUrl: payload.fixed_media_url,
           templateId: payload.template_id,
           templateValues: payload.template_values,
@@ -617,6 +724,14 @@ export function createFollowupTurnHandler(deps: FollowupTurnDeps) {
         }
         throw err;
       }
+      return;
+    }
+
+    // Retomar ao devolver: continua o que a equipe começou. Caminho próprio
+    // porque a abertura de follow-up ("NÃO houve nova mensagem dele desde
+    // então", o bloco temporal) contaria ao modelo uma história errada.
+    if (payload.mode === 'retomada') {
+      await runRetomadaAoDevolver(deps, job, pool, ctx, target);
       return;
     }
 
@@ -657,8 +772,117 @@ export function createFollowupTurnHandler(deps: FollowupTurnDeps) {
  */
 type EnvioFixoDesfecho =
   | { kind: "sent" }
-  | { kind: "deferred"; until: Date; reason: string }
+  | { kind: "deferred"; until: Date; reason: string; janelaRegulatoria: boolean }
   | { kind: "skipped" };
+
+/** Quantas mensagens do fim da conversa o turno de retomada lê para achar as falas da equipe. */
+const FALAS_DA_EQUIPE_LIDAS = 8;
+
+/**
+ * Abertura do turno de RETOMADA (retomar ao devolver): a equipe atendeu, a
+ * última fala é dela, e o atendimento voltou ao agente. As falas vão na
+ * íntegra porque é delas que o agente continua (o orçamento que a pessoa
+ * mandou, a condição que ela ofereceu) — o resumo do checkpoint conta o que foi
+ * decidido, não o que foi dito. Exportada PURA para teste, como as irmãs.
+ */
+export function buildRetomadaOpeningMessage(
+  falasDaEquipe: readonly string[],
+  previous: LeadCheckpointRow | null,
+  leadState: LeadStateRow | null,
+  context: LeadContext,
+  notesIndexBlock: string,
+  projeta = false,
+): string {
+  const falas = falasDaEquipe
+    .map((t) => t.trim())
+    .filter((t) => t !== '')
+    .map((t) => `- "${t}"`);
+  return [
+    'Retomada após atendimento da equipe: uma pessoa da equipe atendeu este cliente e acabou de devolver o atendimento a você.',
+    'A última mensagem da conversa é da equipe — o cliente ainda NÃO respondeu a ela.',
+    '',
+    '## O que a equipe acabou de enviar ao cliente',
+    ...(falas.length > 0 ? falas : ['(a equipe enviou um arquivo ou mídia sem texto — veja no histórico)']),
+    '',
+    ...ritualBlocks(previous, leadState, context, notesIndexBlock, projeta),
+    '',
+    'Continue o atendimento a partir do que a equipe enviou, seguindo as suas instruções (por exemplo: confirmar',
+    'se o cliente recebeu e conduzir ao próximo passo). NÃO repita o que a equipe já disse e não se apresente de novo.',
+    'Responda usando a tool send_message — NUNCA escreva a resposta como texto direto',
+    '(texto fora de tool é descartado pelo runtime). Use get_lead_context se precisar reler o contexto.',
+    'Houve avanço REAL no funil neste turno? Marque-o com update_lead_state (só o próximo estágio válido).',
+    'Aprendeu algo durável sobre o lead? Salve com save_lead_note (a headline entra no índice de memória).',
+  ].join('\n');
+}
+
+/**
+ * Turno de RETOMADA. O consumidor do evento já decidiu enfileirar, mas entre a
+ * decisão e este instante o mundo pode ter andado — e falar por cima seria o
+ * defeito que a opção existe para evitar. Então confere DE NOVO, com a mesma
+ * régua (`lib/escalacao/fala-da-equipe.ts`):
+ *
+ *   - a última fala ainda é da equipe? Se o cliente escreveu, o turno de
+ *     resposta normal responde; se a IA ou um fluxo já falou, não há o que
+ *     retomar. Nos dois casos, no-op sem gastar modelo;
+ *   - nasceu um follow-up vivo para o contato? Uma voz só: ele fala.
+ *
+ * O resto dos portões é do núcleo (`runAgentTurn`) e da cadeia de envio:
+ * passagem para humano/`force_human`, elegibilidade, janela anti-ban e o veto
+ * do before-send (bloqueio, opt-out). A fronteira de atendimento já foi
+ * conferida no topo do handler.
+ */
+async function runRetomadaAoDevolver(
+  deps: FollowupTurnDeps,
+  job: JobRow,
+  pool: pg.Pool,
+  ctx: { workerId: string },
+  target: ReentrySendTarget,
+): Promise<void> {
+  const runLog = withFields(deps.log, { job_id: job.id, tenant_id: target.tenantId, lead_id: target.leadId });
+  const { rows } = await pool.query<{
+    direction: string;
+    sent_via: string | null;
+    type: string;
+    body: string | null;
+    media_url: string | null;
+    media_storage_path: string | null;
+    media_derived_text: string | null;
+  }>(
+    `select direction, sent_via, type, body, media_url, media_storage_path, media_derived_text
+       from messages
+      where organization_id = $1 and conversation_id = $2
+      order by coalesce(sent_at, created_at) desc, created_at desc, id desc
+      limit $3`,
+    [target.tenantId, target.conversationId, FALAS_DA_EQUIPE_LIDAS],
+  );
+  if (!ultimaFalaEDaEquipe(rows[0])) {
+    runLog.info('retomada no-op — a última fala já não é da equipe', {
+      ultima_direcao: rows[0]?.direction ?? null,
+      ultimo_envio: rows[0]?.sent_via ?? null,
+    });
+    return;
+  }
+  const { rows: vivos } = await pool.query<{ id: string }>(
+    `select id from followup_enrollments
+      where organization_id = $1 and contact_id = $2
+        and status in ('active','waiting_reply','paused_handoff','paused_manual')
+      limit 1`,
+    [target.tenantId, target.leadId],
+  );
+  if (vivos.length > 0) {
+    runLog.info('retomada no-op — há follow-up vivo para o contato (uma voz só)', {
+      enrollment_id: vivos[0]!.id,
+    });
+    return;
+  }
+  const falas = falasDaEquipeNoFim(rows).map((m) => corpoDaMensagem(m));
+  await runAgentTurn(deps, job, pool, ctx, {
+    channelSessionId: target.channelSessionId,
+    conversationId: target.conversationId,
+    buildOpening: ({ previous, leadState, context, notesIndexBlock, projeta }) =>
+      buildRetomadaOpeningMessage(falas, previous, leadState, context, notesIndexBlock, projeta),
+  });
+}
 
 interface ReentrySendTarget {
   tenantId: string;
@@ -687,6 +911,8 @@ async function runFlowDrivenTurn(
     purpose: 'send_message' | 'classify' | 'plan_timing' | undefined;
     promptHint: string | undefined;
     fixedBody: string | undefined;
+    /** #4429 — as redações do MESMO passo, na ordem da vez (a preferida primeiro). */
+    fixedVariacoes: string[] | undefined;
     /** #2734 — mídia opcional (imagem, vídeo, áudio ou documento) do passo `action`/`text`. */
     fixedMediaUrl: string | undefined;
     templateId: string | undefined;
@@ -712,6 +938,44 @@ async function runFlowDrivenTurn(
   const runLog = withFields(deps.log, { job_id: job.id, tenant_id: target.tenantId, lead_id: target.leadId, enrollment_id: enrollmentId });
 
   if (input.purpose === 'send_message') {
+    // #3813 — O PULO PELA AGENDA ACONTECE ANTES DE QUALQUER GASTO, E TEM NOME.
+    //
+    // A escolha do FLUXO (`quando_ha_compromisso` na configuração publicada do
+    // follow-up) vale aqui como vale no caminho inline (`enviar-texto-fixo.ts`).
+    // Sem esta leitura o worker `pg` seguia no padrão `adiar` e um fluxo em
+    // `nao_enviar` nunca pulava — e, quando pulasse pela guarda do envio, o
+    // `AgendaPuladoError` subia como falha do run (o passo não tem desfecho).
+    //
+    // A leitura da proteção só é paga pela escolha que pode pular: em `adiar`
+    // (padrão) e em `enviar` esta decisão NUNCA é `pular`, então o caminho de
+    // hoje — inclusive o adiamento, que continua acontecendo na guarda do envio
+    // e re-agendando o job — não muda nem custa uma consulta a mais.
+    const escolhaDaAgenda = await escolhaDoFluxoPg(pool, target.tenantId, enrollmentId);
+    if (escolhaDaAgenda === 'nao_enviar') {
+      const decisaoDaAgenda = decidirNoEnvio(
+        await protecaoAgendaPg(pool, target.tenantId, target.leadId, clock()),
+        escolhaDaAgenda,
+      );
+      if (decisaoDaAgenda.acao === 'pular') {
+        runLog.info('passo do fluxo pulado — o contato tem horário marcado', {
+          motivo: MOTIVO_DO_PULO,
+          appointment_id: decisaoDaAgenda.appointment_id,
+          node_id: nodeId,
+        });
+        // O desfecho NOMEADO do pulo: o mesmo canal dos outros pulos deste
+        // arquivo (mídia recusada, modelo que não pode sair) — um `skipped`
+        // com o motivo, nunca um envio que não aconteceu em silêncio.
+        await complete(pool, {
+          jobId: job.id,
+          jobClaim: claimOfJob(job),
+          organizationId: target.tenantId,
+          enrollmentId,
+          nodeId,
+          result: { kind: 'skipped', reason: MOTIVO_DO_PULO },
+        });
+        return;
+      }
+    }
     let passo = await resolveFlowSendBody(pool, target.tenantId, target.channelSessionId, target.leadId, input);
     // O PLANO B DA MENSAGEM POR IA. Com a janela de 24 h fechada, o canal recusa
     // qualquer texto livre — o da IA inclusive —, e o passo terminava sem mandar
@@ -729,6 +993,115 @@ async function runFlowDrivenTurn(
         contactId: target.leadId,
         variaveis: undefined,
       });
+    }
+    // #4835 — O GANHO, MEDIDO: cada linha destas é um modelo pago que não saiu.
+    const registrarModeloDispensado = (motivo: 'texto_livre' | 'dispensar'): Promise<void> =>
+      pool
+        .query(
+          `insert into followup_enrollment_events
+             (organization_id, enrollment_id, node_id, event_type, payload, idempotency_key)
+           values ($1, $2, $3, 'modelo_pago_dispensado', $4, $5)
+           on conflict (enrollment_id, idempotency_key) where idempotency_key is not null do nothing`,
+          [
+            target.tenantId,
+            enrollmentId,
+            nodeId,
+            { job_id: job.id, motivo, no_do_payload: nodeId, tem_texto_livre: motivo === 'texto_livre' },
+            `${job.id}:modelo_pago_dispensado`,
+          ],
+        )
+        .then(
+          () => undefined,
+          (err: unknown) => {
+            // Instrumentação nunca derruba o envio (nem o pulo).
+            runLog.warn('registro do modelo dispensado não entrou', {
+              error: err instanceof Error ? err.message.slice(0, 160) : 'erro desconhecido',
+            });
+          },
+        );
+    // A VOLTA DA CARÊNCIA NO PLANO B DA IA: o cliente escreveu, a janela abriu,
+    // e o bloco acima já não troca a IA pelo modelo — o gancho abaixo nem é
+    // alcançado. A economia aconteceu aqui, e sem este registro ela não entra
+    // na contagem de `modelo_pago_dispensado`.
+    if (
+      passo === null &&
+      input.fallbackTemplateId !== undefined &&
+      input.templateId === undefined &&
+      jaEsperouPelaCarencia(job.payload)
+    ) {
+      await registrarModeloDispensado('texto_livre');
+    }
+    // #4835 — A CARÊNCIA ANTES DO MODELO PAGO, e a reconferência da janela no
+    // instante de gastar. Aqui é o ÚLTIMO ponto antes de reservar o modelo: o
+    // passo já foi resolvido (é modelo aprovado de verdade, não texto de
+    // `message_templates`), e nada foi enviado nem cobrado ainda.
+    //
+    // O lead que chega por integração com a janela fechada só pode receber
+    // modelo — e o cliente costuma escrever nos primeiros segundos, quando a
+    // janela abriria de graça. No webhook de captação o primeiro tick roda
+    // dentro do POST e o claim vem ~2–4 s depois; sem esta carência, a
+    // conferência que já existia (`janelaFechada`, acima) chega tarde.
+    if (passo !== null && passo.tipo === 'modelo_aprovado') {
+      const decisaoDoModelo = decidirAntesDoModeloPago({
+        passoEhModeloPago: true,
+        // A reserva da IA tem texto livre no lugar; o passo de modelo puro, não.
+        temTextoLivreNoLugar: input.fallbackTemplateId !== undefined && input.templateId === undefined,
+        carenciaMs: carenciaDoAmbiente(deps.knobs.carenciaDoModeloMs),
+        janela: await lerJanelaDaConversa(pool, {
+          organizationId: target.tenantId,
+          conversationId: target.conversationId,
+          agora: clock(),
+        }),
+        jaEsperou: jaEsperouPelaCarencia(job.payload),
+        agora: clock(),
+      });
+      if (decisaoDoModelo.acao === 'esperar') {
+        const reenfileirado = await rescheduleJob(pool, job.id, ctx.workerId, {
+          delayMs: decisaoDoModelo.esperaMs,
+          reason: 'carência antes do modelo pago: esperando o cliente escrever',
+          acquiredAt: claimOfJob(job)?.acquired_at,
+          payloadPatch: rastroDaCarencia({
+            esperaMs: decisaoDoModelo.esperaMs,
+            agora: clock(),
+          }),
+        });
+        // Lease perdido (reaper/re-claim) → o job já tem dono: não loga espera
+        // que não houve, e não deixa o turno seguir para o envio.
+        runLog.info('modelo pago adiado pela carência — o cliente pode escrever antes', {
+          espera_ms: decisaoDoModelo.esperaMs,
+          volta_em: decisaoDoModelo.ate.toISOString(),
+          reenfileirado: reenfileirado !== null,
+          node_id: nodeId,
+        });
+        throw new JobSettledError('carência antes do modelo pago — job devolvido à fila');
+      }
+      if (decisaoDoModelo.acao === 'texto_livre' || decisaoDoModelo.acao === 'dispensar') {
+        // O GANHO, MEDIDO: cada linha destas é um modelo pago que não saiu. É o
+        // número que responde "quanto a reconferência economizou" depois.
+        await registrarModeloDispensado(decisaoDoModelo.acao);
+        if (decisaoDoModelo.acao === 'texto_livre') {
+          // A janela abriu: o texto livre é o do turno de IA, que roda logo
+          // abaixo. Nada de modelo pago — e nada de pular o passo.
+          runLog.info('modelo pago dispensado — a janela abriu na carência; o turno responde em texto livre', {
+            node_id: nodeId,
+          });
+          passo = null;
+        } else {
+          runLog.info('passo do fluxo pulado — o cliente escreveu na carência', {
+            motivo: MOTIVO_DO_MODELO_DISPENSADO,
+            node_id: nodeId,
+          });
+          await complete(pool, {
+            jobId: job.id,
+            jobClaim: claimOfJob(job),
+            organizationId: target.tenantId,
+            enrollmentId,
+            nodeId,
+            result: { kind: 'skipped', reason: MOTIVO_DO_MODELO_DISPENSADO },
+          });
+          return;
+        }
+      }
     }
     if (passo !== null && passo.tipo === 'recusado') {
       runLog.info('passo do fluxo pulado — o modelo não pode sair', { motivo: passo.motivo });
@@ -757,11 +1130,37 @@ async function runFlowDrivenTurn(
         return;
       }
       // Texto do operador: sem camada semântica (ver o cabeçalho de sendFixedOutbound).
-      const desfecho = await sendFixedOutbound(
-        deps, job, pool, ctx, clock, target, passo.body, false,
-        passo.tipo === 'modelo_aprovado' ? passo.modelo : undefined,
-        passo.tipo === 'texto' ? passo.midia : undefined,
-      );
+      let desfecho: EnvioFixoDesfecho;
+      try {
+        desfecho = await sendFixedOutbound(
+          deps, job, pool, ctx, clock, target, passo.body, false,
+          passo.tipo === 'modelo_aprovado' ? passo.modelo : undefined,
+          passo.tipo === 'texto' ? passo.midia : undefined,
+          // #4429, segunda metade — as OUTRAS redações do passo. `undefined` no
+          // passo de uma redação só: o envio segue sem escolha, como antes.
+          passo.tipo === 'texto' ? passo.variacoes : undefined,
+        );
+      } catch (err) {
+        // #3813 — CORRIDA: o compromisso nasceu entre a leitura acima e o
+        // envio, e a guarda do envio (`sendTurnMessage`) pulou por `nao_enviar`.
+        // O desfecho continua sendo o PULO NOMEADO — o erro do pulo não vira
+        // falha de job (o dead-man leria worker morto onde houve decisão).
+        if (!(err instanceof AgendaPuladoError)) throw err;
+        runLog.info('passo do fluxo pulado na guarda do envio — o contato tem horário marcado', {
+          motivo: MOTIVO_DO_PULO,
+          appointment_id: err.protection.appointment_id,
+          node_id: nodeId,
+        });
+        await complete(pool, {
+          jobId: job.id,
+          jobClaim: claimOfJob(job),
+          organizationId: target.tenantId,
+          enrollmentId,
+          nodeId,
+          result: { kind: 'skipped', reason: MOTIVO_DO_PULO },
+        });
+        return;
+      }
       // TODO OS TRÊS DESFECHOS VOLTAM PARA O ENROLLMENT. O adiado era o que não
       // voltava, e o silêncio dele custava o enrollment inteiro: o motor ficava
       // rechecando um turno que ninguém ia fechar e, esgotado o orçamento do
@@ -774,7 +1173,7 @@ async function runFlowDrivenTurn(
       } else if (desfecho.kind === 'skipped') {
         await complete(pool,{jobId:job.id,jobClaim:claimOfJob(job),organizationId:target.tenantId,enrollmentId,nodeId,result:{kind:'skipped',reason:'O envio foi recusado pelas regras do atendimento.'}});
       } else {
-        await complete(pool,{jobId:job.id,jobClaim:claimOfJob(job),organizationId:target.tenantId,enrollmentId,nodeId,result:{kind:'deferred',until:desfecho.until,reason:desfecho.reason}});
+        await complete(pool,{jobId:job.id,jobClaim:claimOfJob(job),organizationId:target.tenantId,enrollmentId,nodeId,result:{kind:'deferred',until:desfecho.until,reason:desfecho.reason,janelaRegulatoria:desfecho.janelaRegulatoria}});
       }
       return;
     }
@@ -803,18 +1202,29 @@ async function runFlowDrivenTurn(
         organizationId: target.tenantId,
         enrollmentId,
         nodeId,
-        result: { kind: 'deferred', until: aberturaAntiBan, reason: 'outside_window' },
+        result: {
+          kind: 'deferred',
+          until: aberturaAntiBan,
+          reason: 'outside_window',
+          janelaRegulatoria: await janelaRegulatoriaDoCanal(pool, target.tenantId, target.channelSessionId),
+        },
       });
       return;
     }
+    // O card do negócio entra no turno (ver `negocio-do-followup.ts`). Lido
+    // ANTES do turno porque `buildOpening` é síncrono; falha vira bloco vazio.
+    const negocioBlock = await carregarBlocoDoNegocio(pool, target.tenantId, target.leadId, runLog);
     await runAgentTurn(deps, job, pool, ctx, {
       channelSessionId: target.channelSessionId,
       conversationId: target.conversationId,
       buildOpening: ({ previous, leadState, context, notesIndexBlock, projeta }) => {
         const temporalBlock = buildTemporalBlock({ now: clock(), lastInbound: lastInboundOf(context) });
-        const opening = buildFollowupOpeningMessage(temporalBlock, previous, leadState, context, notesIndexBlock, projeta);
-        if (!input.promptHint) return opening;
-        return `${opening}\n\n## Orientação do passo do fluxo\n${input.promptHint}`;
+        return buildFlowStepOpeningMessage(
+          temporalBlock,
+          ritualBlocks(previous, leadState, context, notesIndexBlock, projeta),
+          negocioBlock,
+          input.promptHint,
+        );
       },
     });
     const result = await resultadoDoEnvioDoFollowup(pool,job.organization_id,job.id);
@@ -1000,7 +1410,18 @@ function interpolarVoltaDoPayload(
  * vez de a fila re-tentar até matar a inscrição por algo que tempo não conserta.
  */
 type PassoSemIa =
-  | { tipo: 'texto'; body: string; midia?: MidiaComLegenda }
+  | {
+      tipo: 'texto';
+      body: string;
+      midia?: MidiaComLegenda;
+      /**
+       * #4429 — as redações do MESMO passo na ordem da vez (a primeira é o
+       * `body`). Presente só quando o passo tem mais de uma; ausente no passo de
+       * uma redação e no job antigo, e aí a escolha do envio não tem por onde
+       * desviar.
+       */
+      variacoes?: string[];
+    }
   | {
       tipo: 'modelo_aprovado';
       body: string;
@@ -1019,6 +1440,8 @@ async function resolveFlowSendBody(
   contactId: string,
   input: {
     fixedBody: string | undefined;
+    /** #4429 — as redações do MESMO passo, na ordem da vez (a preferida primeiro). */
+    fixedVariacoes: string[] | undefined;
     /** #2734 — mídia opcional do passo (`media_url` do nó de ação). */
     fixedMediaUrl: string | undefined;
     templateId: string | undefined;
@@ -1032,6 +1455,20 @@ async function resolveFlowSendBody(
   // do cadastro como modelo — por isso aqui ele só ganha a volta, nunca o contexto.
   if (input.fixedBody !== undefined) {
     const body = interpolarVoltaDoPayload(input.fixedBody, input.voltaIndex, input.voltaTotal);
+    /**
+     * #4429 — AS OUTRAS REDAÇÕES, JÁ RENDERIZADAS no enfileiramento
+     * (`lib/followup/engine.ts`), aqui só com a volta — a mesma passada do
+     * `fixed_body`, e nada de contexto: o que veio do cadastro não é modelo.
+     * Duplicata some para a janela não contar duas vezes a mesma candidata.
+     */
+    const redacoesDoPayload = input.fixedVariacoes === undefined
+      ? undefined
+      : input.fixedVariacoes
+          .map((redacao) => interpolarVoltaDoPayload(redacao, input.voltaIndex, input.voltaTotal))
+          .filter((redacao, indice, todas) => todas.indexOf(redacao) === indice);
+    // Uma redação só não é escolha: ausente mantém o passo de hoje e o job antigo
+    // no caminho sem desvio (e a janela nem é lida).
+    const variacoes = redacoesDoPayload !== undefined && redacoesDoPayload.length > 1 ? redacoesDoPayload : undefined;
     // #2734 — MÍDIA DO PASSO. O que não é um arquivo identificável é recusa de
     // CONFIGURAÇÃO: o passo é pulado com o motivo (mesmo desfecho do modelo que
     // não pode sair) em vez de a fila re-tentar algo que tempo não conserta — e
@@ -1039,12 +1476,17 @@ async function resolveFlowSendBody(
     // prometer uma imagem que não vem.
     if (input.fixedMediaUrl !== undefined) {
       const url = input.fixedMediaUrl.trim();
-      if (url.length === 0) return { tipo: 'texto', body };
+      if (url.length === 0) return { tipo: 'texto', body, ...(variacoes ? { variacoes } : {}) };
       const classificada = classificarMidiaComLegenda(url);
       if (!classificada.ok) return { tipo: 'recusado', motivo: classificada.motivo };
-      return { tipo: 'texto', body, midia: { url, type: classificada.type, mime: classificada.mime } };
+      return {
+        tipo: 'texto',
+        body,
+        midia: { url, type: classificada.type, mime: classificada.mime },
+        ...(variacoes ? { variacoes } : {}),
+      };
     }
-    return { tipo: 'texto', body };
+    return { tipo: 'texto', body, ...(variacoes ? { variacoes } : {}) };
   }
   if (input.templateId === undefined) return null;
   const { rows } = await pool.query<{ body: string }>(
@@ -1241,20 +1683,48 @@ async function sendFixedOutbound(
    * (mídia do passo) convivem no mesmo campo — ver `ChannelSendInput`.
    */
   midia?: MidiaComLegenda,
+  /**
+   * #4429 — as redações do MESMO passo, na ORDEM DA VEZ (a primeira é o
+   * `body`). Presente = há escolha a fazer com a janela de repetição na mão;
+   * ausente = passo de uma redação só e job antigo, byte a byte como antes.
+   */
+  variacoes?: readonly string[],
 ): Promise<EnvioFixoDesfecho> {
   const { tenantId, leadId, channelSessionId, conversationId } = target;
   const runLog = withFields(deps.log, { job_id: job.id, tenant_id: tenantId, lead_id: leadId });
 
-  if (await isLeadInHandoff(pool, tenantId, leadId)) {
-    // Três causas no MESMO veto (#2353): handoff humano (`force_human`), a marca
-    // permanente "sempre atendimento humano" (`ai_opt_out`) e a etiqueta de
-    // contato interno. O texto nomeia as três — dizer só "opt-out" atribuía a
-    // parada a um motivo que pode não ser o do contato.
-    runLog.info(
-      'envio fixo pulado — contato silenciado para o envio automático (handoff humano, opt-out de IA ou etiqueta de contato interno)',
-      { kind: job.kind },
-    );
-    return { kind: "skipped" };
+  if (await isLeadInHandoff(pool, tenantId, leadId, { conversationId })) {
+    // #3974 — A OPÇÃO POR FLUXO "enviar mesmo com a conversa atribuída".
+    //
+    // O dono da conversa (assumir/atribuir) grava `bot_silenced_until =
+    // 'infinity'`, e era aqui que o passo de TEXTO do fluxo morria — mesmo com
+    // `handoff_policy = 'allow'`, porque este veto lê o silêncio, não a política.
+    // A opção vence SÓ a posse: `force_human`, `ai_opt_out`, contato interno,
+    // contato bloqueado e as janelas continuam valendo (os três primeiros pelo
+    // próprio `isLeadInHandoff` + `liberaEnvioComODono`, os demais na cadeia).
+    // O veto da IA não é tocado aqui — este caminho só envia texto de operador.
+    const liberado = await liberaEnvioComODono(pool, {
+      organizationId: tenantId,
+      contactId: leadId,
+      enrollmentId:
+        typeof job.payload.followup_enrollment_id === 'string'
+          ? job.payload.followup_enrollment_id
+          : null,
+    });
+    if (!liberado) {
+      // Três causas no MESMO veto (#2353): handoff humano (`force_human`), a marca
+      // permanente "sempre atendimento humano" (`ai_opt_out`) e a etiqueta de
+      // contato interno. O texto nomeia as três — dizer só "opt-out" atribuía a
+      // parada a um motivo que pode não ser o do contato.
+      runLog.info(
+        'envio fixo pulado — contato silenciado para o envio automático (handoff humano, opt-out de IA ou etiqueta de contato interno)',
+        { kind: job.kind },
+      );
+      return { kind: "skipped" };
+    }
+    runLog.info('envio fixo liberado pela opção do fluxo — a conversa está com uma pessoa', {
+      kind: job.kind,
+    });
   }
 
   // SEM gate near-dup AQUI (#2996, item 2 — pedido da triagem após medir os
@@ -1289,6 +1759,39 @@ async function sendFixedOutbound(
     camadasDaOrg !== null &&
     camadaLigada(camadasDaOrg.promessa_semantica, deps.knobs.promiseSemantic?.enabled === true);
 
+  /**
+   * ═══ A ESCOLHA DA REDAÇÃO OLHA A JANELA DE REPETIÇÃO (#4429, 2ª metade) ═══
+   *
+   * A rotação que escolheu o `body` no enfileiramento é CEGA à janela de
+   * `outbound_copies` — e a janela é do NÚMERO, não da inscrição: cruza leads. Ela
+   * só está fresca AQUI, imediatamente antes do gate que a mede. Então a escolha
+   * acontece aqui: entre as redações do passo (ordem da vez, a preferida
+   * primeiro), vence a de MENOR colisão, e o empate fica com a preferida — com a
+   * janela limpa sai exatamente o `body` de sempre.
+   *
+   * NENHUMA passa ⇒ o passo é ADIADO, e não pulado. É o mesmo desfecho do caso
+   * vizinho (`outside_window` logo abaixo): `skipped` na ponte CANCELA a inscrição,
+   * e o lead ficaria sem a mensagem e sem o fluxo. O adiamento é limitado
+   * (`MAX_ADIAMENTOS_POR_REPETICAO`), para nenhuma inscrição perseguir para sempre
+   * uma janela que só anda com outros envios.
+   */
+  let corpo = body;
+  if (variacoes !== undefined) {
+    const knobsDoNumero = await loadSpinningKnobs(pool, tenantId, channelSessionId, runLog);
+    const janela = await loadRecentCopies(pool, tenantId, channelSessionId, knobsDoNumero.windowSize);
+    const escolhida = redacaoQuePassaNaJanela(variacoes, janela, knobsDoNumero);
+    if (escolhida === null) {
+      return adiarPorRepeticao(pool, job, target, runLog, clock, 'mass_identical');
+    }
+    if (escolhida !== body) {
+      runLog.info('redação do passo trocada pela janela de repetição', {
+        redacoes: variacoes.length,
+        janela: janela.length,
+      });
+      corpo = escolhida;
+    }
+  }
+
   const chain = await runBeforeSend({
     pool,
     log: runLog,
@@ -1296,7 +1799,7 @@ async function sendFixedOutbound(
     leadId,
     jobId: job.id,
     channelSessionId,
-    body,
+    body: corpo,
     optedOutThisTurn,
     crmDailyLimit: null,
     now: clock(),
@@ -1354,7 +1857,22 @@ async function sendFixedOutbound(
         code: chain.code,
         next_run_at: chain.nextAllowedAt.toISOString(),
       });
-      return { kind: "deferred", until: chain.nextAllowedAt, reason: chain.code };
+      return {
+        kind: "deferred",
+        until: chain.nextAllowedAt,
+        reason: chain.code,
+        janelaRegulatoria: await janelaRegulatoriaDoCanal(pool, tenantId, target.channelSessionId),
+      };
+    }
+    /**
+     * #4429 — A COLISÃO DE REPETIÇÃO ADIA, COMO A JANELA. O veto pode chegar por
+     * aqui mesmo com a escolha acima: a janela lida há um instante pode ter
+     * mudado (outro worker do mesmo número mandou), e o passo de UMA redação só
+     * não tem escolha nenhuma a fazer — é este caminho que ele pega. Antes,
+     * `skipped` cancelava a inscrição inteira.
+     */
+    if (chain.code === 'mass_identical') {
+      return adiarPorRepeticao(pool, job, target, runLog, clock, chain.code);
     }
     runLog.info('envio fixo vetado pela cadeia — não re-agendado', { code: chain.code });
     return { kind: "skipped" };
@@ -1378,6 +1896,107 @@ async function sendFixedOutbound(
     case 'unavailable':
       throw new Error(`envio fixo: canal indisponível (${outcome.reason}) — run re-tentado pela fila`);
   }
+}
+
+/**
+ * O canal desta conversa impõe a janela de 24 h? Lido do PROVEDOR (capability),
+ * nunca do nome do canal, e só quando um adiamento está sendo registrado.
+ *
+ * O dado serve ao dossiê: `action_deferred` daqui carrega `janela_regulatoria`
+ * junto com o motivo, para a linha do tempo não anunciar a janela da Meta numa
+ * conexão por QR — que é o defeito medido na #4913. Falha de leitura responde
+ * `false`: o adiamento já está decidido, e o erro não pode derrubá-lo.
+ */
+async function janelaRegulatoriaDoCanal(
+  pool: pg.Pool,
+  tenantId: string,
+  channelSessionId: string | null | undefined,
+): Promise<boolean> {
+  if (!channelSessionId) return false;
+  try {
+    const { rows } = await pool.query<{ provider: string | null }>(
+      `select provider from channel_sessions where organization_id = $1 and id = $2 limit 1`,
+      [tenantId, channelSessionId],
+    );
+    return aJanelaRegulatoriaSeAplica(rows[0]?.provider);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * ADIA o passo em que a janela de repetição recusou TODAS as redações — e devolve
+ * `skipped` quando o teto já foi usado.
+ *
+ * `skipped` na ponte CANCELA a inscrição (é o desfecho de hoje), então chegar
+ * nele só depois de a janela ter tido chance de andar. O que se conta é quantos
+ * adiamentos POR REPETIÇÃO este passo já teve (`action_deferred` com
+ * `reason: mass_identical` nos eventos da inscrição): os adiamentos por janela
+ * (`outside_window`) e por ritmo são outra coisa e não gastam este teto.
+ */
+async function adiarPorRepeticao(
+  pool: pg.Pool,
+  job: JobRow,
+  target: ReentrySendTarget,
+  runLog: ReturnType<typeof withFields>,
+  clock: () => Date,
+  motivo: string,
+): Promise<EnvioFixoDesfecho> {
+  const enrollmentId = typeof job.payload.followup_enrollment_id === 'string' ? job.payload.followup_enrollment_id : null;
+  const nodeId = typeof job.payload.node_id === 'string' ? job.payload.node_id : null;
+  const adiamentos =
+    enrollmentId !== null && nodeId !== null
+      ? await contarAdiamentosPorRepeticao(pool, target.tenantId, enrollmentId, nodeId)
+      : 0;
+
+  if (adiamentos >= MAX_ADIAMENTOS_POR_REPETICAO) {
+    runLog.info('envio fixo vetado pela janela de repetição — o teto de adiamentos acabou, o passo encerra', {
+      motivo,
+      adiamentos,
+    });
+    return { kind: 'skipped' };
+  }
+
+  const until = new Date(clock().getTime() + ESPERA_POR_REPETICAO_MS);
+  await rescheduleReentry(pool, {
+    tenantId: target.tenantId,
+    leadId: target.leadId,
+    jobId: job.id,
+    at: until,
+    payload: job.payload,
+  });
+  runLog.info('envio fixo adiado pela janela de repetição — o passo continua devendo o envio', {
+    motivo,
+    next_run_at: until.toISOString(),
+    adiamento: adiamentos + 1,
+    teto: MAX_ADIAMENTOS_POR_REPETICAO,
+  });
+  return {
+    kind: 'deferred',
+    until,
+    reason: motivo,
+    janelaRegulatoria: await janelaRegulatoriaDoCanal(pool, target.tenantId, target.channelSessionId),
+  };
+}
+
+/** Quantos adiamentos POR REPETIÇÃO este passo já teve — o teto de `adiarPorRepeticao`. */
+async function contarAdiamentosPorRepeticao(
+  pool: pg.Pool,
+  tenantId: string,
+  enrollmentId: string,
+  nodeId: string,
+): Promise<number> {
+  const { rows } = await pool.query<{ n: number }>(
+    `select count(*)::int as n
+       from followup_enrollment_events
+      where organization_id = $1
+        and enrollment_id = $2
+        and node_id = $3
+        and event_type = 'action_deferred'
+        and payload->>'reason' = 'mass_identical'`,
+    [tenantId, enrollmentId, nodeId],
+  );
+  return Number(rows[0]?.n ?? 0);
 }
 
 /**
