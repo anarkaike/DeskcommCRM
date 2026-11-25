@@ -91924,7 +91924,7 @@ comment on column public.telegram_case_interactions.target_telegram_user_id is
   'Observed Telegram participant targeted by a short-lived approve/deny membership callback.';
 
 
--- Reconciled private fork source: supabase/migrations/20261125170000_9717_telegram_bot_managed_and_native.sql
+-- Reconciled private fork source: supabase/migrations/20261125180000_9717_telegram_bot_managed_and_native.sql
 -- manifest: O provider `telegram` aceita os dois adaptadores do repositório:
 -- o canal nativo do Bot API (`telegram_bot_id`, migration 9342) e a integração
 -- gerenciada do fork (`telegram_bot_connection_id`, migrations 9700–9716).
