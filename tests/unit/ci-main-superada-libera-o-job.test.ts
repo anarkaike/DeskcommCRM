@@ -118,7 +118,7 @@ describe.each(ALVOS)("%s::%s — revisão superada não ocupa o job atual", (arq
     expect(cancela({ ...main, workflow: `${p.workflow}-outro` }, main)).toBe(false);
     if (job !== "build-and-size") expect(cancela({ ...main, perna: "2" }, main)).toBe(false);
     if (job === "invariants-majors")
-      expect(cancela({ ...main, shard: "2/8" }, main)).toBe(false);
+      expect(cancela({ ...main, shard: "2/16" }, main)).toBe(false);
     for (const [outroArquivo, outroJob] of ALVOS) {
       if (outroArquivo === arquivo && outroJob === job) continue;
       const outra = politica(outroArquivo, outroJob);

@@ -229,7 +229,10 @@ describe("o baseline fica no piso de Postgres que dizemos suportar", () => {
     expect(ci).toMatch(/majors=\["17"\]/);
     expect(ci, "a forma reduzida não pode ser o piso sozinho (#422)").not.toMatch(/majors=\["15"\]/);
     expect(ci).toMatch(/^\s*pg:\s*\$\{\{\s*fromJSON\(needs\.invariants-alcance\.outputs\.majors\)\s*\}\}\s*$/m);
-    expect(ci).toMatch(/^\s*shard:\s*\["1\/8",\s*"2\/8",\s*"3\/8",\s*"4\/8",\s*"5\/8",\s*"6\/8",\s*"7\/8",\s*"8\/8"\]\s*$/m);
+    const shardLine = ci.match(/^\s*shard:\s*\[(.*?)\]\s*$/m)?.[1];
+    expect(shardLine?.split(/,\s*/).map((shard) => shard.replaceAll('"', ""))).toEqual(
+      Array.from({ length: 16 }, (_, index) => `${index + 1}/16`),
+    );
     expect(ci).toMatch(/invariants-majors-pg\$\{\{\s*matrix\.pg\s*\}\}-shard\$\{\{\s*matrix\.shard\s*\}\}/);
 
     // 1b. E o piso é OBRIGATÓRIO fora de pull_request: é o que garante que toda
@@ -248,7 +251,7 @@ describe("o baseline fica no piso de Postgres que dizemos suportar", () => {
     // 3. O script que re-aplica o baseline sobre banco COM DADOS é invocado por
     //    um job — ele existia desde 2026-08-27 e nenhum workflow o chamava.
     expect(ci).toMatch(/run:\s*pnpm test:db -- --shard=\$\{\{\s*matrix\.shard\s*\}\}/);
-    expect(ci).toMatch(/if:\s*matrix\.shard == '1\/8'\n\s+run:\s*pnpm test:db:update\b/);
+    expect(ci).toMatch(/if:\s*matrix\.shard == '1\/16'\n\s+run:\s*pnpm test:db:update\b/);
 
     // 4. O check obrigatório `invariants` sobrevive à matriz. A branch
     //    protection da `main` exige esse nome exato, e job de matrix se chama
