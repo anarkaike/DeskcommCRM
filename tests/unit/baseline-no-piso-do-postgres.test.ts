@@ -250,7 +250,9 @@ describe("o baseline fica no piso de Postgres que dizemos suportar", () => {
 
     // 3. O script que re-aplica o baseline sobre banco COM DADOS é invocado por
     //    um job — ele existia desde 2026-08-27 e nenhum workflow o chamava.
-    expect(ci).toMatch(/run:\s*pnpm test:db -- --shard=\$\{\{\s*matrix\.shard\s*\}\}/);
+    // pnpm repassa -- como argumento literal do script; o Vitest deixa de interpretar --shard.
+    expect(ci).toMatch(/run:\s*pnpm test:db --shard=\$\{\{\s*matrix\.shard\s*\}\}/);
+    expect(ci).not.toMatch(/run:\s*pnpm test:db -- --shard=/);
     expect(ci).toMatch(/if:\s*matrix\.shard == '1\/16'\n\s+run:\s*pnpm test:db:update\b/);
 
     // 4. O check obrigatório `invariants` sobrevive à matriz. A branch

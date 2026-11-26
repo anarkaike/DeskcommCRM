@@ -777,7 +777,7 @@ jobs:
         # consultas/hora por IP — o executor próprio é um IP só.
         env:
           GH_TOKEN: ${{ github.token }}
-        run: pnpm test:db -- --shard=${{ matrix.shard }}
+        run: pnpm test:db --shard=${{ matrix.shard }}
 
       # O `update.sh` do cliente roda sobre um banco COM DADOS, e nenhum gate
       # exercitava isso: `test:db` aplica o baseline num banco VAZIO, então
