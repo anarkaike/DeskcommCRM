@@ -76,7 +76,7 @@ const TETOS: Record<string, { minutos: number; razao: string }> = {
     razao:
       "a perna executa `test:db` + `test:db:update` por major. O teto de 45 min foi atingido " +
       "duas vezes no pg17 e uma vez no pg15; os tempos cresceram muito além do p90 histórico. " +
-      "A suíte de banco é agora dividida em quatro shards Vitest por major, sem retirar arquivos " +
+      "A suíte de banco é agora dividida em oito shards Vitest por major, sem retirar arquivos " +
       "nem reduzir majors; o update com dados roda uma vez por major. Mantém-se o teto como guarda, " +
       "e qualquer nova saturação exige investigar a causa antes de rever o orçamento",
   },

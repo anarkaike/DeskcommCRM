@@ -635,7 +635,7 @@ jobs:
   # QUAL MATRIZ DE MAJOR? A de cima sempre; a de PISO só quando o PR a alcança.
   #
   # `invariants-majors` roda todo o `test:db` uma vez por major, repartido em
-  # quatro shards Vitest de arquivos para cada job caber no teto sem perder cobertura.
+  # oito shards Vitest de arquivos para cada job caber no teto sem perder cobertura.
   # Medido de 15 a 18/09/2026: 1.658 min de runner por dia nas duas pernas, e 72% dos PRs não
   # tocam schema, script de banco, kit nem invariante — nesses, a perna do piso
   # mede a mesma coisa que a de cima, com outra versão de Postgres, sem chance de
@@ -697,7 +697,7 @@ jobs:
 
   invariants-majors:
     # A suíte inteira por major excedeu 45 min no pg17 e levou ~41 min no pg15.
-    # Dividir os arquivos em quatro shards conserva todos os invariantes e o teste
+    # Dividir os arquivos em oito shards conserva todos os invariantes e o teste
     # de update com dados, mantendo o teto de 45 min como guarda de travamento.
     timeout-minutes: 45
     # 30 → 45 em 10/11/2026 (doc de decisão 302): cortada por relógio aos 30 min
@@ -740,7 +740,7 @@ jobs:
         # A lista vem do `invariants-alcance`: ["15","17"] sempre que o PR
         # alcança o piso, e fora de pull_request; ["17"] no PR que não alcança.
         pg: ${{ fromJSON(needs.invariants-alcance.outputs.majors) }}
-        shard: ["1/4", "2/4", "3/4", "4/4"]
+        shard: ["1/8", "2/8", "3/8", "4/8", "5/8", "6/8", "7/8", "8/8"]
     env:
       # Uma variável, os dois scripts: `scripts/test-db.sh` e
       # `scripts/test-update-com-dados.sh` leem esta para escolher a imagem.
@@ -787,7 +787,7 @@ jobs:
       # ele passa a ser gate, nas duas majors, pela mesma variável de imagem.
       - name: update.sh sobre banco COM DADOS (pg${{ matrix.pg }})
         # O teste de update usa banco independente e roda uma vez por major.
-        if: matrix.shard == '1/4'
+        if: matrix.shard == '1/8'
         run: pnpm test:db:update
 
       # No runner próprio o que sobra fica no disco e na RAM para o próximo job.
@@ -809,7 +809,7 @@ jobs:
   # (a lista dos cinco — `verify, build-and-size, invariants, e2e, imagens-ok` —
   # está na triagem do CI; token de fork não lê branch protection pela API, e por
   # isso ela é citada, não remedida aqui). Job de matrix se
-  # chama `invariants-majors (15, 1/4)` etc.: se a matriz
+  # chama `invariants-majors (15, 1/8)` etc.: se a matriz
   # tivesse ficado com o nome `invariants`, a proteção passaria a esperar para
   # sempre um check que nenhum run produz, e NENHUM PR mergearia.
   invariants:
