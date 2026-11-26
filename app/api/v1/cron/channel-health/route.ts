@@ -277,7 +277,7 @@ async function handle(req: NextRequest): Promise<Response> {
       const apelido = s.display_name ?? s.phone_number ?? "sem nome";
       const desfecho = await sincronizarSaudeDaConexao(
         admin,
-        { id: s.id, organization_id: s.organization_id, status: statusFinal, status_reason: s.status_reason },
+        { id: s.id, organization_id: s.organization_id, status: statusFinal, status_reason: s.status_reason, provider: s.provider },
         // A IDADE do status vai junto: é o que separa um boot de trinta segundos
         // de uma sessão presa em `STARTING` há três dias (#4870). O contador do
         // vigia (`vigia_starting.esgotado`) sobe o aviso para crítico quando as
@@ -293,6 +293,7 @@ async function handle(req: NextRequest): Promise<Response> {
         // leitura só acontece nesse caso, que é raro — a rodada comum não paga
         // uma consulta a mais por sessão.
         defeitoDoNumero(saude.detail) ? await idiomaDaOrganizacao(admin, s.organization_id) : "pt-BR",
+        s.provider === "telegram" ? "Telegram" : "WhatsApp",
       );
       desfechos[desfecho] = (desfechos[desfecho] ?? 0) + 1;
     } catch (err) {

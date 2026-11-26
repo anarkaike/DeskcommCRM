@@ -36,6 +36,7 @@ type Contexto = {
   tentativa: string;
   pr?: number;
   perna: string;
+  shard: string;
   imagem: string;
   arquitetura: string;
 };
@@ -53,6 +54,7 @@ function interpolar(modelo: string, c: Contexto): string {
       .replace(/github\.workflow/g, "c.workflow")
       .replace(/github\.ref\b/g, "c.ref")
       .replace(/matrix\.(parte|pg)\b/g, "c.perna")
+      .replace(/matrix\.shard\b/g, "c.shard")
       .replace(/matrix\.name\b/g, "c.imagem")
       .replace(/matrix\.arch\b/g, "c.arquitetura")
       .replace(/==/g, "===")
@@ -71,6 +73,7 @@ function contexto(workflow: string, alteracoes: Partial<Contexto> = {}): Context
     head: "novo",
     tentativa: "1",
     perna: "1",
+    shard: "1/4",
     imagem: "deskcommcrm",
     arquitetura: "amd64",
     ...alteracoes,
@@ -114,6 +117,8 @@ describe.each(ALVOS)("%s::%s — revisão superada não ocupa o job atual", (arq
     expect(cancela(pr, contexto(p.workflow, { ref: "refs/heads/42" }))).toBe(false);
     expect(cancela({ ...main, workflow: `${p.workflow}-outro` }, main)).toBe(false);
     if (job !== "build-and-size") expect(cancela({ ...main, perna: "2" }, main)).toBe(false);
+    if (job === "invariants-majors")
+      expect(cancela({ ...main, shard: "2/16" }, main)).toBe(false);
     for (const [outroArquivo, outroJob] of ALVOS) {
       if (outroArquivo === arquivo && outroJob === job) continue;
       const outra = politica(outroArquivo, outroJob);

@@ -136,6 +136,7 @@ export interface ConfigDoAviso {
   destino_jid: string | null;
   ligado: boolean;
   resposta_whatsapp_habilitada: boolean;
+  destino_tipo?: string;
   /**
    * `fixo` (o `default` da coluna, e o valor de toda linha gravada antes do
    * #3803) ou `responsavel`. Opcional no TIPO porque dezenas de fixtures
@@ -900,12 +901,13 @@ export function createSupabaseAvisoDb(admin: SupabaseClient): AvisoDb {
       const { data, error } = await admin
         .from("config_aviso_de_caso")
         .select(
-          "organization_id, channel_session_id, telefone_destino, destino_jid, ligado, resposta_whatsapp_habilitada, destino_modo, modelo_id",
+          "organization_id, channel_session_id, telefone_destino, destino_jid, ligado, resposta_whatsapp_habilitada, destino_tipo, destino_modo, modelo_id",
         )
         .eq("organization_id", orgId)
         .maybeSingle();
       if (error) throw new Error(error.message);
-      return (data as ConfigDoAviso | null) ?? null;
+      const config = (data as ConfigDoAviso | null) ?? null;
+      return config?.destino_tipo === "telegram" ? null : config;
     },
 
     /**

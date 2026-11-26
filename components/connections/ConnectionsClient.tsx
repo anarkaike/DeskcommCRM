@@ -19,9 +19,9 @@ import {
   type ChannelSession,
 } from "@/hooks/channels/useChannelSessions";
 import {
-  CHANNEL_PROVIDER_SOCIAL,
   DEFAULT_CHANNEL_PROVIDER,
   capabilitiesOf,
+  isWhatsAppChannel,
 } from "@/lib/channels/capabilities";
 import type { ChannelProvider } from "@/lib/channels/capabilities";
 import { usePacingKnobs } from "@/hooks/channels/usePacingKnobs";
@@ -262,9 +262,11 @@ export function ConnectionsClient({
   const [toDelete, setToDelete] = useState<ChannelSession | null>(null);
   const pacingItems = usePacingKnobs().data?.items ?? [];
 
-  // A mesma lista que a tela desenha é a que a ação em lote comanda: filtrar
-  // social aqui (como a tela já faz) evita um botão que pede ids que ninguém vê.
-  const list = (sessions ?? []).filter((session) => session.provider !== CHANNEL_PROVIDER_SOCIAL);
+  // O hook compartilhado com a Inbox traz todos os canais de mensagem; esta
+  // tela representa números WhatsApp, então mostra apenas essa família.
+  const list = (sessions ?? []).filter((session) =>
+    isWhatsAppChannel(session.provider ?? DEFAULT_CHANNEL_PROVIDER),
+  );
   /** Alvo de cada botão de lote — os dois só existem quando têm o que fazer. */
   const paraPausar = list.filter((c) => !canalDesativado(c.metadata));
   const paraRetomar = list.filter((c) => canalDesativado(c.metadata));

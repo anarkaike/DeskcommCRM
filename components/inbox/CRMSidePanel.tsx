@@ -1158,7 +1158,7 @@ export function CRMSidePanel({
             anuncio_mais_recente?: AnuncioMaisRecente | null;
             recusa_de_ofertas?: SituacaoDaRecusaDeOfertas;
           };
-        }>(`/api/v1/contacts/${contactId}/crm-summary`);
+        }>(`/api/v1/contacts/${contactId}/crm-summary`, { timeoutMs: 45_000 });
         if (cancelled) return;
         setSummaryContactId(contactId);
         setEnrichment(r.data.enrichment ?? null);

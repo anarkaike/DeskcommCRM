@@ -271,7 +271,7 @@ export function modeloOpenAIRaciocina(modelId: string): boolean {
  * acima, lá `low` é mais lento até que o padrão, e `none` é o único que entrega
  * o que o operador pediu.
  */
-function esforcoAceitoPeloModelo(
+export function esforcoAceitoPeloModelo(
   modelId: string,
   esforco: EsforcoDeRaciocinioOpenAI,
 ): EsforcoDeRaciocinioOpenAI {

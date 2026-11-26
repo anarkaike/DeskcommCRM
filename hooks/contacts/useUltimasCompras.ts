@@ -19,6 +19,7 @@ export function useUltimasCompras(contactId: string | null) {
     queryFn: async (): Promise<CompraDoContato[]> => {
       const res = await apiClient.get<{ data: { compras: CompraDoContato[] } }>(
         `/api/v1/contacts/${contactId}/compras`,
+        { timeoutMs: 30_000 },
       );
       return res.data.compras ?? [];
     },

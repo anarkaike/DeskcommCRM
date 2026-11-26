@@ -281,7 +281,7 @@ function defeitoSegueSemMedida(saude: SaudeObservada, motivoAtual: string | null
  * com dois números ligados "WhatsApp desconectado" não diz QUAL — e a primeira
  * pergunta de quem lê o aviso é exatamente essa.
  */
-export function avisoDaConexao(
+function avisoBaseDaConexao(
   saude: SaudeObservada,
   apelido: string,
   /** Só os avisos novos do número de pé com defeito saem no idioma da organização; os de queda seguem em português. */
@@ -385,11 +385,28 @@ export function avisoDaConexao(
   };
 }
 
+/** Rótulos WAHA/WhatsApp dos avisos também servem para bots Telegram. */
+export function avisoDaConexao(
+  saude: SaudeObservada,
+  apelido: string,
+  idioma: Idioma = "pt-BR",
+  canal: "WhatsApp" | "Telegram" = "WhatsApp",
+): AvisoDeConexao | null {
+  const aviso = avisoBaseDaConexao(saude, apelido, idioma);
+  if (!aviso || canal === "WhatsApp") return aviso;
+  return {
+    ...aviso,
+    title: aviso.title.replaceAll("WhatsApp", canal),
+    body: aviso.body?.replaceAll("WhatsApp", canal).replaceAll("WAHA", "servidor do Telegram") ?? null,
+  };
+}
+
 /** O que a faixa do topo mostra: conexão caída, com nome. */
 export interface ConexaoCaida {
   id: string;
   apelido: string;
   status: string;
+  provider: string;
 }
 
 /**
@@ -421,7 +438,7 @@ export async function listarConexoesCaidas(
 ): Promise<ConexaoCaida[]> {
   const { data } = await cliente
     .from("channel_sessions")
-    .select("id, display_name, phone_number, status, waha_session_name")
+    .select("id, display_name, phone_number, status, waha_session_name, provider")
     .eq("organization_id", organizationId)
     .is("archived_at", null)
     // A faixa diz "nenhuma mensagem entra nem sai por esta conexão" e leva a
@@ -465,6 +482,7 @@ export async function listarConexoesCaidas(
     id: s.id as string,
     apelido: (s.display_name as string | null) ?? (s.phone_number as string | null) ?? "sem nome",
     status: (s.status as string | null) ?? "",
+    provider: (s.provider as string | null) ?? "",
   }));
 }
 
@@ -484,6 +502,7 @@ interface SessaoParaVigiar {
    * conexão de verdade.
    */
   phone_number?: string | null;
+  provider?: string | null;
 }
 
 /**
@@ -530,6 +549,7 @@ export async function sincronizarSaudeDaConexao(
   origem: "varredura" | "empurrao" = "varredura",
   /** O idioma da organização, para os avisos que já saem traduzidos (`avisoDaConexao`). */
   idioma: Idioma = "pt-BR",
+  canal: "WhatsApp" | "Telegram" = "WhatsApp",
 ): Promise<"avisado" | "ja_avisado" | "resolvido" | "sem_mudanca"> {
   // ─── A sessão SEM NÚMERO não é conexão fora do ar (#3416) ─────────────────
   //
@@ -546,7 +566,9 @@ export async function sincronizarSaudeDaConexao(
   // como sempre. E o ramo de `!aviso` abaixo é o que FECHA um episódio já
   // aberto — então esta mesma chamada limpa o aviso que a própria sessão
   // abriu antes de expirar, sem precisar de um segundo caminho.
-  const aviso = sessao.phone_number === null ? null : avisoDaConexao(saude, apelido, idioma);
+  const aviso = sessao.phone_number === null && sessao.provider !== "telegram"
+    ? null
+    : avisoDaConexao(saude, apelido, idioma, canal);
 
   const { data: linha } = await admin
     .from("channel_session_health")

@@ -634,8 +634,9 @@ jobs:
   # tests/unit/baseline-no-piso-do-postgres.test.ts.
   # QUAL MATRIZ DE MAJOR? A de cima sempre; a de PISO só quando o PR a alcança.
   #
-  # `invariants-majors` roda o `test:db` inteiro uma vez por major. Medido de 15 a
-  # 18/09/2026: 1.658 min de runner por dia nas duas pernas, e 72% dos PRs não
+  # `invariants-majors` roda todo o `test:db` uma vez por major, repartido em
+  # dezesseis shards Vitest de arquivos para reduzir o tempo de cada job sem perder cobertura.
+  # Medido de 15 a 18/09/2026: 1.658 min de runner por dia nas duas pernas, e 72% dos PRs não
   # tocam schema, script de banco, kit nem invariante — nesses, a perna do piso
   # mede a mesma coisa que a de cima, com outra versão de Postgres, sem chance de
   # reprovar por razão de major. A regra e o porquê de cada caminho estão no
@@ -695,11 +696,9 @@ jobs:
           responde "$resposta" "${n} arquivo(s) no PR"
 
   invariants-majors:
-    # Eram 20 min quando a perna tinha UMA passada; agora ela tem duas
-    # (`test:db` + `test:db:update`) e o teto acompanha. O 30 é DECLARADO, não
-    # medido — não há Docker onde esta matriz foi escrita —, e existe para o
-    # vermelho continuar falando de schema: mantido em 20, a perna morreria por
-    # relógio no meio da segunda passada.
+    # A suíte inteira por major excedeu 45 min no pg17 e levou ~41 min no pg15.
+    # Dividir os arquivos em dezesseis shards conserva todos os invariantes e o teste
+    # de update com dados, mantendo o teto de 45 min como guarda de travamento.
     timeout-minutes: 45
     # 30 → 45 em 10/11/2026 (doc de decisão 302): cortada por relógio aos 30 min
     # no pg15 e no pg17, também na `main`. Razão inteira em
@@ -729,7 +728,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_PROPRIO == 'ligado' && !endsWith(github.actor, '[bot]') && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","deskcomm-vps"]') || 'ubuntu-latest' }}
     needs: [invariants-alcance]
     concurrency:
-      group: ${{ github.workflow }}-invariants-majors-pg${{ matrix.pg }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && github.run_attempt != '1' && format('-reentrada-{0}', github.event.pull_request.head.sha) || '' }}${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt != '1' && format('-reentrada-{0}', github.sha) || '' }}
+      group: ${{ github.workflow }}-invariants-majors-pg${{ matrix.pg }}-shard${{ matrix.shard }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && github.run_attempt != '1' && format('-reentrada-{0}', github.event.pull_request.head.sha) || '' }}${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt != '1' && format('-reentrada-{0}', github.sha) || '' }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     strategy:
       # `false` e não o padrão (`true`): com `fail-fast`, a primeira major que
@@ -741,6 +740,7 @@ jobs:
         # A lista vem do `invariants-alcance`: ["15","17"] sempre que o PR
         # alcança o piso, e fora de pull_request; ["17"] no PR que não alcança.
         pg: ${{ fromJSON(needs.invariants-alcance.outputs.majors) }}
+        shard: ["1/16", "2/16", "3/16", "4/16", "5/16", "6/16", "7/16", "8/16", "9/16", "10/16", "11/16", "12/16", "13/16", "14/16", "15/16", "16/16"]
     env:
       # Uma variável, os dois scripts: `scripts/test-db.sh` e
       # `scripts/test-update-com-dados.sh` leem esta para escolher a imagem.
@@ -771,13 +771,13 @@ jobs:
         # aceita `timeout-minutes`. Razão e medições: o cabeçalho da action.
         timeout-minutes: 5
 
-      - name: RLS isolation + governance invariants (pg${{ matrix.pg }})
+      - name: RLS isolation + governance invariants (pg${{ matrix.pg }}, shard ${{ matrix.shard }})
         # O token é só para `gh release view`: o test:db confere o update.sh da
         # última release publicada (issue #1909), e a API anônima tem teto de 60
         # consultas/hora por IP — o executor próprio é um IP só.
         env:
           GH_TOKEN: ${{ github.token }}
-        run: pnpm test:db
+        run: pnpm test:db --shard=${{ matrix.shard }}
 
       # O `update.sh` do cliente roda sobre um banco COM DADOS, e nenhum gate
       # exercitava isso: `test:db` aplica o baseline num banco VAZIO, então
@@ -786,6 +786,8 @@ jobs:
       # existia desde 2026-08-27 e NENHUM workflow o chamava (issue #454): aqui
       # ele passa a ser gate, nas duas majors, pela mesma variável de imagem.
       - name: update.sh sobre banco COM DADOS (pg${{ matrix.pg }})
+        # O teste de update usa banco independente e roda uma vez por major.
+        if: matrix.shard == '1/16'
         run: pnpm test:db:update
 
       # No runner próprio o que sobra fica no disco e na RAM para o próximo job.
@@ -807,7 +809,7 @@ jobs:
   # (a lista dos cinco — `verify, build-and-size, invariants, e2e, imagens-ok` —
   # está na triagem do CI; token de fork não lê branch protection pela API, e por
   # isso ela é citada, não remedida aqui). Job de matrix se
-  # chama `invariants-majors (15)` e `invariants-majors (17)`: se a matriz
+  # chama `invariants-majors (15, 1/16)` etc.: se a matriz
   # tivesse ficado com o nome `invariants`, a proteção passaria a esperar para
   # sempre um check que nenhum run produz, e NENHUM PR mergearia.
   invariants:

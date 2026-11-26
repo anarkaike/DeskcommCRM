@@ -1,179 +1,137 @@
-/**
- * Adapter do bot do Telegram (Bot API — issue #3440, fatia T1).
- *
- * Burro como os irmãos: traduz formato e nada mais. Janela, cap, horário e
- * retry são da cadeia `before_send` (`docs/doctrine/restricao-de-canal.md`).
- *
- * ─── O destinatário NÃO sai do contato ─────────────────────────────────────
- *
- * Como no canal social, o endereço é um id que a plataforma entrega: o
- * `chat_id` do update, gravado em `conversations.provider_conversation_id` pela
- * ingestão. Telefone não existe aqui — o robô fala com quem o iniciou —, e é
- * exatamente por isso que este provider NÃO está em `PROVIDERS_DE_TELEFONE`:
- * quem tem um número na mão não alcança ninguém por este canal (#3358/#3364).
- *
- * `resolveRecipient` devolve um marcador, no molde do adapter das redes
- * sociais: o envelope precisa de um `to` não nulo para quem chama saber que há
- * destinatário, e o que endereça é `providerConversationId`.
- *
- * ─── Uma mensagem custa zero, mas não é de graça em atenção ────────────────
- *
- * `costPerMessage: false` na matriz — a Bot API não cobra por mensagem. O
- * limite que existe é de RITMO (≈1 msg/s por conversa, `minIntervalMs: 1000`):
- * estourar devolve `429` com `retry_after`, e o erro sobe com ele para quem
- * decide esperar.
- */
 import { createAdminClient } from "@/lib/supabase/admin";
+import { decryptWebhookSecret } from "@/lib/webhooks/secrets";
+import { fetchTelegramMedia, getTelegramWebhookInfo, sendTelegramMedia, sendTelegramText, validateTelegramBotToken } from "../telegram/bot-api";
+import type { ChannelAdapter, OutboundEnvelope, RecipientInput } from "../types";
 
-import { telegramCredsForBotId, telegramRequest } from "../bot/credentials";
-import { telegramExternalId } from "../bot/webhook";
-import type { ChannelAdapter, ChannelHealth, ChannelTenantScope, OutboundEnvelope, RecipientInput } from "../types";
+const NOT_CONFIGURED = "telegram_not_configured";
 
-/**
- * O marcador de destinatário deste canal.
- *
- * Não é o `chat_id` de propósito: `resolveRecipient` recebe o CONTATO, e o
- * contato do Telegram não carrega o chat. Inventar um valor que parecesse
- * endereço (um telefone vazio, um id falso) faria o handler gravar
- * `missing_phone_number` ou — pior — endereçar em silêncio para o lugar errado.
- */
-const DESTINO_PELA_THREAD = "provider-chat";
-
-/**
- * O `message_id` que o Telegram deu, extraído do nosso id canônico
- * (`tg:<robô>:<conversa>:<mensagem>`).
- *
- * Existe porque a citação (`reply_to_message_id`) precisa do id CRU: o Telegram
- * não conhece o nosso prefixo. Se o formato não casar, devolve `null` e a
- * mensagem sai solta — a citação é enfeite, nunca condição de envio.
- */
-export function telegramMessageId(externalId: string): string | null {
-  const partes = externalId.split(":");
-  if (partes.length !== 4 || partes[0] !== "tg") return null;
-  const id = partes[3];
-  return id && /^\d+$/.test(id) ? id : null;
+function tipoDeMidiaTelegram(
+  kind: OutboundEnvelope["kind"],
+): kind is "image" | "video" | "audio" | "document" {
+  return kind === "image" || kind === "video" || kind === "audio" || kind === "document";
 }
 
-/** O `chat_id` a partir do id canônico — usado quando a conversa não tem thread. */
-export function telegramChatIdFromExternalId(externalId: string): string | null {
-  const partes = externalId.split(":");
-  if (partes.length !== 4 || partes[0] !== "tg") return null;
-  return partes[2] || null;
-}
-
+/** Bot API transport. It translates the shared message and media contracts. */
 export const telegramAdapter: ChannelAdapter = {
   provider: "telegram",
-
   resolveRecipient(input: RecipientInput): string | null {
-    // Grupo está fora da v1 (`groups: "none"`): devolver endereço aqui mandaria
-    // a resposta para uma conversa que o produto não atende.
-    if (input.isGroup) return null;
-    return DESTINO_PELA_THREAD;
+    const chatId = input.providerConversationId;
+    return chatId && /^-?\d{1,20}$/.test(chatId) ? chatId : null;
   },
-
-  /**
-   * SEMPRE `true`, pelo mesmo motivo medido do canal intermediado: a credencial
-   * vive cifrada na SESSÃO, e este método é síncrono — não pode consultar o
-   * banco. Responder `false` faria o handler gravar `queued` sem nunca tentar
-   * enviar, com o canal conectado e funcionando.
-   *
-   * Quem desiste é `send`, que LANÇA: `{externalId: null}` faria o chamador
-   * gravar `sent` sem id, dizendo "enviado" para algo que nunca saiu.
-   */
-  isConfigured(): boolean {
-    return true;
-  },
-
-  async send(envelope: OutboundEnvelope): Promise<{ externalId: string | null }> {
-    if (envelope.kind !== "text") {
-      // A T2 da issue (#3440) cobre mídia. Recusar nomeando o motivo é melhor
-      // que mandar o texto de uma legenda e perder o anexo em silêncio.
-      throw new Error(
-        `telegram_media_not_supported: este canal ainda não envia ${envelope.kind} (fatia T2 da #3440).`,
-      );
-    }
-    if (!envelope.body || envelope.body.trim().length === 0) {
-      throw new Error("telegram_empty_body: mensagem de texto sem corpo.");
-    }
-
+  isConfigured: () => true,
+  async checkHealth(input): Promise<import("../types").ChannelHealth> {
     const admin = createAdminClient();
-    const creds = await telegramCredsForBotId(admin, {
-      organizationId: envelope.organizationId,
-      botId: envelope.sessionRef,
-    });
-    if (!creds) {
-      throw new Error(
-        "telegram_not_configured: nenhum token de bot para esta conexão. Reconecte em Conexões › Telegram.",
-      );
-    }
-
-    // O endereço é a thread. Sem ela não há envio livre: o `chat_id` chega
-    // junto com a primeira mensagem da pessoa.
-    const chatId = envelope.providerConversationId;
-    if (!chatId) {
-      throw new Error(
-        "telegram_no_conversation: a conversa não tem chat_id; espere a primeira mensagem do cliente neste robô.",
-      );
-    }
-
-    const body: Record<string, unknown> = {
-      chat_id: chatId,
-      text: envelope.body,
-      // Sem prévia de link o texto de um atendimento não vira cartão de site.
-      disable_web_page_preview: true,
-    };
-    const citado = envelope.replyToExternalId ? telegramMessageId(envelope.replyToExternalId) : null;
-    if (citado) body.reply_to_message_id = Number(citado);
-
-    await envelope.beforeSend?.();
-
-    const enviada = await telegramRequest<{ message_id?: number }>(creds.token, "sendMessage", body);
-    if (typeof enviada?.message_id !== "number") {
-      // Envio aceito sem id: o chamador precisa saber que NÃO sabe o id, em vez
-      // de gravar `null` como se fosse sucesso (`isConfigured` acima).
-      throw new Error("telegram_send_without_id: a plataforma aceitou o envio sem devolver message_id.");
-    }
-
-    return { externalId: telegramExternalId(creds.botId, chatId, enviada.message_id) };
-  },
-
-  /**
-   * A conexão está de pé AGORA? `getMe` é a sonda mais barata da Bot API e é a
-   * única que responde a pergunta certa: o token ainda vale?
-   *
-   *   401/404 → token revogado ou bot apagado. FAILED (a falha calada).
-   *   rede/timeout → `reachable: false`, sem status: não deu para perguntar,
-   *                  e "caiu" seria informação falsa.
-   */
-  async checkHealth(input: ChannelTenantScope & { sessionRef: string }): Promise<ChannelHealth> {
-    const admin = createAdminClient();
-    let creds: Awaited<ReturnType<typeof telegramCredsForBotId>>;
+    const { data, error } = await admin
+      .from("telegram_bot_connections")
+      .select("token_encrypted, status")
+      .eq("organization_id", input.organizationId)
+      .eq("id", input.sessionRef)
+      .maybeSingle();
+    if (error || !data) return { reachable: true, status: "FAILED", detail: "telegram_connection_unavailable" };
+    if (data.status !== "active") return { reachable: true, status: "STOPPED", detail: null };
+    const token = await decryptWebhookSecret(admin, String(data.token_encrypted));
+    if (!token) return { reachable: true, status: "FAILED", detail: "telegram_credential_unavailable" };
     try {
-      creds = await telegramCredsForBotId(admin, {
-        organizationId: input.organizationId,
-        botId: input.sessionRef,
-      });
-    } catch {
-      return { reachable: false, status: null, detail: "credencial_ilegivel" };
-    }
-    if (!creds) return { reachable: false, status: null, detail: "sem_credencial_para_a_sessao" };
-
-    try {
-      await telegramRequest<{ id?: number }>(creds.token, "getMe");
-      return { reachable: true, status: "WORKING", detail: null };
-    } catch (err) {
-      const detalhe = err instanceof Error ? err.message : "erro_desconhecido";
-      // 401/404 = o token não vale mais. O resto é transporte.
-      if (/\b(401|404)\b/.test(detalhe)) {
-        return { reachable: true, status: "FAILED", detail: detalhe.slice(0, 200) };
+      const identity = await validateTelegramBotToken(token);
+      if (!identity) {
+        const info = await getTelegramWebhookInfo(token);
+        return { reachable: true, status: "FAILED", detail: info.url ? "telegram_bot_identity_invalid" : "telegram_webhook_missing" };
       }
-      return { reachable: false, status: null, detail: detalhe.slice(0, 200) };
+      const info = await getTelegramWebhookInfo(token);
+      const updates = new Set(info.allowedUpdates);
+      const required = ["message", "callback_query", "chat_member", "my_chat_member"];
+      const webhookReady = Boolean(info.url) && required.every((update) => updates.has(update));
+      if (!webhookReady || info.lastErrorMessage) {
+        return {
+          reachable: true,
+          status: "FAILED",
+          detail: info.lastErrorMessage ? "telegram_webhook_delivery_error" : "telegram_webhook_misconfigured",
+        };
+      }
+      return { reachable: true, status: "WORKING", detail: null };
+    } catch (cause) {
+      const code = cause instanceof Error ? cause.message : "";
+      if (/^telegram_(?:http|api)_(?:401|403)$/.test(code)) {
+        return { reachable: true, status: "FAILED", detail: "telegram_credential_rejected" };
+      }
+      return { reachable: false, status: null, detail: /^telegram_network_error_/.test(code) ? code : "telegram_health_check_failed" };
     }
   },
-
   codes: {
-    notConfigured: "telegram_not_configured",
-    sendFailed: "telegram_error",
+    notConfigured: NOT_CONFIGURED,
+    sendFailed: "telegram_send_failed",
     unknownError: "telegram_unknown",
+  },
+  async fetchInboundMedia(input) {
+    const fileId = input.url.startsWith("telegram-media:")
+      ? input.url.slice("telegram-media:".length)
+      : "";
+    if (!fileId) throw new Error("telegram_media_invalid_ref");
+    const admin = createAdminClient();
+    const { data, error } = await admin
+      .from("telegram_bot_connections")
+      .select("token_encrypted, status")
+      .eq("organization_id", input.organizationId)
+      .eq("id", input.sessionRef)
+      .maybeSingle();
+    if (error || !data || data.status !== "active") throw new Error(NOT_CONFIGURED);
+    const token = await decryptWebhookSecret(admin, String(data.token_encrypted));
+    if (!token) throw new Error(NOT_CONFIGURED);
+    return fetchTelegramMedia({ token, fileId, hintMime: input.hintMime });
+  },
+  async send(envelope: OutboundEnvelope): Promise<{ externalId: string | null }> {
+    const capability =
+      envelope.actorType === "user"
+        ? "human_replies"
+        : envelope.actorType === "ai_agent"
+          ? "ai_replies"
+          : null;
+    if (!capability) throw new Error("telegram_sender_not_allowed");
+    if (envelope.kind !== "text" && (!envelope.media || !tipoDeMidiaTelegram(envelope.kind))) {
+      throw new Error("telegram_unsupported_message_type");
+    }
+    const admin = createAdminClient();
+    const { data, error } = await admin
+      .from("telegram_bot_connections")
+      .select("token_encrypted, status")
+      .eq("organization_id", envelope.organizationId)
+      .eq("id", envelope.sessionRef)
+      .maybeSingle();
+    if (error || !data || data.status !== "active") throw new Error(NOT_CONFIGURED);
+    const { data: permission, error: permissionError } = await admin
+      .from("telegram_bot_surface_capabilities")
+      .select("id")
+      .eq("organization_id", envelope.organizationId)
+      .eq("connection_id", envelope.sessionRef)
+      .eq("surface", "inbox")
+      .eq("capability", capability)
+      .maybeSingle();
+    if (permissionError || !permission) throw new Error("telegram_reply_not_enabled");
+    const token = await decryptWebhookSecret(admin, String(data.token_encrypted));
+    if (!token) throw new Error(NOT_CONFIGURED);
+    // O núcleo passa o id externo da mensagem citada, que é específico do
+    // provider. A tradução para o message_id numérico da Bot API fica aqui.
+    // Formatos aceitos: `chatId:messageId` (saída) e
+    // `telegram:connectionId:chatId:messageId` (entrada).
+    const replyToMessageId = envelope.replyToExternalId?.split(":").at(-1) ?? null;
+    const reply = replyToMessageId && /^\d{1,20}$/.test(replyToMessageId) ? replyToMessageId : null;
+    const mediaKind = tipoDeMidiaTelegram(envelope.kind) ? envelope.kind : null;
+    await envelope.beforeSend?.();
+    const sent =
+      envelope.media && mediaKind
+        ? await sendTelegramMedia({
+            token,
+            chatId: envelope.providerConversationId ?? envelope.to,
+            kind: mediaKind,
+            media: envelope.media,
+            ...(reply ? { replyToMessageId: reply } : {}),
+          })
+        : await sendTelegramText({
+            token,
+            chatId: envelope.providerConversationId ?? envelope.to,
+            text: envelope.body ?? "",
+            ...(reply ? { replyToMessageId: reply } : {}),
+          });
+    return { externalId: `tg:${envelope.sessionRef}:${sent.chatId}:${sent.messageId}` };
   },
 };

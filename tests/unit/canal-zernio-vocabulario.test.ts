@@ -35,6 +35,7 @@ describe("capabilities do canal intermediado", () => {
       groups: "limited",
       costPerMessage: true,
       alteraMensagemEnviada: false,
+      automatedOutbound: true,
       podeReagir: false,
       transmissao: true,
       // A agenda do aparelho só existe para quem conversa com o aparelho
@@ -134,7 +135,7 @@ describe("o envelope carrega a thread do provider", () => {
     expect(convSelect, "falta a coluna no select da conversa").toContain(
       "provider_conversation_id",
     );
-    // CINCO desde que o envio por media_url (documento/imagem externa — achado
+    // SEIS com a saída Telegram e desde que o envio por media_url (documento/imagem externa — achado
     // ao investigar o PDF de proposta que saía sem anexo) ganhou call site
     // próprio: texto, mídia (storage-first), modelo, contato e media_url. O
     // número é conferido, e não `>= 1`, justamente para obrigar quem acrescenta
@@ -150,7 +151,7 @@ describe("o envelope carrega a thread do provider", () => {
     expect(
       passagens.length,
       "todos os call sites (texto, mídia, modelo, contato e media_url) precisam passar",
-    ).toBe(5);
+    ).toBe(6);
   });
 });
 
@@ -178,8 +179,8 @@ describe("banco e TypeScript falam o mesmo vocabulário", () => {
   });
 
   it("a coluna nasce antes do CHECK que a referencia", () => {
-    const col = baseline.indexOf("add column if not exists zernio_account_id");
-    const check = baseline.search(/provider (?:= 'zernio'|in \('zernio', 'zernio_social'\))/);
+    const col = baseline.lastIndexOf("add column if not exists zernio_account_id");
+    const check = baseline.lastIndexOf("provider in ('zernio', 'zernio_social')");
     expect(col).toBeGreaterThan(-1);
     expect(col).toBeLessThan(check);
   });

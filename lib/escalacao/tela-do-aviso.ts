@@ -63,9 +63,9 @@ export interface EntregaNaTela {
   case_id: string;
   /** `null` = aviso de abertura; preenchido = aviso de uma resposta do cliente. */
   update_event_id: string | null;
-  /** Só os quatro últimos dígitos: quem lê a lista pode ser `manager`, e o
-   *  telefone do plantão não é assunto de quem só quer saber se o aviso saiu. */
-  destino_mascarado: string;
+  canal: "WhatsApp" | "Telegram";
+  /** Telefone mascarado do WhatsApp ou nome público do grupo Telegram. */
+  destino_exibicao: string;
   status: string;
   erro_codigo: string | null;
   tentativas: number;
@@ -137,6 +137,7 @@ interface LinhaDeConfig {
   mensagens_ignoradas: number;
   ultima_mensagem_ignorada_em: string | null;
   updated_at: string;
+  destino_tipo?: string | null;
 }
 
 export async function lerEstadoDaTelaDeAviso(entrada: {
@@ -155,7 +156,7 @@ export async function lerEstadoDaTelaDeAviso(entrada: {
     lerConexoes(db, orgId),
     contarAgentesPublicados(db, orgId),
     ehAtendimentoExterno(db, orgId),
-    lerEntregas(db, orgId),
+    lerEntregas(db, admin, orgId),
   ]);
 
   const canalEscolhido = config?.channel_session_id ?? null;
@@ -282,7 +283,7 @@ async function lerConfig(db: SupabaseClient, orgId: string): Promise<LinhaDeConf
   const { data, error } = await db
     .from("config_aviso_de_caso")
     .select(
-      "channel_session_id, destino_modo, telefone_destino, rotulo, ligado, resposta_whatsapp_habilitada, modelo_id, mensagens_ignoradas, ultima_mensagem_ignorada_em, updated_at",
+      "channel_session_id, destino_tipo, destino_modo, telefone_destino, rotulo, ligado, resposta_whatsapp_habilitada, modelo_id, mensagens_ignoradas, ultima_mensagem_ignorada_em, updated_at",
     )
     .eq("organization_id", orgId)
     .maybeSingle();
@@ -296,7 +297,8 @@ async function lerConfig(db: SupabaseClient, orgId: string): Promise<LinhaDeConf
     });
     return null;
   }
-  return (data as LinhaDeConfig | null) ?? null;
+  const config = (data as LinhaDeConfig | null) ?? null;
+  return config?.destino_tipo === "telegram" ? null : config;
 }
 
 /**
@@ -438,23 +440,169 @@ async function ehAtendimentoExterno(db: SupabaseClient, orgId: string): Promise<
   return settings.ai_dispatch_mode === "external";
 }
 
-async function lerEntregas(db: SupabaseClient, orgId: string): Promise<EntregaNaTela[]> {
-  const { data, error } = await db
-    .from("entregas_de_aviso_de_caso")
-    .select("id, case_id, update_event_id, destino, status, erro_codigo, tentativas, enviado_em, created_at")
-    .eq("organization_id", orgId)
-    .order("created_at", { ascending: false })
-    .limit(ENTREGAS_NA_LISTA);
-  if (error) {
-    logger.warn("[aviso-de-caso] histórico de entregas não lido", {
-      organizationId: orgId,
-      causa: error.message,
-    });
-    return [];
+export function primeiroEnvioDeAviso(
+  whatsapp: Array<{ case_id: string; enviado_em: string | null }>,
+  telegram: Array<{ case_id: string; sent_at: string | null }>,
+): Map<string, string> {
+  const saida = new Map<string, string>();
+  for (const [caseId, timestamp] of [
+    ...whatsapp.map((row) => [row.case_id, row.enviado_em] as const),
+    ...telegram.map((row) => [row.case_id, row.sent_at] as const),
+  ]) {
+    if (!timestamp) continue;
+    const atual = saida.get(caseId);
+    if (!atual || Date.parse(timestamp) < Date.parse(atual)) saida.set(caseId, timestamp);
   }
-  return (
-    (data ?? []) as Array<Omit<EntregaNaTela, "destino_mascarado"> & { destino: string }>
-  ).map(({ destino, ...resto }) => ({ ...resto, destino_mascarado: mascara(destino) }));
+  return saida;
+}
+
+export function normalizarStatusDeEntregaTelegram(status: string): string {
+  switch (status) {
+    case "pending":
+    case "sending":
+      return "pendente";
+    case "sent":
+      return "enviado";
+    case "failed":
+      return "falhou";
+    case "cancelled":
+      return "cancelado";
+    default:
+      return status;
+  }
+}
+
+async function lerEntregas(
+  db: SupabaseClient,
+  admin: SupabaseClient,
+  orgId: string,
+): Promise<EntregaNaTela[]> {
+  const [whatsapp, telegram] = await Promise.all([
+    db
+      .from("entregas_de_aviso_de_caso")
+      .select("id, case_id, update_event_id, destino, status, erro_codigo, tentativas, enviado_em, created_at")
+      .eq("organization_id", orgId)
+      .order("created_at", { ascending: false })
+      .limit(ENTREGAS_NA_LISTA),
+    admin
+      .from("telegram_case_alert_deliveries")
+      .select("id, case_id, group_setting_id, status, error_code, attempts, sent_at, created_at")
+      .eq("organization_id", orgId)
+      .order("created_at", { ascending: false })
+      .limit(ENTREGAS_NA_LISTA),
+  ]);
+
+  if (whatsapp.error) {
+    logger.warn("[aviso-de-caso] histórico WhatsApp não lido", {
+      organizationId: orgId,
+      causa: whatsapp.error.message,
+    });
+  }
+  if (telegram.error) {
+    logger.warn("[aviso-de-caso] histórico Telegram não lido", {
+      organizationId: orgId,
+      causa: telegram.error.message,
+    });
+  }
+
+  const telegramRows = (telegram.data ?? []) as Array<{
+    id: string;
+    case_id: string;
+    group_setting_id: string;
+    status: string;
+    error_code: string | null;
+    attempts: number;
+    sent_at: string | null;
+    created_at: string;
+  }>;
+  const groupIds = [...new Set(telegramRows.map((row) => row.group_setting_id))];
+  const groupSettings = groupIds.length
+    ? await admin
+        .from("telegram_team_group_settings")
+        .select("id, channel_session_group_id")
+        .eq("organization_id", orgId)
+        .in("id", groupIds)
+    : { data: [], error: null };
+  const sessionGroupIds = [
+    ...new Set(
+      ((groupSettings.data ?? []) as Array<{ id: string; channel_session_group_id: string }>)
+        .map((row) => row.channel_session_group_id),
+    ),
+  ];
+  const sessionGroups = sessionGroupIds.length
+    ? await admin
+        .from("channel_session_groups")
+        .select("id, subject")
+        .eq("organization_id", orgId)
+        .in("id", sessionGroupIds)
+    : { data: [], error: null };
+
+  if (groupSettings.error || sessionGroups.error) {
+    logger.warn("[aviso-de-caso] destinos dos grupos Telegram não lidos", {
+      organizationId: orgId,
+      causa: (groupSettings.error ?? sessionGroups.error)?.message,
+    });
+  }
+
+  const groupNamesBySetting = new Map<string, string>();
+  const sessionGroupsById = new Map(
+    ((sessionGroups.data ?? []) as Array<{ id: string; subject: string | null }>).map((row) => [
+      row.id,
+      row.subject?.trim() || "Grupo Telegram",
+    ]),
+  );
+  for (const group of (groupSettings.data ?? []) as Array<{
+    id: string;
+    channel_session_group_id: string;
+  }>) {
+    groupNamesBySetting.set(
+      group.id,
+      sessionGroupsById.get(group.channel_session_group_id) ?? "Grupo Telegram",
+    );
+  }
+
+  const entregasWhatsapp: EntregaNaTela[] = whatsapp.error
+    ? []
+    : (
+        (whatsapp.data ?? []) as Array<{
+          id: string;
+          case_id: string;
+          update_event_id: string | null;
+          destino: string;
+          status: string;
+          erro_codigo: string | null;
+          tentativas: number;
+          enviado_em: string | null;
+          created_at: string;
+        }>
+      ).map(({ destino, ...row }) => ({
+        ...row,
+        id: `whatsapp:${row.id}`,
+        update_event_id: row.update_event_id,
+        canal: "WhatsApp",
+        destino_exibicao: mascara(destino),
+      }));
+
+  const statusTelegram = normalizarStatusDeEntregaTelegram;
+
+  const entregasTelegram: EntregaNaTela[] = telegram.error
+    ? []
+    : telegramRows.map((row) => ({
+        id: `telegram:${row.id}`,
+        case_id: row.case_id,
+        update_event_id: null,
+        canal: "Telegram",
+        destino_exibicao: groupNamesBySetting.get(row.group_setting_id) ?? "Grupo Telegram",
+        status: statusTelegram(row.status),
+        erro_codigo: row.error_code,
+        tentativas: row.attempts,
+        enviado_em: row.sent_at,
+        created_at: row.created_at,
+      }));
+
+  return [...entregasWhatsapp, ...entregasTelegram]
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+    .slice(0, ENTREGAS_NA_LISTA);
 }
 
 /**
@@ -531,14 +679,22 @@ async function lerLaco(admin: SupabaseClient, orgId: string, agora: Date): Promi
   if (linhas.length === 0) return vazio;
   const ids = linhas.map((c) => c.id);
 
-  const [entregas, eventos] = await Promise.all([
+  const [entregasWhatsapp, entregasTelegram, eventos] = await Promise.all([
     admin
       .from("entregas_de_aviso_de_caso")
       .select("case_id, enviado_em")
       .eq("organization_id", orgId)
       .eq("status", "enviado")
       .is("update_event_id", null)
-      .in("case_id", ids),
+      .in("case_id", ids)
+      .order("enviado_em", { ascending: true }),
+    admin
+      .from("telegram_case_alert_deliveries")
+      .select("case_id, sent_at")
+      .eq("organization_id", orgId)
+      .eq("status", "sent")
+      .in("case_id", ids)
+      .order("sent_at", { ascending: true }),
     admin
       .from("agent_case_events")
       .select("case_id, created_at")
@@ -547,18 +703,18 @@ async function lerLaco(admin: SupabaseClient, orgId: string, agora: Date): Promi
       .in("case_id", ids)
       .order("created_at", { ascending: true }),
   ]);
-  if (entregas.error || eventos.error) {
+  if (entregasWhatsapp.error || entregasTelegram.error || eventos.error) {
     logger.warn("[aviso-de-caso] laço de retorno incompleto", {
       organizationId: orgId,
-      causa: (entregas.error ?? eventos.error)?.message,
+      causa: (entregasWhatsapp.error ?? entregasTelegram.error ?? eventos.error)?.message,
     });
     return vazio;
   }
 
-  const saiuEm = new Map<string, string>();
-  for (const e of (entregas.data ?? []) as Array<{ case_id: string; enviado_em: string | null }>) {
-    if (e.enviado_em) saiuEm.set(e.case_id, e.enviado_em);
-  }
+  const saiuEm = primeiroEnvioDeAviso(
+    (entregasWhatsapp.data ?? []) as Array<{ case_id: string; enviado_em: string | null }>,
+    (entregasTelegram.data ?? []) as Array<{ case_id: string; sent_at: string | null }>,
+  );
   // A consulta já vem ordenada crescente: o PRIMEIRO que aparece por caso é a
   // primeira ação humana, e o `has` impede que o segundo a sobrescreva.
   const primeiraAcao = new Map<string, string>();

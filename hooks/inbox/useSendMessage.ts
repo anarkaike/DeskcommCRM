@@ -90,9 +90,14 @@ export function useSendMessage() {
       chaves.current.delete(identidade);
       try {
         const comMidia = Boolean(input.media_storage_path || input.media_url);
+        const timeoutMs = comMidia
+          ? PRAZO_DO_ENVIO_DE_MIDIA_MS
+          : process.env.NODE_ENV === "development"
+            ? 90_000
+            : undefined;
         return await apiClient.post<{ data: Message }>("/api/v1/messages", input, {
           idempotencyKey,
-          ...(comMidia ? { timeoutMs: PRAZO_DO_ENVIO_DE_MIDIA_MS } : {}),
+          ...(timeoutMs ? { timeoutMs } : {}),
         });
       } catch (err) {
         chaves.current.set(identidade, { chave: idempotencyKey, falhouEm: Date.now() });

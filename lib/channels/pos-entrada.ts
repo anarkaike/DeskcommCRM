@@ -149,6 +149,8 @@ export interface EntradaDeMensagem {
    * nascia com `source = 'whatsapp'`.
    */
   canal?: string;
+  /** Persist Inbox-only Telegram updates without dispatching automation or AI. */
+  apenasInbox?: boolean;
 }
 
 /**
@@ -239,13 +241,12 @@ export async function aplicarEfeitosPosEntrada(
     return;
   }
   // ── MÓDULO OPCIONAL que assume a mensagem · ANTES de virar demanda ───────
-  //
-  // É o último instante em que dá para não criar o card. Módulo desligado (ou
-  // mensagem que não é dele) devolve `null`, e tudo abaixo roda como sempre.
+  // É o último instante em que dá para não criar o card.
   if (await desviadaPorModulo(admin, entrada)) return;
 
   const atribuicaoDaMensagem = await guardarOrigemDaPagina(admin, entrada);
   await abrirDemanda(admin, entrada, atribuicaoDaMensagem);
+  if (entrada.apenasInbox) return;
   await avaliarCampanha(admin, entrada);
   const sinal = {
     organizationId: entrada.organizationId,

@@ -53,6 +53,7 @@ APP_ORIGIN="http://app:3000"
 # 5 min e uma varredura por minuto seriam 60 varreduras/h em toda instalação
 # para um prazo que a maioria deixa em dezenas de minutos.
 CRONS="
+* * * * *|45|api/v1/cron/telegram-updates
 * * * * *|240|api/v1/cron/prospecting
 * * * * *|25|api/v1/cron/agent-dispatcher
 * * * * *|25|api/v1/cron/followup-flow-worker

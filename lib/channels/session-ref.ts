@@ -16,17 +16,9 @@ export type ChannelSessionRef =
   | { provider: "meta_cloud"; meta_phone_number_id: string }
   | { provider: "zernio" | "zernio_social"; zernio_account_id: string }
   | { provider: "datafy"; datafy_phone_number_id: string }
-  /**
-   * Bot do Telegram (#3440): o id do robô é o que identifica o canal no
-   * provider — o token (que também o identificaria) é segredo cifrado e não
-   * pode virar `sessionRef`, que atravessa log, URL de webhook e métrica.
-   */
   | { provider: "telegram"; telegram_bot_id: string }
-  /**
-   * Chat no site (Spec 36): a chave pública da conexão (`wck_…`) identifica o
-   * canal para o widget. Ela é pública por desenho — o que autentica o visitante
-   * é o token de sessão, não esta chave.
-   */
+  | { provider: "telegram"; telegram_bot_connection_id: string }
+  /** Chat no site: a chave pública da conexão identifica o widget. */
   | { provider: "webchat"; webchat_public_key: string };
 
 /**
@@ -35,7 +27,7 @@ export type ChannelSessionRef =
  * nomeia coluna de provider, e ela some da feature junto com a decisão.
  */
 export const CHANNEL_SESSION_REF_COLUMNS =
-  "provider, waha_session_name, meta_phone_number_id, zernio_account_id, datafy_phone_number_id, telegram_bot_id, webchat_public_key";
+  "provider, waha_session_name, meta_phone_number_id, zernio_account_id, datafy_phone_number_id, telegram_bot_id, telegram_bot_connection_id, webchat_public_key";
 
 export function resolveSessionRef(session: ChannelSessionRef): string {
   switch (session.provider) {
@@ -50,7 +42,9 @@ export function resolveSessionRef(session: ChannelSessionRef): string {
     // O bot do Telegram não endereça por telefone: o id do robô é a chave que a
     // Bot API conhece e que a sessão guarda (migration 9342).
     case "telegram":
-      return session.telegram_bot_id;
+      return "telegram_bot_connection_id" in session
+        ? session.telegram_bot_connection_id
+        : session.telegram_bot_id;
     // O chat no site endereça pela chave pública da conexão (`wck_…`), que o
     // widget carrega e a rota pública confere contra a linha.
     case "webchat":

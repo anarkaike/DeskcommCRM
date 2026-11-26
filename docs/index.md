@@ -215,6 +215,11 @@ anterior à v1.0.0; regenere (`/graphify .`) antes de confiar em detalhe fino.
 
 - [Acompanhamento administrativo por sessão](support-sessions.md) — autoridade, somente leitura, saída e contratos OAuth.
 
+## Telegram em desenvolvimento no fork
+
+- [Integração Telegram](superpowers/specs/2026-10-17-integracao-telegram-design.md).
+- [Grupos de equipe e casos](superpowers/specs/2026-10-26-telegram-grupos-equipe-casos-design.md).
+
 ## Módulo opcional Amigo (sistema de clínicas)
 
 - [Configuração e operação](amigo-api.md)

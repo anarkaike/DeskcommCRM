@@ -14,6 +14,7 @@ import { ConnectionsClient } from "./ConnectionsClient";
 import { TemplatesClient } from "./TemplatesClient";
 import { TemplatesParceiroClient } from "./TemplatesParceiroClient";
 import { TelefoniaClient } from "./TelefoniaClient";
+import { TelegramConnectionsClient } from "./TelegramConnectionsClient";
 import { useT } from "@/hooks/i18n/useT";
 import { rotaDeTemplates } from "@/lib/channels/templates-fonte";
 
@@ -89,7 +90,9 @@ export function ConexoesShell({
           ? "telefonia"
           : abaParam === "voz"
             ? "voz"
-            : abaParam === "graph" && graphParceiro
+            : abaParam === "telegram"
+              ? "telegram"
+              : abaParam === "graph" && graphParceiro
               ? "graph"
               : abaParam === "bot" && bot
                 ? "bot"
@@ -131,6 +134,7 @@ export function ConexoesShell({
         <TabsTrigger value="telefonia">{t("Telefone")}</TabsTrigger>
         <TabsTrigger value="sociais">{t("Redes sociais")}</TabsTrigger>
         <TabsTrigger value="voz">{t("Chamada de voz")}</TabsTrigger>
+        <TabsTrigger value="telegram">{t("Telegram")}</TabsTrigger>
         {graphParceiro && <TabsTrigger value="graph">{graphParceiro.label}</TabsTrigger>}
         {bot && <TabsTrigger value="bot">{bot.label}</TabsTrigger>}
         {chat && <TabsTrigger value="chat">{chat.label}</TabsTrigger>}
@@ -164,6 +168,10 @@ export function ConexoesShell({
 
       <TabsContent value="voz" className="mt-0">
         <CanalVozClient wacallsConfigured={wacallsConfigured} />
+      </TabsContent>
+
+      <TabsContent value="telegram" className="mt-0">
+        <TelegramConnectionsClient />
       </TabsContent>
 
       {graphParceiro && (

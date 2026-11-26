@@ -403,6 +403,22 @@ const MEMBRO = {
 };
 
 describe('#2624 · routers/[id]/members/route.ts (PUT members)', () => {
+  it('conexão indisponível responde 503 com identificador sem executar a escrita', async () => {
+    vi.stubEnv('SUPABASE_DB_URL', 'postgresql://postgres@127.0.0.1:5432/db');
+    vi.mocked(requireRole).mockResolvedValue(AUTORIZACAO);
+    const connect = vi.fn().mockRejectedValue(Object.assign(new Error('DNS indisponível'), { code: 'EAI_AGAIN' }));
+    vi.mocked(getRequestPool).mockReturnValue({ connect } as unknown as pg.Pool);
+    const { PUT } = await import('@/app/api/v1/ai/routers/[id]/members/route');
+    const res = await PUT(new NextRequest(`http://x/api/v1/ai/routers/${ROTEADOR}/members`, {
+      method: 'PUT', body: JSON.stringify({ members: [MEMBRO] }),
+    }), { params: Promise.resolve({ id: ROTEADOR }) });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error.code).toBe('upstream_unavailable');
+    expect(res.headers.get('X-Request-Id')).toBeTruthy();
+    expect(JSON.stringify(body)).not.toContain('EAI_AGAIN');
+  });
+
   it('a escrita que rejeita solta o cliente COM erro e a rota responde 500', async () => {
     vi.stubEnv('SUPABASE_DB_URL', 'postgresql://postgres@127.0.0.1:5432/db');
     vi.mocked(requireRole).mockResolvedValue(AUTORIZACAO);

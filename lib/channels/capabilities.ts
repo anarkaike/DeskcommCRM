@@ -30,6 +30,7 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     groups: "full",
     costPerMessage: false,
     alteraMensagemEnviada: true,
+    automatedOutbound: true,
     podeReagir: true,
     transmissao: false,
     // É a linha que conversa com um APARELHO pareado: a agenda salva no
@@ -57,6 +58,7 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     groups: "limited",
     costPerMessage: true,
     alteraMensagemEnviada: false,
+    automatedOutbound: true,
     podeReagir: true,
     transmissao: false,
     // Nenhuma destas linhas conversa com um aparelho pareado — não existe
@@ -121,6 +123,7 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     groups: "none",
     costPerMessage: true,
     alteraMensagemEnviada: false,
+    automatedOutbound: true,
     podeReagir: false,
     transmissao: false,
     // Nenhuma destas linhas conversa com um aparelho pareado — não existe
@@ -145,6 +148,7 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     groups: "limited",
     costPerMessage: true,
     alteraMensagemEnviada: false,
+    automatedOutbound: true,
     podeReagir: false,
     // MEDIDO em 16/10/2026 (2 destinatários, entregues em 1 a 3 s): o provedor
     // cria a transmissão, recebe os telefones e manda a todos. O valor de cada
@@ -182,6 +186,7 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     groups: "limited",
     costPerMessage: true,
     alteraMensagemEnviada: false,
+    automatedOutbound: true,
     podeReagir: false,
     transmissao: false,
     // Nenhuma destas linhas conversa com um aparelho pareado — não existe
@@ -237,6 +242,7 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     // ficam para a T2 da issue: hoje o adapter não os implementa, e a tela lê
     // esta capability para decidir se mostra o gesto.
     alteraMensagemEnviada: false,
+    automatedOutbound: false,
     // `setMessageReaction` existe na Bot API e também fica para a T2: o
     // adapter da v1 não reage.
     podeReagir: false,
@@ -270,6 +276,7 @@ export const CHANNEL_CAPABILITIES: Record<ProviderDeMensagem, ChannelCapabilitie
     groups: "none",
     costPerMessage: false,
     alteraMensagemEnviada: false,
+    automatedOutbound: false,
     podeReagir: false,
     transmissao: false,
     phonebook: false,
@@ -385,6 +392,11 @@ export const PROVIDERS_DE_MENSAGEM = [
   "webchat",
 ] as const satisfies readonly ProviderDeMensagem[];
 
+/** Providers habilitados para envio automatizado, derivados da matriz única. */
+export const PROVIDERS_DE_ENVIO_AUTOMATIZADO = PROVIDERS_DE_MENSAGEM.filter(
+  (provider) => CHANNEL_CAPABILITIES[provider].automatedOutbound,
+);
+
 /**
  * Os providers que alcançam um APARELHO: o endereço é o TELEFONE.
  *
@@ -411,6 +423,11 @@ export const PROVIDERS_DE_TELEFONE = [
   "zernio",
   "datafy",
 ] as const satisfies readonly Exclude<(typeof PROVIDERS_DE_MENSAGEM)[number], "zernio_social" | "telegram" | "webchat">[];
+
+/** `channel_sessions` que representam uma conexão WhatsApp com número. */
+export function isWhatsAppChannel(provider: string | null | undefined): boolean {
+  return (PROVIDERS_DE_TELEFONE as readonly string[]).includes(provider ?? "");
+}
 
 /**
  * `true` quando a linha de `channel_sessions` é um canal de mensagem.

@@ -29,7 +29,7 @@ const TOKEN = "123456789:AAH-token-de-prova-local";
 function responder(metodo: string): unknown {
   if (metodo === "getMe") return { ok: true, result: { id: 777, is_bot: true, first_name: "Acme", username: "acme_bot" } };
   if (metodo === "setWebhook" || metodo === "deleteWebhook") return { ok: true, result: true };
-  if (metodo === "sendMessage") return { ok: true, result: { message_id: 4242 } };
+  if (metodo === "sendMessage") return { ok: true, result: { message_id: 4242, chat: { id: 5551 }, date: 1_800_000_000 } };
   return { ok: false, error_code: 404, description: "Not Found" };
 }
 
@@ -45,7 +45,29 @@ vi.mock("@/lib/webhooks/secrets", () => ({
 }));
 vi.mock("@/lib/channels/reactivate", () => ({ reactivateChannelSession: async () => ({ error: null }) }));
 vi.mock("@/lib/ai/elegibilidade/pre-go-live", () => ({ metadataInicialDoCanal: () => ({}) }));
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => ({}) }));
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: () => ({
+    from(tabela: string) {
+      const q: Record<string, unknown> = new Proxy(
+        {},
+        {
+          get(_t, prop) {
+            if (prop === "maybeSingle")
+              return async () => {
+                if (tabela === "telegram_bot_connections")
+                  return { data: { status: "active", token_encrypted: "enc:123456789:AAH-token-de-prova-local" }, error: null };
+                if (tabela === "telegram_bot_surface_capabilities")
+                  return { data: { id: "cap-inbox" }, error: null };
+                return { data: null, error: null };
+              };
+            return () => q;
+          },
+        },
+      );
+      return q;
+    },
+  }),
+}));
 vi.mock("@/lib/channels/bot/credentials", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/lib/channels/bot/credentials")>();
   return { ...real, telegramCredsForBotId: async () => ({ token: TOKEN, botId: "777" }) };
@@ -60,13 +82,19 @@ vi.mock("@/lib/channels/bot/ingest", () => ({
 
 /** Admin que não acha robô em outra conexão e aceita o INSERT. */
 const admin = {
-  from() {
+  from(tabela: string) {
     const q: Record<string, unknown> = new Proxy(
       {},
       {
         get(_t, prop) {
           if (prop === "then") return (ok: (v: unknown) => unknown) => ok({ data: [], error: null });
-          if (prop === "maybeSingle") return async () => ({ data: { id: "sess-1" }, error: null });
+          if (prop === "maybeSingle") return async () => {
+            if (tabela === "telegram_bot_connections")
+              return { data: { id: "sess-1", status: "active", token_encrypted: `enc:${TOKEN}` }, error: null };
+            if (tabela === "telegram_bot_surface_capabilities")
+              return { data: { id: "cap-inbox" }, error: null };
+            return { data: { id: "sess-1" }, error: null };
+          };
           return () => q;
         },
       },
@@ -165,6 +193,7 @@ describe("texto nos dois sentidos", () => {
   it("saída: a resposta sai como sendMessage para o chat da conversa", async () => {
     const r = await telegramAdapter.send({
       organizationId: "org-1",
+      actorType: "user",
       sessionRef: "777",
       to: "provider-chat",
       providerConversationId: "5551",

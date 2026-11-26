@@ -178,7 +178,7 @@ describe("editor do agente sem número conectado", () => {
   it("explica o que falta sem acusar erro, e aponta onde conectar", () => {
     abrirEditor();
     expect(screen.getByText(/nenhum número conectado ainda/i)).toBeInTheDocument();
-    const atalho = screen.getByRole("link", { name: /conectar whatsapp/i });
+    const atalho = screen.getByRole("link", { name: /conectar canal/i });
     expect(atalho).toHaveAttribute("href", "/app/connections");
   });
 
@@ -186,7 +186,7 @@ describe("editor do agente sem número conectado", () => {
     const { botaoPublicar } = abrirEditor();
     expect(botaoPublicar()).toBeDisabled();
     const dica = botaoPublicar().closest("span")?.getAttribute("title") ?? "";
-    expect(dica).toMatch(/número de WhatsApp/i);
+    expect(dica).toMatch(/canal conectado/i);
     expect(dica, "a dica não diz que o trabalho está guardado").toMatch(/rascunho está salvo/i);
   });
 

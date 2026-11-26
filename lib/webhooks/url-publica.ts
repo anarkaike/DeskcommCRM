@@ -42,6 +42,18 @@ export function basePublicaDoWebhookMeta(req: { headers: Headers; nextUrl: URL }
   return basePublicaDaInstalacao(req);
 }
 
+/**
+ * Base HTTPS opcional para receber updates do Telegram sem alterar a origem
+ * usada pelo painel, autenticação e demais callbacks.
+ */
+export function basePublicaDoWebhookTelegram(req: { headers: Headers; nextUrl: URL }): string {
+  const configurada = env.TELEGRAM_WEBHOOK_BASE_URL.trim();
+  if (configurada && !configurada.includes("placeholder.invalid")) {
+    return configurada.replace(/\/+$/, "");
+  }
+  return basePublicaDaInstalacao(req);
+}
+
 const MAQUINA_LOCAL = new Set(["localhost", "127.0.0.1", "[::1]", "::1", "0.0.0.0"]);
 
 /** O endereço aponta para a própria máquina? URL inválida conta como não. */

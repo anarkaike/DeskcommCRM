@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Integração Telegram e portas de canal",
+    "subtitle": "Adapters de provedor e caso de uso compartilhado da Inbox",
+    "output": "telegram-integracao.html",
+    "quality_profile": "standard",
+    "status": "implemented_partial"
+  },
+  "lanes": [
+    { "id": "operador", "label": "Tenant / Plataforma" },
+    { "id": "servidor", "label": "Aplicação" },
+    { "id": "banco", "label": "Persistência" },
+    { "id": "telegram", "label": "Telegram" }
+  ],
+  "mainPath": ["connections", "api", "registry", "telegramDriver", "inboundPort", "inbox", "agent"],
+  "nodes": [
+    { "id": "connections", "lane": "operador", "col": 1, "type": "frontend", "label": "Conexões / finalidade do bot" },
+    { "id": "api", "lane": "servidor", "col": 2, "type": "route", "label": "API tenant-scoped: validar, ligar, pausar" },
+    { "id": "registry", "lane": "servidor", "col": 3, "type": "service", "label": "Registry tipado + lifecycle comum de conexões" },
+    { "id": "webhook", "lane": "servidor", "col": 4, "type": "service", "label": "Webhook autenticado + deduplicação + adapter" },
+    { "id": "telegramDriver", "lane": "servidor", "col": 5, "type": "service", "label": "Driver Telegram: protocolo, identidade e destino" },
+    { "id": "inboundPort", "lane": "servidor", "col": 6, "type": "service", "label": "Porta inbound + mensagem normalizada + efeitos compartilhados" },
+    { "id": "telegram", "lane": "telegram", "col": 5, "type": "external", "label": "Bot API / updates e mensagens" },
+    { "id": "inbox", "lane": "operador", "col": 7, "type": "frontend", "label": "Inbox / conversas e casos" },
+    { "id": "agent", "lane": "servidor", "col": 8, "type": "service", "label": "Runtime / policy / ferramentas autorizadas" },
+    { "id": "audit", "lane": "banco", "col": 8, "type": "database", "label": "Audit / entrega / estado de saúde" },
+    { "id": "admin", "lane": "operador", "col": 9, "type": "frontend", "label": "Console de plataforma / tenant e incidentes" },
+    { "id": "operatorLinks", "lane": "operador", "col": 3, "type": "frontend", "label": "Modal de vínculos / operadores, pendências e uso" },
+    { "id": "miniapp", "lane": "telegram", "col": 9, "type": "external", "label": "Mini App / initData validado pelo servidor" }
+  ],
+  "edges": [
+    { "id": "e1", "from": "connections", "to": "api", "label": "manager configura finalidade" },
+    { "id": "e2", "from": "api", "to": "registry", "label": "aplica policy de estados e grants compartilhada" },
+    { "id": "e3", "from": "registry", "to": "telegramDriver", "label": "encaminha operação para driver do provider" },
+    { "id": "e4", "from": "telegram", "to": "webhook", "label": "update autenticado" },
+    { "id": "e5", "from": "webhook", "to": "telegramDriver", "label": "fila despachada pelo registro inbound" },
+    { "id": "e12", "from": "telegramDriver", "to": "inboundPort", "label": "InboundMessageEvent com identidade, conversa e mídia resolvidas" },
+    { "id": "e13", "from": "inboundPort", "to": "inbox", "label": "ledger idempotente e efeitos comuns" },
+    { "id": "e6", "from": "inbox", "to": "agent", "label": "binding e política do bot selecionam runtime" },
+    { "id": "e7", "from": "agent", "to": "telegram", "label": "outbound pelo adapter e bot de origem" },
+    { "id": "e8", "from": "api", "to": "audit", "label": "mudanças e recusas com actor/tenant/correlation id" },
+    { "id": "e14", "from": "telegramDriver", "to": "audit", "label": "health normalizada e falha sanitizada" },
+    { "id": "e9", "from": "audit", "to": "admin", "label": "agregados operacionais com acesso de plataforma" },
+    { "id": "e10", "from": "miniapp", "to": "api", "label": "dados assinados verificados antes de autenticar" },
+    { "id": "e15", "from": "connections", "to": "operatorLinks", "label": "botão Vínculos com contagem" },
+    { "id": "e16", "from": "operatorLinks", "to": "api", "label": "admin lista e revoga vínculos e códigos pendentes" },
+    { "id": "e17", "from": "audit", "to": "operatorLinks", "label": "identidade Telegram e comandos registrados em 30 dias" },
+    { "id": "e11", "from": "admin", "to": "api", "label": "suporte e ações globais usam guard de platform admin" }
+  ]
+}

@@ -97,6 +97,8 @@ export interface ChannelCapabilities {
   costPerMessage: boolean;
   /** O atendente pode editar e apagar para todos uma mensagem já enviada. */
   alteraMensagemEnviada: boolean;
+  /** O provider pode ser usado em fluxos de envio automático do produto. */
+  automatedOutbound: boolean;
   /** O adapter deste canal aceita reagir a mensagens. */
   podeReagir: boolean;
   /**
@@ -182,6 +184,8 @@ export interface RecipientInput {
    * `waIdentity.startsWith("lid:")` — justo o caso que a regra protege.
    */
   waLid?: string | null | undefined;
+  /** Id externo da conversa fornecido pelo Telegram ou outro canal sem telefone. */
+  providerConversationId?: string | null;
   /**
    * Endereço (chat) da última mensagem RECEBIDA na conversa, só quando a ficha
    * tem telefone extra. Com dois números na mesma ficha, responder pelo principal
@@ -232,6 +236,8 @@ export interface ChannelTenantScope {
 export interface OutboundEnvelope extends ChannelTenantScope {
   /** Callback interno: revalida a origem depois do preparo assíncrono e antes do transporte. */
   beforeSend?: () => Promise<void>;
+  /** Tipo de ator confiável que iniciou o envio; adapters que autorizam por emissor podem exigi-lo. */
+  actorType?: string;
   /** Identificador da sessão/número no provider (WAHA: nome da sessão). */
   sessionRef: string;
   /** Endereço já resolvido por `resolveRecipient`. */

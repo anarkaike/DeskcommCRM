@@ -67,6 +67,11 @@ const ANON_PERMITIDO: readonly Excecao[] = [];
  */
 const AUTHENTICATED_PERMITIDO: readonly Excecao[] = [
   {
+    fn: "fn_definir_aviso_de_caso_telegram(uuid,uuid)",
+    razao:
+      "PUT app/api/v1/ai/cases/telegram-destination/route.ts chama RPC com client de sessão para gravar a configuração canônica. O corpo revalida auth.uid(), papel admin, suporte/MFA e elegibilidade org/grupo/capacidade; tabelas permanecem server-only. Cobertura do banco valida ACL e contrato em tests/invariants/telegram-team-group-server-only.test.ts.",
+  },
+  {
     fn: "encrypt_cpf(text)",
     razao:
       "POST/PATCH app/api/v1/contacts/route.ts e app/api/v1/contacts/[id]/route.ts, " +

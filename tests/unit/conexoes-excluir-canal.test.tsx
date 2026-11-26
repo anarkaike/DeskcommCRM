@@ -121,6 +121,24 @@ describe("listagem que falhou não vira 'primeira instalação'", () => {
     expect(screen.getByText(/Conecte seu primeiro número/)).toBeInTheDocument();
   });
 
+  it("lista de números WhatsApp não inclui bots Telegram da Inbox", () => {
+    listagem.data = [
+      canal({ provider: "waha" }),
+      canal({
+        id: "telegram-bot-1",
+        provider: "telegram",
+        display_name: "Disk Uniformes Dev",
+        phone_number: null,
+        waha_session_name: null,
+      }),
+    ];
+
+    render(wrap(<ConnectionsClient wahaConfigured />));
+
+    expect(screen.getByText("Vendas")).toBeInTheDocument();
+    expect(screen.queryByText("Disk Uniformes Dev")).not.toBeInTheDocument();
+  });
+
   it("banco sem a migration: avisa que canal excluído volta à lista", () => {
     listagem.schemaOutdated = true;
 

@@ -399,7 +399,7 @@ describe("cenário B — a sessão que já pareou continua como hoje", () => {
 
     expect(await lerUsoDaOrganizacao(b.admin as never, ORG)).toEqual({ assentos: 0, canais: 1 });
     expect(await listarConexoesCaidas(b.admin as never, ORG)).toEqual([
-      { id: PAREADA, apelido: "Comercial", status: "FAILED" },
+      { id: PAREADA, apelido: "Comercial", status: "FAILED", provider: "waha" },
     ]);
   });
 
@@ -474,6 +474,7 @@ describe("a faixa — sessão sem número não é conexão caída", () => {
         id: "66666666-6666-4666-8666-666666666666",
         apelido: "Caído sem número",
         status: "FAILED",
+        provider: "waha",
       },
     ]);
   });

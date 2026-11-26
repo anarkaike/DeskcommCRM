@@ -51,6 +51,11 @@ vi.mock("@/hooks/ai/useAvisoDeCaso", () => ({
   useTestarAvisoDeCaso: () => ({ mutateAsync: vi.fn(), isPending: false, data: undefined }),
 }));
 
+// Este teste verifica a tela WhatsApp legada; a consulta do seletor Telegram
+// tem suíte própria e não deve iniciar uma chamada real durante estes renders.
+vi.mock("@/components/ai/TelegramCaseAlertDestination", () => ({
+  TelegramCaseAlertDestination: () => null,
+}));
 beforeEach(() => salvarRegistrado.mockClear());
 
 import { AvisoNoWhatsApp } from "@/app/app/ai/cases/avisos/_components/AvisoNoWhatsApp";
@@ -79,8 +84,20 @@ function estado(patch: Partial<EstadoDoAviso> = {}): EstadoDoAviso {
     // sobre conexão, switch e remoção — no modo `fixo` ninguém é consultado.
     equipe: [],
     conexoes: [
-      { id: CANAL_QR, nome: "Plantão", status: "WORKING", aceitaMensagemLivre: true, atendeClientes: false },
-      { id: CANAL_OFICIAL, nome: "Oficial", status: "WORKING", aceitaMensagemLivre: false, atendeClientes: true },
+      {
+        id: CANAL_QR,
+        nome: "Plantão",
+        status: "WORKING",
+        aceitaMensagemLivre: true,
+        atendeClientes: false,
+      },
+      {
+        id: CANAL_OFICIAL,
+        nome: "Oficial",
+        status: "WORKING",
+        aceitaMensagemLivre: false,
+        atendeClientes: true,
+      },
     ],
     avisos: [],
     pode_ligar: true,
@@ -90,8 +107,15 @@ function estado(patch: Partial<EstadoDoAviso> = {}): EstadoDoAviso {
   };
 }
 
-function montar(dados: EstadoDoAviso | undefined, extra: { isLoading?: boolean; error?: unknown } = {}) {
-  consulta.mockReturnValue({ data: dados, isLoading: extra.isLoading ?? false, error: extra.error ?? null });
+function montar(
+  dados: EstadoDoAviso | undefined,
+  extra: { isLoading?: boolean; error?: unknown } = {},
+) {
+  consulta.mockReturnValue({
+    data: dados,
+    isLoading: extra.isLoading ?? false,
+    error: extra.error ?? null,
+  });
   return render(
     <QueryClientProvider client={new QueryClient()}>
       <AvisoNoWhatsApp />
@@ -111,7 +135,13 @@ describe("o seletor de conexão", () => {
     montar(
       estado({
         conexoes: [
-          { id: CANAL_OFICIAL, nome: "Oficial", status: "WORKING", aceitaMensagemLivre: false, atendeClientes: true },
+          {
+            id: CANAL_OFICIAL,
+            nome: "Oficial",
+            status: "WORKING",
+            aceitaMensagemLivre: false,
+            atendeClientes: true,
+          },
         ],
         config: null,
       }),
@@ -264,7 +294,9 @@ describe("os avisos de estado viram frase", () => {
     expect(screen.getByTestId("alerta-descarte_acontecendo").textContent).toContain(
       "não chega ao CRM",
     );
-    expect(screen.getByTestId("alerta-descarte_acontecendo").textContent).not.toContain("RESPONDER");
+    expect(screen.getByTestId("alerta-descarte_acontecendo").textContent).not.toContain(
+      "RESPONDER",
+    );
     unmount();
     montar(descarte(1));
     expect(screen.getByTestId("alerta-descarte_acontecendo").textContent).toContain("RESPONDER");
@@ -324,15 +356,16 @@ describe("a lista de entregas", () => {
       .toContain("respectivo item da Central de alertas");
   });
 
-  it("mostra a situação, o destino MASCARADO e a frase do erro", () => {
+  it("mostra a situação, o canal, o destino MASCARADO e a frase do erro", () => {
     montar(
       estado({
         entregas: [
           {
-            id: "e1",
+            id: "whatsapp:e1",
             case_id: "c1",
             update_event_id: null,
-            destino_mascarado: "••••6398",
+            canal: "WhatsApp",
+            destino_exibicao: "••••6398",
             status: "falhou",
             erro_codigo: "teto_diario_do_numero",
             tentativas: 3,
@@ -343,7 +376,8 @@ describe("a lista de entregas", () => {
             id: "e2",
             case_id: "c1",
             update_event_id: "u1",
-            destino_mascarado: "••••6398",
+            canal: "WhatsApp",
+            destino_exibicao: "••••6398",
             status: "enviado",
             erro_codigo: null,
             tentativas: 1,
@@ -354,12 +388,38 @@ describe("a lista de entregas", () => {
       }),
     );
     const lista = screen.getByTestId("lista-de-entregas");
+    expect(lista.textContent).toContain("WhatsApp");
     expect(lista.textContent).toContain("••••6398");
     expect(lista.textContent).toContain("limite diário do período de aquecimento");
     expect(lista.querySelectorAll("li")[0]?.textContent).toContain("Abertura");
     expect(lista.querySelectorAll("li")[1]?.textContent).toContain("Resposta do cliente");
     // O número inteiro nunca entra nesta lista: quem a lê pode ser `manager`.
     expect(lista.textContent).not.toContain("998966398");
+  });
+
+  it("mostra entregas do Telegram com o nome do grupo sem expor o chat id", () => {
+    montar(
+      estado({
+        entregas: [
+          {
+            id: "telegram:e1",
+            case_id: "c1",
+            update_event_id: null,
+            canal: "Telegram",
+            destino_exibicao: "Equipe QA",
+            status: "enviado",
+            erro_codigo: null,
+            tentativas: 1,
+            enviado_em: "2026-09-17T10:00:00.000Z",
+            created_at: "2026-09-17T10:00:00.000Z",
+          },
+        ],
+      }),
+    );
+    const lista = screen.getByTestId("lista-de-entregas");
+    expect(lista.textContent).toContain("Telegram");
+    expect(lista.textContent).toContain("Equipe QA");
+    expect(lista.textContent).not.toContain("-5341004870");
   });
 });
 

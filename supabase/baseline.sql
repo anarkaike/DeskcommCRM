@@ -9636,28 +9636,6 @@ $x$;
 do $x$
 begin
 alter table public.channel_sessions
-  drop constraint if exists channel_sessions_provider_ref_check;
-
-alter table public.channel_sessions
-  add constraint channel_sessions_provider_ref_check check (
-    (provider = 'waha'       and waha_session_name    is not null) or
-    (provider = 'meta_cloud' and meta_phone_number_id is not null) or
-    -- 'zernio_social' (migration 0368) endereça pelo MESMO `zernio_account_id`:
-    -- é o mesmo intermediário, com outra superfície de canal.
-    (provider in ('zernio', 'zernio_social') and zernio_account_id is not null) or
-    (provider = 'wacalls'    and wacalls_session_id    is not null) or
-    (provider = 'datafy'     and datafy_phone_number_id is not null) or
-    -- Bot do Telegram (migration 9342): endereça pelo id do robô.
-    (provider = 'telegram'   and telegram_bot_id      is not null) or
-    -- Chat no site (9471): endereça pela chave pública do widget.
-    (provider = 'webchat'    and webchat_public_key   is not null)
-  );
-end
-$x$;
-
-do $x$
-begin
-alter table public.channel_sessions
   drop constraint if exists channel_sessions_webchat_allowed_origins_check;
 
 alter table public.channel_sessions
@@ -84372,6 +84350,27 @@ create trigger trg_tipo_segue_o_fuso_da_empresa
   for each row
   execute function public.fn_tipo_segue_o_fuso_da_empresa();
 
+-- ---- a CONEXÃO decide se a conversa nova cria negócio (migration 9459) ----
+-- Espelho da 9459 (issue #4670); o porquê inteiro está no cabeçalho da migration.
+-- Coluna, e não `metadata`: a leitura acontece uma vez por card que nasce, no
+-- caminho quente da ingestão, e a ausência de chave em jsonb teria de significar
+-- LIGADO — o oposto da chave vizinha (`guardar_historico`, #999), que é a razão
+-- de a regra não poder morar num leitor que adivinha.
+--
+-- ⚠️ `default true` é o que torna a atualização invisível: toda instalação de
+-- hoje continua criando card em todo número. No Postgres 11+ um default
+-- não-volátil não reescreve a tabela, então a coluna entra sem varredura.
+--
+-- Não cria função e não concede nada a `anon`. Fica antes do marcador da 9243
+-- para permanecer fora da janela que compara o espelho dela; a varredura de
+-- segurança continua no fim do baseline. Reaplicável por `add column if not
+-- exists` — o `update.sh` roda o apêndice inteiro a cada atualização.
+alter table public.channel_sessions
+  add column if not exists conversa_nova_cria_negocio boolean not null default true;
+
+comment on column public.channel_sessions.conversa_nova_cria_negocio is
+  'Issue #4670: a conversa nova que chega por esta conexão abre negócio no funil padrão? true (DEFAULT, e o estado de toda instalação de antes) = sim, como sempre foi. false = a conversa e o contato nascem, o Inbox e a IA seguem, e só o card não nasce; criar à mão (crm_create_lead, painel da conversa, ficha do contato) continua igual.';
+
 -- ---- anonimizar alcança as fichas fundidas: a cascata (migration 9243) ----
 -- Espelho de supabase/migrations/20261107120001_9243_anonimizar_alcanca_fichas_fundidas.sql.
 -- O bloco de dados está no fim do arquivo: precisa de todos os gatilhos de anonimização criados.
@@ -85207,83 +85206,6 @@ create trigger trg_contacts_fusao_e_anonimizacao_so_pelo_servidor_ao_criar
 revoke all on table public.storage_redaction_queue from authenticated;
 grant select on table public.storage_redaction_queue to authenticated;
 
-
-
--- ---- VARREDURA anon: função nova nasce exposta em quem ATUALIZA (migration 0116) ----
---
--- ⚠️ DE PROPÓSITO, NENHUMA FUNÇÃO É CRIADA DEPOIS DESTE BLOCO. Apêndice que cria
--- função entra ANTES dele — quem o empurrar para o meio desarma a cura para tudo
--- que vier depois. (O último bloco do arquivo é a chamada das travas do suporte,
--- migration 0274, que não cria função.)
--- Vigiado por `tests/unit/varredura-anon-e-o-ultimo-bloco.test.ts`.
---
--- A 0108 revogou anon numa LISTA de 8 funções, medida num banco instalado do
--- ZERO. Quem ATUALIZA tem outro estado: o `ALTER DEFAULT PRIVILEGES ... GRANT
--- ALL ON FUNCTIONS TO anon` do corpo deste arquivo grava uma entrada em
--- `pg_default_acl` que fica no catálogo PARA SEMPRE, e a partir daí toda função
--- criada em `public` nasce com EXECUTE para anon — inclusive as deste apêndice.
---
--- Medido numa VPS real (2026-08-07), comparando com o que um install fresco
--- produz: 6 definer expostas a anon e 5 a authenticated, entre elas
--- `fn_decrypt_oauth` — alcançável pela anon key, que vai para o browser.
---
--- Lista conserta o estoque e reabre no próximo `create function`. Esta varredura
--- é auto-curativa e roda DEPOIS de tudo que cria função, então cura no mesmo run
--- em que o defeito nasceria. Desfazer o ALTER DEFAULT PRIVILEGES não serve: ele
--- vem do `pg_dump` do Supabase e é reescrito a cada re-aplicação.
---
--- As duas origens de EXECUTE (a mesma lição da 0108): grant DIRETO a anon, que
--- `revoke from public` não remove; e grant a PUBLIC, do qual anon HERDA, que
--- `revoke from anon` não remove. O privilégio EFETIVO de authenticated e
--- service_role é medido ANTES e devolvido depois — tira anon sem tirar leitura.
-do $$
-declare
-  f record;
-  tinha_auth boolean;
-  tinha_service boolean;
-begin
-  if to_regrole('anon') is null then
-    return;
-  end if;
-
-  for f in
-    select p.oid, p.oid::regprocedure as assinatura
-      from pg_proc p
-      join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public'
-       and p.prosecdef
-  loop
-    tinha_auth := to_regrole('authenticated') is not null
-                  and has_function_privilege('authenticated', f.oid, 'EXECUTE');
-    tinha_service := to_regrole('service_role') is not null
-                     and has_function_privilege('service_role', f.oid, 'EXECUTE');
-
-    execute format('revoke execute on function %s from public, anon', f.assinatura);
-
-    if tinha_auth then
-      execute format('grant execute on function %s to authenticated', f.assinatura);
-    end if;
-    if tinha_service then
-      execute format('grant execute on function %s to service_role', f.assinatura);
-    end if;
-  end loop;
-end $$;
-
--- regra 2 (authenticated): as 5 que o update abriu e o install não abre. Aqui não
--- cabe varredura — `authenticated` PRECISA de EXECUTE nos helpers de RLS e em
--- `retrieve_top_k_chunks` (num install fresco ele tem). É julgamento por função,
--- e o alvo de cada linha é o valor que um install fresco produz, medido.
-revoke execute on function public.fn_audit_log_row() from authenticated;
-revoke execute on function public.fn_decrypt_oauth(bytea) from authenticated;
-revoke execute on function public.fn_encrypt_oauth(text) from authenticated;
-revoke execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) from authenticated;
-revoke execute on function public.fn_update_budget_consumption() from authenticated;
-
-grant execute on function public.fn_audit_log_row() to service_role;
-grant execute on function public.fn_decrypt_oauth(bytea) to service_role;
-grant execute on function public.fn_encrypt_oauth(text) to service_role;
-grant execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) to service_role;
-grant execute on function public.fn_update_budget_consumption() to service_role;
 
 
 -- ---- Criador provisório sai na entrega (migration 0237) ----
@@ -89856,26 +89778,6 @@ comment on column public.channel_sessions.zernio_webhook_id is
 comment on column public.channel_sessions.zernio_credencial_da_instalacao is
   'true = a sessão fala com o provedor pela chave da INSTALAÇÃO (platform_config), resolvida na hora; zernio_token_encrypted fica nulo. false = chave própria da organização, cifrada em zernio_token_encrypted. Migration 9093.';
 
--- ---- a CONEXÃO decide se a conversa nova cria negócio (migration 9459) ----
--- Espelho da 9459 (issue #4670); o porquê inteiro está no cabeçalho da migration.
--- Coluna, e não `metadata`: a leitura acontece uma vez por card que nasce, no
--- caminho quente da ingestão, e a ausência de chave em jsonb teria de significar
--- LIGADO — o oposto da chave vizinha (`guardar_historico`, #999), que é a razão
--- de a regra não poder morar num leitor que adivinha.
---
--- ⚠️ `default true` é o que torna a atualização invisível: toda instalação de
--- hoje continua criando card em todo número. No Postgres 11+ um default
--- não-volátil não reescreve a tabela, então a coluna entra sem varredura.
---
--- Não cria função e não concede nada a `anon`: pode ficar depois da VARREDURA
--- anon. Reaplicável por `add column if not exists` — o `update.sh` roda o
--- apêndice inteiro a cada atualização (`tests/unit/baseline-reaplicavel.test.ts`).
-alter table public.channel_sessions
-  add column if not exists conversa_nova_cria_negocio boolean not null default true;
-
-comment on column public.channel_sessions.conversa_nova_cria_negocio is
-  'Issue #4670: a conversa nova que chega por esta conexão abre negócio no funil padrão? true (DEFAULT, e o estado de toda instalação de antes) = sim, como sempre foi. false = a conversa e o contato nascem, o Inbox e a IA seguem, e só o card não nasce; criar à mão (crm_create_lead, painel da conversa, ficha do contato) continua igual.';
-
 -- ---- llm_calls: passos e composição da chamada (migration 9105) ----
 alter table public.llm_calls add column if not exists passos smallint;
 alter table public.llm_calls add column if not exists entrada_do_primeiro_passo integer;
@@ -90913,3 +90815,1086 @@ end $followup_daily_cap$;
 alter table public.platform_meta_app
   add column if not exists app_id text,
   add column if not exists config_id text;
+
+-- ---- Integração Telegram do fork privado (migrations 9700–9717) ----
+
+
+-- Reconciled private fork source: supabase/migrations/20261021072100_9700_telegram_bot_connections.sql
+-- manifest: **Registro isolado de bots Telegram por tenant.** Guarda tokens cifrados e bindings de produto em domínio próprio; conexão validada ainda não ativa webhook nem concede papel ou acesso a dados.
+
+create table if not exists public.telegram_bot_connections (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  telegram_bot_id text not null,
+  bot_username text,
+  display_name text not null,
+  token_encrypted bytea not null,
+  token_last4 text not null,
+  status text not null default 'draft',
+  created_by uuid references auth.users(id) on delete set null,
+  updated_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint telegram_bot_connections_id_org_unique unique (organization_id, id),
+  constraint telegram_bot_connections_bot_id_format check (telegram_bot_id ~ '^[0-9]{1,20}$'),
+  constraint telegram_bot_connections_status_check check (status in ('draft', 'configured', 'paused', 'error'))
+);
+
+create unique index if not exists telegram_bot_connections_org_bot_unique
+  on public.telegram_bot_connections (organization_id, telegram_bot_id);
+create index if not exists telegram_bot_connections_org_status_idx
+  on public.telegram_bot_connections (organization_id, status, created_at desc);
+
+comment on table public.telegram_bot_connections is
+  'Conexões de bots Bot API Telegram, próprias por organização. Token cifrado por fn_encrypt_oauth e nunca devolvido ao browser. Status configured significa apenas cadastro e bindings salvos; não implica webhook ou envio ativo.';
+comment on column public.telegram_bot_connections.telegram_bot_id is
+  'ID remoto retornado por getMe, mantido como texto para evitar truncamento/conversão de precisão entre runtimes.';
+comment on column public.telegram_bot_connections.token_encrypted is
+  'Token Bot API cifrado por fn_encrypt_oauth. Só service_role acessa a linha; nunca selecionar esta coluna para resposta de API.';
+comment on column public.telegram_bot_connections.token_last4 is
+  'Sufixo curto para identificar a credencial sem revelar o token completo.';
+
+alter table public.telegram_bot_connections enable row level security;
+revoke all on public.telegram_bot_connections from anon, authenticated;
+grant select, insert, update, delete on public.telegram_bot_connections to service_role;
+
+drop trigger if exists trg_telegram_bot_connections_updated_at on public.telegram_bot_connections;
+create trigger trg_telegram_bot_connections_updated_at
+  before update on public.telegram_bot_connections
+  for each row execute function public.fn_set_updated_at();
+
+create table if not exists public.telegram_bot_bindings (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  connection_id uuid not null,
+  surface text not null,
+  created_by uuid references auth.users(id) on delete set null,
+  updated_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint telegram_bot_bindings_connection_org_fk
+    foreign key (organization_id, connection_id)
+    references public.telegram_bot_connections (organization_id, id) on delete cascade,
+  constraint telegram_bot_bindings_surface_check
+    check (surface in ('inbox', 'team_alerts', 'human_cases', 'agent_tools', 'mini_app')),
+  constraint telegram_bot_bindings_org_connection_surface_unique unique (organization_id, connection_id, surface)
+);
+
+create index if not exists telegram_bot_bindings_org_surface_idx
+  on public.telegram_bot_bindings (organization_id, surface, connection_id);
+
+comment on table public.telegram_bot_bindings is
+  'Associação configurada entre conexão Telegram e superfície DeskcommCRM. Binding não concede papel, não habilita capacidade especial e só produz efeito quando existir consumidor/runtime correspondente.';
+
+alter table public.telegram_bot_bindings enable row level security;
+revoke all on public.telegram_bot_bindings from anon, authenticated;
+grant select, insert, update, delete on public.telegram_bot_bindings to service_role;
+
+drop trigger if exists trg_telegram_bot_bindings_updated_at on public.telegram_bot_bindings;
+create trigger trg_telegram_bot_bindings_updated_at
+  before update on public.telegram_bot_bindings
+  for each row execute function public.fn_set_updated_at();
+
+create table if not exists public.telegram_bot_surface_capabilities (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  connection_id uuid not null,
+  surface text not null,
+  capability text not null,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  constraint telegram_bot_surface_capabilities_binding_fk
+    foreign key (organization_id, connection_id, surface)
+    references public.telegram_bot_bindings (organization_id, connection_id, surface) on delete cascade,
+  constraint telegram_bot_surface_capabilities_pair_check check (
+    (surface = 'inbox' and capability in ('receive_messages', 'human_replies', 'ai_replies', 'proactive_send', 'group_messages')) or
+    (surface = 'team_alerts' and capability in ('send_alerts')) or
+    (surface = 'human_cases' and capability in ('read_cases', 'reply_to_cases')) or
+    (surface = 'agent_tools' and capability in ('tool_read', 'tool_write')) or
+    (surface = 'mini_app' and capability in ('mini_app_access'))
+  ),
+  constraint telegram_bot_surface_capabilities_unique unique (connection_id, surface, capability)
+);
+
+create index if not exists telegram_bot_surface_capabilities_org_idx
+  on public.telegram_bot_surface_capabilities (organization_id, connection_id, surface);
+
+comment on table public.telegram_bot_surface_capabilities is
+  'Capacidades explicitamente concedidas ao binding de uma conexão Telegram. Ausência significa desabilitado; permissões administrativas de plataforma não são representáveis aqui.';
+
+alter table public.telegram_bot_surface_capabilities enable row level security;
+revoke all on public.telegram_bot_surface_capabilities from anon, authenticated;
+grant select, insert, update, delete on public.telegram_bot_surface_capabilities to service_role;
+
+create or replace function public.fn_telegram_bot_save_bindings(
+  p_organization_id uuid,
+  p_connection_id uuid,
+  p_bindings jsonb,
+  p_actor_user_id uuid
+) returns boolean
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_binding jsonb;
+  v_capability jsonb;
+  v_surface text;
+begin
+  if jsonb_typeof(p_bindings) is distinct from 'array' then
+    raise exception 'bindings_must_be_array' using errcode = '22023';
+  end if;
+  if not exists (
+    select 1 from public.telegram_bot_connections c
+     where c.organization_id = p_organization_id and c.id = p_connection_id
+  ) then
+    raise exception 'telegram_connection_not_found' using errcode = 'P0002';
+  end if;
+
+  delete from public.telegram_bot_bindings
+   where organization_id = p_organization_id and connection_id = p_connection_id;
+
+  for v_binding in select value from jsonb_array_elements(p_bindings)
+  loop
+    v_surface := v_binding ->> 'surface';
+    if jsonb_typeof(v_binding -> 'capabilities') is distinct from 'array' then
+      raise exception 'capabilities_must_be_array' using errcode = '22023';
+    end if;
+    insert into public.telegram_bot_bindings (
+      organization_id, connection_id, surface, created_by, updated_by
+    ) values (
+      p_organization_id, p_connection_id, v_surface, p_actor_user_id, p_actor_user_id
+    );
+    for v_capability in select value from jsonb_array_elements(v_binding -> 'capabilities')
+    loop
+      insert into public.telegram_bot_surface_capabilities (
+        organization_id, connection_id, surface, capability, created_by
+      ) values (
+        p_organization_id, p_connection_id, v_surface, v_capability #>> '{}', p_actor_user_id
+      );
+    end loop;
+  end loop;
+
+  update public.telegram_bot_connections
+     set status = 'configured', updated_by = p_actor_user_id
+   where organization_id = p_organization_id and id = p_connection_id;
+  return true;
+end;
+$$;
+revoke execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) from public, anon, authenticated;
+grant execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) to service_role;
+
+
+-- Reconciled private fork source: supabase/migrations/20261021072200_9701_telegram_webhook_lifecycle.sql
+-- manifest: **Ciclo de vida do webhook por bot Telegram.** Persiste apenas o token de caminho opaco e o segredo de verificação cifrado; ativa/pausa/desconecta sem descartar updates pendentes.
+
+alter table public.telegram_bot_connections
+  add column if not exists webhook_path_token text,
+  add column if not exists webhook_secret_encrypted bytea,
+  add column if not exists webhook_last_error text,
+  add column if not exists webhook_last_error_at timestamptz,
+  add column if not exists webhook_connected_at timestamptz;
+
+alter table public.telegram_bot_connections
+  drop constraint if exists telegram_bot_connections_status_check;
+alter table public.telegram_bot_connections
+  add constraint telegram_bot_connections_status_check
+  check (status in ('draft', 'configured', 'active', 'paused', 'disconnected', 'error', 'deleted'));
+
+create unique index if not exists telegram_bot_connections_webhook_path_unique
+  on public.telegram_bot_connections (webhook_path_token)
+  where webhook_path_token is not null;
+-- Um bot só pode ter UM webhook na Bot API; aceitar o mesmo token em dois
+-- tenants faria a última ativação sequestrar silenciosamente o recebimento.
+create unique index if not exists telegram_bot_connections_bot_global_unique
+  on public.telegram_bot_connections (telegram_bot_id);
+
+comment on column public.telegram_bot_connections.webhook_path_token is
+  'Segredo aleatório de URL para resolver webhook do bot; nunca retornado na API autenticada.';
+comment on column public.telegram_bot_connections.webhook_secret_encrypted is
+  'secret_token do header X-Telegram-Bot-Api-Secret-Token cifrado com fn_encrypt_oauth.';
+
+
+-- Reconciled private fork source: supabase/migrations/20261021072300_9702_telegram_webhook_updates.sql
+-- manifest: **Entrada autenticada e idempotente de updates Telegram.** Persiste o payload para consumo/reprocessamento antes de responder 200 ao Telegram.
+
+create table if not exists public.telegram_webhook_updates (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  connection_id uuid not null,
+  update_id bigint not null,
+  update_type text not null,
+  payload jsonb not null,
+  status text not null default 'pending',
+  attempts integer not null default 0,
+  last_error text,
+  received_at timestamptz not null default now(),
+  processed_at timestamptz,
+  constraint telegram_webhook_updates_connection_org_fk
+    foreign key (organization_id, connection_id)
+    references public.telegram_bot_connections (organization_id, id) on delete cascade,
+  constraint telegram_webhook_updates_status_check
+    check (status in ('pending', 'processing', 'processed', 'ignored', 'error')),
+  constraint telegram_webhook_updates_attempts_check check (attempts >= 0),
+  constraint telegram_webhook_updates_connection_update_unique unique (connection_id, update_id)
+);
+
+create index if not exists telegram_webhook_updates_pending_idx
+  on public.telegram_webhook_updates (received_at, id)
+  where status in ('pending', 'error');
+create index if not exists telegram_webhook_updates_org_connection_idx
+  on public.telegram_webhook_updates (organization_id, connection_id, received_at desc);
+
+alter table public.telegram_webhook_updates enable row level security;
+revoke all on public.telegram_webhook_updates from public, anon, authenticated;
+grant select, insert, update, delete on public.telegram_webhook_updates to service_role;
+comment on table public.telegram_webhook_updates is
+  'Fila durável e idempotente dos updates aceitos pelo webhook Telegram. Payload tem dados pessoais e só é acessível via service_role; consumidores devem apagar/reter conforme política LGPD.';
+
+
+-- Reconciled private fork source: supabase/migrations/20261021072400_9703_telegram_inbox_runtime.sql
+-- manifest: **Canal Telegram no ledger compartilhado da Inbox.** Cria sessão
+-- sem número/engine WAHA, identidade opaca de contato e conversa `telegram`;
+-- não habilita grupos, IA nem envio proativo.
+
+alter table public.channel_sessions add column if not exists telegram_bot_connection_id uuid;
+alter table public.channel_sessions alter column engine drop not null;
+alter table public.telegram_webhook_updates add column if not exists processing_at timestamptz;
+alter table public.telegram_webhook_updates drop constraint if exists telegram_webhook_updates_status_check;
+alter table public.telegram_webhook_updates add constraint telegram_webhook_updates_status_check
+  check (status in ('pending', 'processing', 'processed', 'ignored', 'error', 'deferred'));
+alter table public.telegram_bot_connections add column if not exists deleted_at timestamptz;
+drop index if exists public.telegram_bot_connections_bot_global_unique;
+create unique index if not exists telegram_bot_connections_bot_global_unique
+  on public.telegram_bot_connections (telegram_bot_id) where deleted_at is null;
+drop index if exists public.telegram_bot_connections_org_bot_unique;
+create unique index if not exists telegram_bot_connections_org_bot_unique
+  on public.telegram_bot_connections (organization_id, telegram_bot_id) where deleted_at is null;
+create unique index if not exists channel_sessions_telegram_connection_unique
+  on public.channel_sessions (telegram_bot_connection_id) where telegram_bot_connection_id is not null;
+do $$ begin
+  alter table public.channel_sessions add constraint channel_sessions_telegram_connection_fk
+    foreign key (organization_id, telegram_bot_connection_id)
+    references public.telegram_bot_connections (organization_id, id) on delete restrict;
+exception when duplicate_object then null; end $$;
+
+create or replace function public.fn_upsert_telegram_contact(
+  p_org uuid, p_identity text, p_display_name text
+) returns uuid language plpgsql security definer set search_path = public as $$
+declare v_id uuid;
+begin
+  insert into public.contacts (organization_id, source, social_identity, display_name, source_metadata)
+  values (p_org, 'telegram', p_identity, nullif(p_display_name, ''), jsonb_build_object('telegram', true))
+  on conflict (organization_id, social_identity) where social_identity is not null and is_merged_into is null
+  do update set display_name = coalesce(contacts.display_name, excluded.display_name), updated_at = now()
+  returning id into v_id;
+  return v_id;
+end; $$;
+revoke all on function public.fn_upsert_telegram_contact(uuid, text, text) from public, anon, authenticated;
+grant execute on function public.fn_upsert_telegram_contact(uuid, text, text) to service_role;
+
+create or replace function public.fn_upsert_telegram_conversation(
+  p_org uuid, p_contact uuid, p_session uuid
+) returns uuid language plpgsql security definer set search_path = public as $$
+declare v_id uuid;
+begin
+  insert into public.conversations (organization_id, contact_id, channel_session_id, channel, status, is_group, unread_count_for_assignee)
+  values (p_org, p_contact, p_session, 'telegram', 'open', false, 0)
+  on conflict (organization_id, contact_id, channel_session_id) where is_group = false
+  do update set updated_at = now()
+  returning id into v_id;
+  return v_id;
+end; $$;
+revoke all on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid) from public, anon, authenticated;
+grant execute on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid) to service_role;
+
+
+-- Reconciled private fork source: supabase/migrations/20261021072500_9704_telegram_conversation_destination.sql
+-- manifest: **O destino de resposta Telegram fica na conversa.** A Inbox monta o adapter a partir de conversations.provider_conversation_id; sem persistir o chat_id ali, toda resposta humana era recusada como destinatário ausente.
+
+drop function if exists public.fn_upsert_telegram_conversation(uuid, uuid, uuid);
+
+create or replace function public.fn_upsert_telegram_conversation(
+  p_org uuid, p_contact uuid, p_session uuid, p_provider_conversation_id text
+) returns uuid language plpgsql security definer set search_path = public as $$
+declare v_id uuid;
+begin
+  if p_provider_conversation_id is null or p_provider_conversation_id !~ '^-?[0-9]{1,20}$' then
+    raise exception 'telegram_conversation_id_invalid' using errcode = '22023';
+  end if;
+  insert into public.conversations (
+    organization_id, contact_id, channel_session_id, channel, status,
+    is_group, unread_count_for_assignee, provider_conversation_id
+  ) values (
+    p_org, p_contact, p_session, 'telegram', 'open', false, 0, p_provider_conversation_id
+  )
+  on conflict (organization_id, contact_id, channel_session_id) where is_group = false
+  do update set
+    provider_conversation_id = coalesce(conversations.provider_conversation_id, excluded.provider_conversation_id),
+    updated_at = now()
+  returning id into v_id;
+  return v_id;
+end; $$;
+revoke all on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text) from public, anon, authenticated;
+grant execute on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text) to service_role;
+
+
+-- Reconciled private fork source: supabase/migrations/20261021072600_9705_telegram_inbox_groups.sql
+-- manifest: **Grupos Telegram entram na Inbox por allowlist explícita.** IDs e títulos descobertos vêm de updates reais; conversas permanecem humanas e não acionam IA.
+
+alter table public.channel_session_groups
+  drop constraint if exists channel_session_groups_group_chat_id_check;
+alter table public.channel_session_groups
+  add constraint channel_session_groups_group_chat_id_check
+  check (group_chat_id like '%@g.us' or group_chat_id ~ '^-?[0-9]{1,20}$');
+
+drop function if exists public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text);
+create or replace function public.fn_upsert_telegram_conversation(
+  p_org uuid,
+  p_contact uuid,
+  p_session uuid,
+  p_provider_conversation_id text,
+  p_is_group boolean,
+  p_group_chat_id text
+) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare v_id uuid;
+begin
+  if p_provider_conversation_id is null or p_provider_conversation_id !~ '^-?[0-9]{1,20}$' then
+    raise exception 'telegram_conversation_id_invalid' using errcode = '22023';
+  end if;
+  if p_is_group and (p_group_chat_id is null or p_group_chat_id !~ '^-?[0-9]{1,20}$' or p_group_chat_id <> p_provider_conversation_id) then
+    raise exception 'telegram_group_id_invalid' using errcode = '22023';
+  end if;
+  if not p_is_group and p_group_chat_id is not null then
+    raise exception 'telegram_group_id_unexpected' using errcode = '22023';
+  end if;
+
+  if p_is_group then
+    insert into public.conversations (
+      organization_id, contact_id, channel_session_id, channel, status,
+      is_group, group_chat_id, unread_count_for_assignee, provider_conversation_id
+    ) values (
+      p_org, p_contact, p_session, 'telegram', 'open', true, p_group_chat_id, 0, p_provider_conversation_id
+    )
+    on conflict (organization_id, contact_id, channel_session_id, group_chat_id)
+    do update set provider_conversation_id = excluded.provider_conversation_id, updated_at = now()
+    returning id into v_id;
+  else
+    insert into public.conversations (
+      organization_id, contact_id, channel_session_id, channel, status,
+      is_group, unread_count_for_assignee, provider_conversation_id
+    ) values (
+      p_org, p_contact, p_session, 'telegram', 'open', false, 0, p_provider_conversation_id
+    )
+    on conflict (organization_id, contact_id, channel_session_id) where is_group = false
+    do update set
+      provider_conversation_id = coalesce(conversations.provider_conversation_id, excluded.provider_conversation_id),
+      updated_at = now()
+    returning id into v_id;
+  end if;
+  return v_id;
+end; $$;
+revoke all on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text, boolean, text) from public, anon, authenticated;
+grant execute on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text, boolean, text) to service_role;
+
+-- Compatibility facade for existing server callers; all behavior stays in the
+-- six-argument implementation above.
+create function public.fn_upsert_telegram_conversation(
+  p_org uuid, p_contact uuid, p_session uuid, p_provider_conversation_id text
+) returns uuid language sql security definer set search_path = public as $$
+  select public.fn_upsert_telegram_conversation(
+    p_org, p_contact, p_session, p_provider_conversation_id, false, null
+  );
+$$;
+revoke all on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text) from public, anon, authenticated;
+grant execute on function public.fn_upsert_telegram_conversation(uuid, uuid, uuid, text) to service_role;
+
+
+-- Reconciled private fork source: supabase/migrations/20261021072700_9706_telegram_edit_active_bot.sql
+-- manifest: Mantém o bot Telegram ativo ao salvar alterações de bindings e capacidades; edição não interrompe webhook nem sessão.
+create or replace function public.fn_telegram_bot_save_bindings(
+  p_organization_id uuid,
+  p_connection_id uuid,
+  p_bindings jsonb,
+  p_actor_user_id uuid
+) returns boolean
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_binding jsonb;
+  v_capability jsonb;
+  v_surface text;
+begin
+  if jsonb_typeof(p_bindings) is distinct from 'array' then
+    raise exception 'bindings_must_be_array' using errcode = '22023';
+  end if;
+  if not exists (
+    select 1 from public.telegram_bot_connections c
+     where c.organization_id = p_organization_id and c.id = p_connection_id
+  ) then
+    raise exception 'telegram_connection_not_found' using errcode = 'P0002';
+  end if;
+
+  delete from public.telegram_bot_bindings
+   where organization_id = p_organization_id and connection_id = p_connection_id;
+
+  for v_binding in select value from jsonb_array_elements(p_bindings)
+  loop
+    v_surface := v_binding ->> 'surface';
+    if jsonb_typeof(v_binding -> 'capabilities') is distinct from 'array' then
+      raise exception 'capabilities_must_be_array' using errcode = '22023';
+    end if;
+    insert into public.telegram_bot_bindings (
+      organization_id, connection_id, surface, created_by, updated_by
+    ) values (
+      p_organization_id, p_connection_id, v_surface, p_actor_user_id, p_actor_user_id
+    );
+    for v_capability in select value from jsonb_array_elements(v_binding -> 'capabilities')
+    loop
+      insert into public.telegram_bot_surface_capabilities (
+        organization_id, connection_id, surface, capability, created_by
+      ) values (
+        p_organization_id, p_connection_id, v_surface, v_capability #>> '{}', p_actor_user_id
+      );
+    end loop;
+  end loop;
+
+  update public.telegram_bot_connections
+     set status = case when status = 'active' then 'active' else 'configured' end,
+         updated_by = p_actor_user_id
+   where organization_id = p_organization_id and id = p_connection_id;
+  return true;
+end;
+$$;
+revoke execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) from public, anon, authenticated;
+grant execute on function public.fn_telegram_bot_save_bindings(uuid, uuid, jsonb, uuid) to service_role;
+
+
+-- Reconciled private fork source: supabase/migrations/20261021072800_9707_telegram_human_cases_operators.sql
+-- manifest: Pareia operadores Telegram a usuários ativos do tenant para consulta e resposta auditável de casos humanos.
+create table if not exists public.telegram_case_pairing_challenges (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  connection_id uuid not null,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  code_hash text not null check (code_hash ~ '^[0-9a-f]{64}$'),
+  expires_at timestamptz not null,
+  consumed_at timestamptz,
+  created_at timestamptz not null default now(),
+  constraint telegram_case_pairing_challenges_connection_fk
+    foreign key (organization_id, connection_id)
+    references public.telegram_bot_connections (organization_id, id) on delete cascade
+);
+create index if not exists telegram_case_pairing_challenges_lookup_idx
+  on public.telegram_case_pairing_challenges (organization_id, connection_id, code_hash, expires_at)
+  where consumed_at is null;
+
+create table if not exists public.telegram_case_operators (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  connection_id uuid not null,
+  telegram_user_id text not null check (telegram_user_id ~ '^[0-9]{1,20}$'),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  paired_at timestamptz not null default now(),
+  revoked_at timestamptz,
+  constraint telegram_case_operators_connection_fk
+    foreign key (organization_id, connection_id)
+    references public.telegram_bot_connections (organization_id, id) on delete cascade,
+  constraint telegram_case_operators_identity_unique unique (organization_id, connection_id, telegram_user_id)
+);
+create index if not exists telegram_case_operators_active_idx
+  on public.telegram_case_operators (organization_id, connection_id, telegram_user_id)
+  where revoked_at is null;
+create unique index if not exists telegram_case_operators_active_user_unique
+  on public.telegram_case_operators (organization_id, connection_id, user_id)
+  where revoked_at is null;
+
+alter table public.telegram_case_pairing_challenges enable row level security;
+alter table public.telegram_case_operators enable row level security;
+revoke all on public.telegram_case_pairing_challenges from public, anon, authenticated;
+revoke all on public.telegram_case_operators from public, anon, authenticated;
+grant select, insert, update, delete on public.telegram_case_pairing_challenges to service_role;
+grant select, insert, update, delete on public.telegram_case_operators to service_role;
+
+create or replace function public.fn_telegram_case_operator_pair(
+  p_organization_id uuid, p_connection_id uuid, p_code_hash text, p_telegram_user_id text
+) returns uuid language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_challenge public.telegram_case_pairing_challenges%rowtype;
+begin
+  if p_code_hash !~ '^[0-9a-f]{64}$' or p_telegram_user_id !~ '^[0-9]{1,20}$' then return null; end if;
+  select ch.* into v_challenge
+    from public.telegram_case_pairing_challenges ch
+    join public.user_organizations u on u.organization_id=ch.organization_id and u.user_id=ch.user_id
+      and u.revoked_at is null and u.role in ('agent','manager','admin')
+    join public.telegram_bot_connections c on c.organization_id=ch.organization_id and c.id=ch.connection_id
+      and c.status='active' and c.deleted_at is null
+   where ch.organization_id=p_organization_id and ch.connection_id=p_connection_id
+     and ch.code_hash=p_code_hash and ch.consumed_at is null and ch.expires_at>now()
+     and exists (
+       select 1 from public.telegram_bot_bindings b
+        join public.telegram_bot_surface_capabilities sc
+          on sc.organization_id=b.organization_id and sc.connection_id=b.connection_id and sc.surface=b.surface
+        where b.organization_id=p_organization_id and b.connection_id=p_connection_id and b.surface='human_cases'
+        group by b.connection_id
+        having bool_or(sc.capability='read_cases') and bool_or(sc.capability='reply_to_cases')
+     )
+   order by ch.created_at desc limit 1 for update of ch;
+  if not found then return null; end if;
+  update public.telegram_case_pairing_challenges set consumed_at=now()
+   where id=v_challenge.id and consumed_at is null;
+  if not found then return null; end if;
+  update public.telegram_case_operators set revoked_at=now()
+   where organization_id=p_organization_id and connection_id=p_connection_id and user_id=v_challenge.user_id
+     and revoked_at is null and telegram_user_id<>p_telegram_user_id;
+  insert into public.telegram_case_operators (organization_id,connection_id,telegram_user_id,user_id,paired_at,revoked_at)
+  values (p_organization_id,p_connection_id,p_telegram_user_id,v_challenge.user_id,now(),null)
+  on conflict (organization_id,connection_id,telegram_user_id)
+  do update set user_id=excluded.user_id,paired_at=now(),revoked_at=null;
+  return v_challenge.user_id;
+end;
+$$;
+revoke execute on function public.fn_telegram_case_operator_pair(uuid,uuid,text,text) from public, anon, authenticated;
+grant execute on function public.fn_telegram_case_operator_pair(uuid,uuid,text,text) to service_role;
+
+
+-- Reconciled private fork source: supabase/migrations/20261021072900_9708_telegram_selector_metadata_rls.sql
+-- manifest: Metadados mínimos dos bots Telegram ficam legíveis para membros do tenant via RLS, sem expor tokens cifrados.
+
+-- O seletor de canais usa o cliente autenticado. A tabela de bots continua sem
+-- privilégio de SELECT amplo: só os metadados usados pelo filtro podem ser lidos.
+-- `token_encrypted` e demais colunas de credencial permanecem exclusivos da
+-- service_role.
+revoke select on public.telegram_bot_connections from anon, authenticated;
+grant select (id, organization_id, status, deleted_at)
+  on public.telegram_bot_connections to authenticated;
+
+drop policy if exists telegram_bot_connections_select_tenant on public.telegram_bot_connections;
+create policy telegram_bot_connections_select_tenant
+  on public.telegram_bot_connections
+  for select to authenticated
+  using (organization_id in (select public.fn_user_org_ids()));
+
+-- As capacidades não são segredo, mas continuam isoladas por organização.
+revoke select on public.telegram_bot_surface_capabilities from anon, authenticated;
+grant select (organization_id, connection_id, surface, capability)
+  on public.telegram_bot_surface_capabilities to authenticated;
+
+drop policy if exists telegram_bot_surface_capabilities_select_tenant on public.telegram_bot_surface_capabilities;
+create policy telegram_bot_surface_capabilities_select_tenant
+  on public.telegram_bot_surface_capabilities
+  for select to authenticated
+  using (organization_id in (select public.fn_user_org_ids()));
+
+
+-- Reconciled private fork source: supabase/migrations/20261026220002_9718_telegram_team_groups.sql
+-- manifest: Configura capacidades internas independentes por grupo Telegram sem alterar a allowlist da Inbox.
+create unique index if not exists channel_session_groups_org_id_uidx
+  on public.channel_session_groups (organization_id, id);
+
+create table if not exists public.telegram_team_group_settings (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  connection_id uuid not null,
+  channel_session_group_id uuid not null,
+  group_chat_id text not null check (group_chat_id ~ '^-?[0-9]{1,20}$'),
+  case_alerts_enabled boolean not null default false,
+  case_actions_enabled boolean not null default false,
+  team_assistant_enabled boolean not null default false,
+  membership_state text not null default 'unknown'
+    check (membership_state in ('unknown','healthy','stale','suspended')),
+  membership_checked_at timestamptz,
+  membership_last_update_id bigint,
+  assistant_disabled_reason text,
+  created_by uuid references auth.users(id) on delete set null,
+  updated_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint telegram_team_group_settings_connection_fk
+    foreign key (organization_id, connection_id)
+    references public.telegram_bot_connections (organization_id, id) on delete cascade,
+  constraint telegram_team_group_settings_group_fk
+    foreign key (organization_id, channel_session_group_id)
+    references public.channel_session_groups (organization_id, id) on delete cascade,
+  constraint telegram_team_group_settings_group_unique unique (organization_id, connection_id, group_chat_id),
+  constraint telegram_team_group_settings_row_unique unique (organization_id, id)
+);
+
+create table if not exists public.telegram_team_group_members (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  group_setting_id uuid not null,
+  telegram_user_id text not null check (telegram_user_id ~ '^[0-9]{1,20}$'),
+  paired_user_id uuid references auth.users(id) on delete set null,
+  display_name text,
+  username text,
+  membership_status text not null default 'unknown'
+    check (membership_status in ('unknown','member','left','restricted')),
+  observed_at timestamptz not null default now(),
+  last_update_id bigint,
+  can_use_assistant boolean not null default false,
+  can_act_on_cases boolean not null default false,
+  can_approve_members boolean not null default false,
+  reviewed_by uuid references auth.users(id) on delete set null,
+  reviewed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint telegram_team_group_members_setting_fk
+    foreign key (organization_id, group_setting_id)
+    references public.telegram_team_group_settings (organization_id, id) on delete cascade,
+  constraint telegram_team_group_members_identity_unique
+    unique (organization_id, group_setting_id, telegram_user_id)
+);
+
+create index if not exists telegram_team_group_settings_org_idx
+  on public.telegram_team_group_settings (organization_id, connection_id);
+create index if not exists telegram_team_group_members_lookup_idx
+  on public.telegram_team_group_members (organization_id, group_setting_id, membership_status);
+
+alter table public.telegram_team_group_settings enable row level security;
+alter table public.telegram_team_group_members enable row level security;
+revoke all on public.telegram_team_group_settings from public, anon, authenticated;
+revoke all on public.telegram_team_group_members from public, anon, authenticated;
+grant select, insert, update, delete on public.telegram_team_group_settings to service_role;
+grant select, insert, update, delete on public.telegram_team_group_members to service_role;
+
+drop policy if exists telegram_team_group_settings_select on public.telegram_team_group_settings;
+create policy telegram_team_group_settings_select on public.telegram_team_group_settings
+  for select to authenticated
+  using (organization_id in (
+    select org_id from public.fn_user_org_ids() org_id
+    where public.fn_user_role_in_org(org_id) in ('manager','admin')
+  ));
+drop policy if exists telegram_team_group_members_select on public.telegram_team_group_members;
+create policy telegram_team_group_members_select on public.telegram_team_group_members
+  for select to authenticated
+  using (organization_id in (
+    select org_id from public.fn_user_org_ids() org_id
+    where public.fn_user_role_in_org(org_id) in ('manager','admin')
+  ));
+
+comment on table public.telegram_team_group_settings is
+  'Canonical internal-capability settings per Telegram group; channel_session_groups.enabled remains only the Inbox allowlist.';
+comment on column public.telegram_team_group_settings.membership_state is
+  'Security state. AI and case writes require healthy; Telegram Bot API does not provide a complete member inventory.';
+
+
+-- Reconciled private fork source: supabase/migrations/20261026220100_9710_telegram_team_cases_runtime.sql
+-- manifest: Telegram team cases runtime.
+
+alter table public.telegram_team_group_settings
+  add column if not exists membership_attested_at timestamptz,
+  add column if not exists membership_attested_by uuid references auth.users(id) on delete set null;
+
+create table if not exists public.telegram_case_alert_config (
+  organization_id uuid primary key references public.organizations(id) on delete cascade,
+  group_setting_id uuid not null,
+  enabled boolean not null default false,
+  updated_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint telegram_case_alert_config_group_fk foreign key (organization_id, group_setting_id)
+    references public.telegram_team_group_settings (organization_id, id) on delete cascade
+);
+
+create table if not exists public.telegram_case_alert_deliveries (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  case_id uuid not null references public.agent_cases(id) on delete cascade,
+  group_setting_id uuid not null,
+  connection_id uuid not null,
+  message_id text,
+  status text not null default 'pending' check (status in ('pending','sending','sent','failed','cancelled')),
+  error_code text,
+  attempts smallint not null default 0 check (attempts between 0 and 10),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  sent_at timestamptz,
+  constraint telegram_case_alert_deliveries_group_fk foreign key (organization_id, group_setting_id)
+    references public.telegram_team_group_settings (organization_id, id) on delete cascade,
+  constraint telegram_case_alert_deliveries_connection_fk foreign key (organization_id, connection_id)
+    references public.telegram_bot_connections (organization_id, id) on delete cascade,
+  constraint telegram_case_alert_deliveries_unique unique (organization_id, case_id, group_setting_id)
+);
+
+create table if not exists public.telegram_case_interactions (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  connection_id uuid not null,
+  group_setting_id uuid not null,
+  update_id bigint,
+  telegram_user_id text not null check (telegram_user_id ~ '^[0-9]{1,20}$'),
+  actor_user_id uuid references auth.users(id) on delete set null,
+  case_id uuid references public.agent_cases(id) on delete set null,
+  action text not null check (action in ('list_open','list_closed','view_case','guide_reply','guide_question','resolve','escalate','approve_member')),
+  status text not null default 'received' check (status in ('received','confirmed','completed','rejected','expired')),
+  callback_token_hash text unique,
+  group_message_id text,
+  reply_to_message_id text,
+  expires_at timestamptz,
+  consumed_at timestamptz,
+  created_at timestamptz not null default now(),
+  constraint telegram_case_interactions_connection_fk foreign key (organization_id, connection_id)
+    references public.telegram_bot_connections (organization_id, id) on delete cascade,
+  constraint telegram_case_interactions_group_fk foreign key (organization_id, group_setting_id)
+    references public.telegram_team_group_settings (organization_id, id) on delete cascade,
+  constraint telegram_case_interactions_update_unique unique (connection_id, update_id)
+);
+
+create index if not exists telegram_case_alert_deliveries_pending_idx
+  on public.telegram_case_alert_deliveries (organization_id, status, created_at);
+create index if not exists telegram_case_interactions_expiry_idx
+  on public.telegram_case_interactions (expires_at) where status in ('received','confirmed');
+
+alter table public.telegram_case_alert_config enable row level security;
+alter table public.telegram_case_alert_deliveries enable row level security;
+alter table public.telegram_case_interactions enable row level security;
+revoke all on public.telegram_case_alert_config, public.telegram_case_alert_deliveries, public.telegram_case_interactions from public, anon, authenticated;
+grant select, insert, update, delete on public.telegram_case_alert_config, public.telegram_case_alert_deliveries, public.telegram_case_interactions to service_role;
+
+comment on column public.telegram_team_group_settings.membership_attested_at is
+  'Explicit admin attestation of observed Telegram roster; Bot API cannot enumerate all group members. New membership event clears this attestation.';
+comment on table public.telegram_case_alert_config is
+  'Organization alert destination references canonical per-group settings; group permissions are not duplicated.';
+comment on table public.telegram_case_alert_deliveries is
+  'Idempotent minimal Telegram alert receipts; no case text, contact data or transcript.';
+comment on table public.telegram_case_interactions is
+  'Idempotent Telegram group action/callback correlation; no message body retained.';
+
+
+-- Reconciled private fork source: supabase/migrations/20261026220200_9711_shared_case_alert_destination.sql
+-- manifest: use one canonical case-alert destination for WhatsApp or a Telegram team group.
+alter table public.config_aviso_de_caso
+  add column if not exists destino_tipo text not null default 'whatsapp',
+  add column if not exists telegram_group_setting_id uuid;
+
+alter table public.config_aviso_de_caso
+  alter column telefone_destino drop not null;
+
+alter table public.config_aviso_de_caso
+  drop constraint if exists config_aviso_de_caso_destino_tipo_check;
+alter table public.config_aviso_de_caso
+  add constraint config_aviso_de_caso_destino_tipo_check
+  check (destino_tipo in ('whatsapp','telegram'));
+
+alter table public.config_aviso_de_caso
+  drop constraint if exists config_aviso_de_caso_telegram_group_fk;
+alter table public.config_aviso_de_caso
+  add constraint config_aviso_de_caso_telegram_group_fk
+  foreign key (organization_id, telegram_group_setting_id)
+  references public.telegram_team_group_settings(organization_id, id)
+  on delete set null (telegram_group_setting_id);
+
+alter table public.config_aviso_de_caso
+  drop constraint if exists config_aviso_de_caso_destination_shape;
+alter table public.config_aviso_de_caso
+  add constraint config_aviso_de_caso_destination_shape check (
+    (destino_tipo='whatsapp' and telegram_group_setting_id is null
+      and (telefone_destino is not null or ligado=false))
+    or
+    (destino_tipo='telegram' and channel_session_id is null and telefone_destino is null
+      and destino_jid is null and resposta_whatsapp_habilitada=false
+      and (telegram_group_setting_id is not null or ligado=false))
+  );
+
+create or replace function public.fn_aviso_de_caso_coerente()
+returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+begin
+  if new.channel_session_id is not null or new.telefone_destino is not null then
+    new.destino_tipo := 'whatsapp';
+    new.telegram_group_setting_id := null;
+  end if;
+  if new.destino_tipo = 'telegram' then
+    new.channel_session_id := null;
+    new.telefone_destino := null;
+    new.destino_jid := null;
+    new.resposta_whatsapp_habilitada := false;
+    if new.telegram_group_setting_id is null then
+      new.ligado := false;
+    end if;
+  else
+    new.telegram_group_setting_id := null;
+    if new.channel_session_id is null or new.telefone_destino is null then
+      new.ligado := false;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.fn_aviso_de_caso_coerente() from public, anon, authenticated;
+
+-- Migrate the earlier Telegram-only pointer into the same canonical row.
+do $$
+declare
+  r record;
+begin
+  if to_regclass('public.telegram_case_alert_config') is not null then
+    for r in execute 'select organization_id, group_setting_id, enabled, updated_by from public.telegram_case_alert_config' loop
+      if r.enabled then
+        insert into public.config_aviso_de_caso
+          (organization_id, destino_tipo, telegram_group_setting_id, channel_session_id,
+           telefone_destino, destino_jid, rotulo, ligado, resposta_whatsapp_habilitada,
+           criado_por, atualizado_por)
+        values
+          (r.organization_id, 'telegram', r.group_setting_id, null, null, null, null, true, false,
+           r.updated_by, r.updated_by)
+        on conflict (organization_id) do update set
+          destino_tipo='telegram', telegram_group_setting_id=excluded.telegram_group_setting_id,
+          channel_session_id=null, telefone_destino=null, destino_jid=null,
+          resposta_whatsapp_habilitada=false, ligado=true, atualizado_por=excluded.atualizado_por,
+          updated_at=now();
+      end if;
+    end loop;
+    drop table public.telegram_case_alert_config;
+  end if;
+end;
+$$;
+
+create or replace function public.fn_definir_aviso_de_caso_telegram(
+  p_org uuid,
+  p_group_setting_id uuid
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_group public.telegram_team_group_settings;
+begin
+  if auth.uid() is null or p_org is null
+     or not public.fn_role_at_least(p_org, 'admin')
+     or not public.fn_support_write_allowed(p_org) then
+    raise exception 'aviso_de_caso_forbidden' using errcode = '42501';
+  end if;
+  if not public.fn_session_mfa_proven() then
+    raise exception 'aviso_de_caso_mfa_required' using errcode = '42501';
+  end if;
+
+  if p_group_setting_id is not null then
+    select t.* into v_group
+      from public.telegram_team_group_settings t
+      join public.telegram_bot_connections c
+        on c.organization_id=t.organization_id and c.id=t.connection_id
+     where t.organization_id=p_org and t.id=p_group_setting_id
+       and t.case_alerts_enabled=true and t.membership_state='healthy'
+       and t.membership_attested_at is not null and c.status='active' and c.deleted_at is null
+       and exists (
+         select 1 from public.telegram_bot_surface_capabilities x
+          where x.organization_id=t.organization_id and x.connection_id=t.connection_id
+            and x.surface='team_alerts' and x.capability='send_alerts'
+       )
+     for update of t;
+    if not found then
+      raise exception 'telegram_case_alert_group_ineligible' using errcode = '22023';
+    end if;
+  end if;
+
+  insert into public.config_aviso_de_caso
+    (organization_id,destino_tipo,telegram_group_setting_id,channel_session_id,
+     telefone_destino,destino_jid,rotulo,ligado,resposta_whatsapp_habilitada,
+     criado_por,atualizado_por)
+  values
+    (p_org,'telegram',p_group_setting_id,null,null,null,null,p_group_setting_id is not null,false,auth.uid(),auth.uid())
+  on conflict (organization_id) do update set
+    destino_tipo='telegram', telegram_group_setting_id=excluded.telegram_group_setting_id,
+    channel_session_id=null, telefone_destino=null, destino_jid=null, rotulo=null,
+    ligado=excluded.ligado, resposta_whatsapp_habilitada=false,
+    atualizado_por=auth.uid(), updated_at=now();
+
+  return jsonb_build_object('saved',true,'destino_tipo','telegram','group_setting_id',p_group_setting_id);
+end;
+$$;
+revoke all on function public.fn_definir_aviso_de_caso_telegram(uuid,uuid) from public, anon;
+grant execute on function public.fn_definir_aviso_de_caso_telegram(uuid,uuid) to authenticated;
+
+comment on column public.config_aviso_de_caso.destino_tipo is
+  'Canonical case-alert destination kind; both WhatsApp and Telegram settings use this single organization row.';
+comment on column public.config_aviso_de_caso.telegram_group_setting_id is
+  'Selected Telegram team group when destino_tipo=telegram; group capabilities remain on telegram_team_group_settings.';
+
+
+-- Reconciled private fork source: supabase/migrations/20261026220400_9713_telegram_group_case_read_grant.sql
+-- manifest: Separe consulta de casos das permissões de resposta para permitir operadores observadores em grupos Telegram.
+alter table public.telegram_team_group_members
+  add column if not exists can_read_cases boolean not null default false;
+
+-- Preserva acesso de leitura já implícito para quem podia agir antes desta granularidade.
+update public.telegram_team_group_members
+   set can_read_cases=true
+ where can_act_on_cases=true and can_read_cases=false;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conname='telegram_team_group_members_act_requires_read'
+       and conrelid='public.telegram_team_group_members'::regclass
+  ) then
+    alter table public.telegram_team_group_members
+      add constraint telegram_team_group_members_act_requires_read
+      check (not can_act_on_cases or can_read_cases);
+  end if;
+end $$;
+
+comment on column public.telegram_team_group_members.can_read_cases is
+  'Allows a paired, reviewed operator to list and inspect cases in this group without permission to act on them.';
+
+
+-- 9714 amplia a constraint única criada no espelho de 9705 acima; não a recria.
+
+
+-- Reconciled private fork source: supabase/migrations/20261026220600_9715_telegram_team_assistant_runtime.sql
+-- manifest: Enable the isolated, read-only Telegram team case assistant.
+alter table public.telegram_case_interactions
+  drop constraint if exists telegram_case_interactions_action_check;
+
+alter table public.telegram_case_interactions
+  add constraint telegram_case_interactions_action_check
+  check (action in ('list_open','list_closed','view_case','guide_reply','guide_question','resolve','escalate','approve_member','deny_member','assistant_reply'));
+
+comment on column public.telegram_team_group_settings.team_assistant_enabled is
+  'Opt-in read-only assistant for verified members replying to case cards in this Telegram group; it cannot mutate cases or message customers.';
+
+
+-- Reconciled private fork source: supabase/migrations/20261027090000_9716_telegram_member_review_callbacks.sql
+-- manifest: Registra aprovação segura de participantes Telegram como observadores e correlaciona callbacks de aprovação.
+alter table public.telegram_team_group_members
+  add column if not exists approval_state text not null default 'pending';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname='telegram_team_group_members_approval_state_check'
+      and conrelid='public.telegram_team_group_members'::regclass
+  ) then
+    alter table public.telegram_team_group_members
+      add constraint telegram_team_group_members_approval_state_check
+      check (approval_state in ('pending','approved','observer','denied'));
+  end if;
+end $$;
+
+update public.telegram_team_group_members
+   set approval_state=case when reviewed_at is not null then 'approved' else 'pending' end
+ where approval_state='pending' and reviewed_at is not null;
+
+alter table public.telegram_case_interactions
+  add column if not exists target_telegram_user_id text
+  check (target_telegram_user_id ~ '^[0-9]{1,20}$');
+
+-- 9716 amplia a constraint única acima com a ação `deny_member`.
+
+comment on column public.telegram_team_group_members.approval_state is
+  'Review state for an observed Telegram participant. Observers and denied members never receive CRM action grants.';
+comment on column public.telegram_case_interactions.target_telegram_user_id is
+  'Observed Telegram participant targeted by a short-lived approve/deny membership callback.';
+
+
+-- Reconciled private fork source: supabase/migrations/20261125180001_9719_telegram_bot_managed_and_native.sql
+-- manifest: O provider `telegram` aceita os dois adaptadores do repositório:
+-- o canal nativo do Bot API (`telegram_bot_id`, migration 9342) e a integração
+-- gerenciada do fork (`telegram_bot_connection_id`, migrations 9700–9716).
+-- A migration 9342 passou a exigir `telegram_bot_id` depois de a 9703 já ter
+-- definido o identificador próprio da conexão gerenciada. A constraint precisa
+-- aceitar uma ou outra chave e continuar exigindo ausência de telefone.
+
+do $$
+begin
+  alter table public.channel_sessions
+    drop constraint if exists channel_sessions_provider_ref_check;
+
+  alter table public.channel_sessions
+    add constraint channel_sessions_provider_ref_check check (
+      (provider = 'waha' and waha_session_name is not null) or
+      (provider = 'meta_cloud' and meta_phone_number_id is not null) or
+      (provider in ('zernio', 'zernio_social') and zernio_account_id is not null) or
+      (provider = 'wacalls' and wacalls_session_id is not null) or
+      (provider = 'datafy' and datafy_phone_number_id is not null) or
+      (provider = 'telegram' and phone_number is null and
+        (telegram_bot_id is not null or telegram_bot_connection_id is not null)) or
+      (provider = 'webchat' and webchat_public_key is not null)
+    );
+end
+$$;
+
+
+-- ---- VARREDURA anon: função nova nasce exposta em quem ATUALIZA (migration 0116) ----
+--
+-- ⚠️ DE PROPÓSITO, NENHUMA FUNÇÃO É CRIADA DEPOIS DESTE BLOCO. Apêndice que cria
+-- função entra ANTES dele — quem o empurrar para o meio desarma a cura para tudo
+-- que vier depois. Ele é o bloco final do baseline; as travas do suporte
+-- (migration 0274), que não criam funções, também ficam antes dele.
+-- Vigiado por `tests/unit/varredura-anon-e-o-ultimo-bloco.test.ts`.
+--
+-- A 0108 revogou anon numa LISTA de 8 funções, medida num banco instalado do
+-- ZERO. Quem ATUALIZA tem outro estado: o `ALTER DEFAULT PRIVILEGES ... GRANT
+-- ALL ON FUNCTIONS TO anon` do corpo deste arquivo grava uma entrada em
+-- `pg_default_acl` que fica no catálogo PARA SEMPRE, e a partir daí toda função
+-- criada em `public` nasce com EXECUTE para anon — inclusive as deste apêndice.
+--
+-- Medido numa VPS real (2026-08-07), comparando com o que um install fresco
+-- produz: 6 definer expostas a anon e 5 a authenticated, entre elas
+-- `fn_decrypt_oauth` — alcançável pela anon key, que vai para o browser.
+--
+-- Lista conserta o estoque e reabre no próximo `create function`. Esta varredura
+-- é auto-curativa e roda DEPOIS de tudo que cria função, então cura no mesmo run
+-- em que o defeito nasceria. Desfazer o ALTER DEFAULT PRIVILEGES não serve: ele
+-- vem do `pg_dump` do Supabase e é reescrito a cada re-aplicação.
+--
+-- As duas origens de EXECUTE (a mesma lição da 0108): grant DIRETO a anon, que
+-- `revoke from public` não remove; e grant a PUBLIC, do qual anon HERDA, que
+-- `revoke from anon` não remove. O privilégio EFETIVO de authenticated e
+-- service_role é medido ANTES e devolvido depois — tira anon sem tirar leitura.
+do $$
+declare
+  f record;
+  tinha_auth boolean;
+  tinha_service boolean;
+begin
+  if to_regrole('anon') is null then
+    return;
+  end if;
+
+  for f in
+    select p.oid, p.oid::regprocedure as assinatura
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public'
+       and p.prosecdef
+  loop
+    tinha_auth := to_regrole('authenticated') is not null
+                  and has_function_privilege('authenticated', f.oid, 'EXECUTE');
+    tinha_service := to_regrole('service_role') is not null
+                     and has_function_privilege('service_role', f.oid, 'EXECUTE');
+
+    execute format('revoke execute on function %s from public, anon', f.assinatura);
+
+    if tinha_auth then
+      execute format('grant execute on function %s to authenticated', f.assinatura);
+    end if;
+    if tinha_service then
+      execute format('grant execute on function %s to service_role', f.assinatura);
+    end if;
+  end loop;
+end $$;
+
+-- regra 2 (authenticated): as 5 que o update abriu e o install não abre. Aqui não
+-- cabe varredura — `authenticated` PRECISA de EXECUTE nos helpers de RLS e em
+-- `retrieve_top_k_chunks` (num install fresco ele tem). É julgamento por função,
+-- e o alvo de cada linha é o valor que um install fresco produz, medido.
+revoke execute on function public.fn_audit_log_row() from authenticated;
+revoke execute on function public.fn_decrypt_oauth(bytea) from authenticated;
+revoke execute on function public.fn_encrypt_oauth(text) from authenticated;
+revoke execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) from authenticated;
+revoke execute on function public.fn_update_budget_consumption() from authenticated;
+
+grant execute on function public.fn_audit_log_row() to service_role;
+grant execute on function public.fn_decrypt_oauth(bytea) to service_role;
+grant execute on function public.fn_encrypt_oauth(text) to service_role;
+grant execute on function public.fn_lgpd_cascade_redact_contact(uuid, uuid, uuid) to service_role;
+grant execute on function public.fn_update_budget_consumption() to service_role;

@@ -13,6 +13,7 @@ import { getAdapter } from "@/lib/channels";
 import {
   CHANNEL_CAPABILITIES,
   capabilitiesOf,
+  isWhatsAppChannel,
   transportaMensagem,
   type ChannelProvider,
   type ProviderDeMensagem,
@@ -41,6 +42,7 @@ const CAPABILITIES = [
   "groups",
   "costPerMessage",
   "alteraMensagemEnviada",
+  "automatedOutbound",
   "podeReagir",
   "transmissao",
   "phonebook",
@@ -88,6 +90,15 @@ describe("matriz capability × provider é exaustiva", () => {
     // imagem) também não serve para mandar recado.
     expect(transportaMensagem("desconhecido")).toBe(false);
     expect(transportaMensagem(null)).toBe(false);
+  });
+
+  it("classifica apenas conexões WhatsApp com número", () => {
+    for (const provider of ["waha", "meta_cloud", "zernio", "datafy"]) {
+      expect(isWhatsAppChannel(provider), provider).toBe(true);
+    }
+    for (const provider of ["telegram", "webchat", "zernio_social", "desconhecido", null]) {
+      expect(isWhatsAppChannel(provider), String(provider)).toBe(false);
+    }
   });
 
   it("as duas famílias de restrição são mutuamente exclusivas por provider", () => {

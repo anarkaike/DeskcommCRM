@@ -52,11 +52,22 @@ export {
   CHANNEL_CAPABILITIES,
   DEFAULT_CHANNEL_PROVIDER,
   PROVIDERS_DE_MENSAGEM,
+  PROVIDERS_DE_ENVIO_AUTOMATIZADO,
   PROVIDERS_SEM_MENSAGEM,
   canalConhecidoSemMensagem,
   transportaMensagem,
 } from "./capabilities";
 export { CHANNEL_SESSION_REF_COLUMNS, resolveSessionRef } from "./session-ref";
+export { CHANNEL_CONNECTIONS, ChannelConnectionRegistry } from "./connection-registry";
+export { createConnectionLifecycle, decideConnectionLifecycle } from "./connection-lifecycle";
+export type {
+  ChannelConnectionContext,
+  ChannelConnectionDriver,
+  ChannelConnectionHealth,
+  ChannelConnectionIdentity,
+  ChannelConnectionRecord,
+  ChannelConnectionStatus,
+} from "./connection-types";
 export type { ChannelSessionRef } from "./session-ref";
 export type {
   ChannelAdapter,

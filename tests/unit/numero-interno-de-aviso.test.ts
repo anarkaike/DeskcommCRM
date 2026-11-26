@@ -137,6 +137,7 @@ describe("lerNumeroInternoDeAviso — a leitura quente", () => {
       sessaoId: null,
       destinoModo: null,
       whatsappsDaEquipe: null,
+      tipoDestino: null,
     });
     expect(await ehNumeroInternoDeAviso(db, ORG, { kind: "phone", phone: "+5531998966398", lid: null })).toBe(
       false,
